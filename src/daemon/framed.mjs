@@ -706,6 +706,8 @@ async function cmdRecoTest(args) {
     resourceDir: String(args.resourceDir),
     type: String(args.type || 'TemplateMatch'),
     image: imageFile,
+    /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
+    ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
     cases,
   }, 90000)
   if (r && r.ok) return { ok: true, type: args.type, meta, results: r.results }
