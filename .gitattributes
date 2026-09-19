@@ -1,0 +1,3 @@
+# 统一换行：daemon 的 .mjs 是逐字节发布的产物，跨平台检出必须一致
+* text=auto eol=lf
+*.png binary
