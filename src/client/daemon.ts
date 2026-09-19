@@ -1,0 +1,217 @@
+/**
+ * MaaFramework 设备 daemon 的客户端（本仓库唯一实现）。
+ *
+ * daemon 是 `daemon/framed.mjs`：一个独立子进程，经 stdin/stdout 说 JSON 行协议，持有
+ * Controller / Resource / Tasker、帧流与环形缓冲。本模块负责 spawn、请求应答配对、超时硬杀
+ * 自愈、原生 stderr 日志环、以及帧/事件汇聚——CLI 命令、`maafw-run repl`、宿主插件与任何 headless
+ * harness 都用它，避免每个消费者各写一遍同一套管道。
+ *
+ * 两条不变量：
+ *  - 一个 DaemonClient = 一个 daemon 子进程 = 一个设备会话（同一台设备同一时刻只能有一个）。
+ *  - 调用超时即认为 daemon 卡死（maa-node 的 wait() 可能同步阻塞 worker），kill 后下次调用自动重生。
+ */
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import readline from 'node:readline'
+import { fileURLToPath } from 'node:url'
+
+/** 帧元数据（像素默认不出 daemon；预览帧落盘后给路径）。 */
+export interface FrameMeta {
+  seq: number
+  t: number
+  diff?: number
+  w?: number
+  h?: number
+  preview?: string
+}
+
+/** 帧流事件：画面变化/稳定，以及 Tasker 的节点级消息（按帧序对齐）。 */
+export interface StreamEvent {
+  type: string
+  seq?: number
+  t: number
+  diff?: number
+  node?: string | null
+  msg?: string
+  id?: number | string | null
+}
+
+export interface DaemonEvents {
+  frames: FrameMeta[]
+  events: StreamEvent[]
+  errors: string[]
+  logs: string[]
+  /** 最新预览帧路径（daemon 收到 init 的 runDir 后写入 runDir/preview.png） */
+  preview: string | null
+}
+
+export type DaemonMessageKind = 'frame' | 'event' | 'stream_error'
+
+export interface DaemonClient {
+  readonly events: DaemonEvents
+  /** 发一条命令并等应答；超时会硬杀 daemon（下次调用自动重生）。 */
+  call<T = unknown>(cmd: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<T>
+  /** daemon stderr + 非 JSON stdout 行（maa 原生日志，识别失败根因常在这）。 */
+  logTail(n?: number): string[]
+  /** 订阅帧/事件/流错误；返回退订函数。 */
+  subscribe(kind: DaemonMessageKind, cb: (message: unknown) => void): () => void
+  stats(): { calls: number; restarts: number; alive: boolean; pid: number | null; daemonPath: string }
+  /** 停流 + 断开 + 结束子进程。 */
+  close(): void
+}
+
+export interface SpawnOptions {
+  /** 预览帧与临时产物的目录；默认 ~/.maafw-run */
+  runDir?: string
+  /** 显式 daemon 路径；默认包内 lib/daemon/framed.mjs，可用 MAA_DAEMON 覆盖 */
+  daemonPath?: string
+  /** 默认调用超时 */
+  timeoutMs?: number
+}
+
+const CAP = { frames: 2000, events: 2000, logs: 400 }
+const DEFAULT_TIMEOUT = 30000
+
+export function defaultRunDir(): string {
+  return join(homedir(), '.maafw-run')
+}
+
+/** 定位 daemon 脚本：显式参数 → MAA_DAEMON → 包内 lib/daemon/framed.mjs。 */
+export function resolveDaemonPath(explicit?: string): string {
+  const candidates = [explicit, process.env.MAA_DAEMON, fileURLToPath(new URL('../daemon/framed.mjs', import.meta.url))]
+  for (const c of candidates) {
+    if (c && existsSync(c)) return c
+  }
+  throw new Error('找不到 daemon 脚本，候选：' + candidates.filter(Boolean).join(' | '))
+}
+
+function push<T>(list: T[], item: T, cap: number): void {
+  list.push(item)
+  if (list.length > cap) list.splice(0, list.length - cap)
+}
+
+export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
+  const daemonPath = resolveDaemonPath(options.daemonPath)
+  const runDir = options.runDir ?? defaultRunDir()
+  const defaultTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT
+
+  const events: DaemonEvents = { frames: [], events: [], errors: [], logs: [], preview: null }
+  const listeners = new Map<DaemonMessageKind, Set<(m: unknown) => void>>()
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
+
+  let child: ChildProcess | null = null
+  let exited = false
+  let reqId = 0
+  let calls = 0
+  let restarts = 0
+
+  const emit = (kind: DaemonMessageKind, message: unknown): void => {
+    for (const cb of listeners.get(kind) ?? []) {
+      try { cb(message) } catch { /* 订阅者的异常不能拖垮客户端 */ }
+    }
+  }
+
+  const wire = (c: ChildProcess): void => {
+    const rl = readline.createInterface({ input: c.stdout!, crlfDelay: Infinity })
+    rl.on('line', (line: string) => {
+      let m: Record<string, unknown>
+      try {
+        m = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        /* 非 JSON 行 = maa 原生日志 */
+        push(events.logs, line, CAP.logs)
+        return
+      }
+      const kind = String(m.kind ?? '')
+      if (kind === 'reply') {
+        const id = Number(m.id)
+        const p = pending.get(id)
+        if (!p) return
+        pending.delete(id)
+        clearTimeout(p.timer)
+        if (m.ok === false) p.reject(new Error(String(m.error ?? 'daemon error')))
+        else p.resolve(m.data)
+      } else if (kind === 'frame') {
+        const meta = m.meta as FrameMeta
+        push(events.frames, meta, CAP.frames)
+        if (typeof m.preview === 'string') events.preview = m.preview
+        else if (meta && typeof meta.preview === 'string') events.preview = meta.preview
+        emit('frame', meta)
+      } else if (kind === 'event') {
+        const ev = m.ev as StreamEvent
+        push(events.events, ev, CAP.events)
+        emit('event', ev)
+      } else if (kind === 'stream_error') {
+        push(events.errors, String(m.error ?? ''), CAP.logs)
+        emit('stream_error', m.error)
+      }
+    })
+    c.stderr?.on('data', (d: Buffer) => push(events.logs, String(d), CAP.logs))
+    c.on('error', (e: Error) => push(events.errors, 'child error: ' + e.message, CAP.logs))
+    c.on('exit', (code: number | null) => {
+      exited = true
+      for (const [, p] of pending) {
+        clearTimeout(p.timer)
+        p.reject(new Error('daemon 已退出 (code=' + code + ')，会话失效，请重新 connect'))
+      }
+      pending.clear()
+    })
+  }
+
+  const ensure = (): ChildProcess => {
+    if (child && !exited) return child
+    if (child) restarts += 1
+    child = spawn(process.execPath, [daemonPath, '--child'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    exited = false
+    wire(child)
+    child.stdin!.write(JSON.stringify({ id: -1, cmd: 'init', runDir }) + '\n')
+    return child
+  }
+
+  const kill = (): void => {
+    if (!child) return
+    try { child.kill() } catch { /* ignore */ }
+  }
+
+  const call = <T = unknown>(cmd: string, args: Record<string, unknown> = {}, timeoutMs = defaultTimeout): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      let c: ChildProcess
+      try {
+        c = ensure()
+      } catch (e) {
+        reject(e as Error)
+        return
+      }
+      const id = ++reqId
+      calls += 1
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        /* 卡死自愈：maa-node 的 wait() 可能同步阻塞 daemon，超时即硬杀，下次调用自动重生 */
+        kill()
+        reject(new Error('daemon 调用超时：' + cmd + '（' + timeoutMs + 'ms 无应答，已重启 daemon，会话需重新 connect）'))
+      }, timeoutMs)
+      pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
+      c.stdin!.write(JSON.stringify({ id, cmd, ...args }) + '\n')
+    })
+
+  return {
+    events,
+    call,
+    logTail(n = 60) { return events.logs.slice(-n) },
+    subscribe(kind, cb) {
+      const set = listeners.get(kind) ?? new Set()
+      set.add(cb)
+      listeners.set(kind, set)
+      return () => { set.delete(cb) }
+    },
+    stats: () => ({ calls, restarts, alive: !exited && child !== null, pid: child?.pid ?? null, daemonPath }),
+    close() {
+      if (!child) return
+      try { child.stdin!.write(JSON.stringify({ id: -1, cmd: 'shutdown' }) + '\n') } catch { /* ignore */ }
+      const dying = child
+      setTimeout(() => { try { dying.kill() } catch { /* ignore */ } }, 1500).unref()
+    },
+  }
+}

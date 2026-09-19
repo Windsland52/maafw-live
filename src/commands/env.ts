@@ -1,0 +1,246 @@
+/**
+ * `maafw-run env` —— 环境与能力探针。
+ *
+ * 这是整个 CLI 的前置命令：技能在动手前先问它「现在有什么」，而不是各自写一遍检测。
+ * 因此它有一条硬要求：**它本身永远不能因为环境残缺而失败**。缺 core、缺 adb、
+ * 缺 python 都是「探测结果」，不是错误。
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
+import { EXIT, type Command, type CommandResult } from '../protocol.js'
+import { firstLine, run } from '../exec.js'
+
+type Status = 'ok' | 'warn' | 'missing'
+
+interface Item {
+  key: string
+  status: Status
+  detail: string
+}
+
+/** 向上找 Maa 项目根：interface.json / maa-project.json 是可靠边界 */
+function findProjectRoot(start: string): string | null {
+  let dir = resolve(start)
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(join(dir, 'interface.json')) || existsSync(join(dir, 'maa-project.json'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
+}
+
+/** 从 interface.json 的 resource.path 推导 pipeline 目录；找不到时退回常见目录 */
+function pipelineDirs(root: string): string[] {
+  const out = new Set<string>()
+  try {
+    const iface = JSON.parse(readFileSync(join(root, 'interface.json'), 'utf8')) as {
+      resource?: Array<{ path?: string | string[] }>
+    }
+    for (const r of iface.resource ?? []) {
+      const paths = Array.isArray(r.path) ? r.path : r.path ? [r.path] : []
+      for (const p of paths) {
+        const dir = join(resolve(root, p), 'pipeline')
+        if (existsSync(dir)) out.add(dir)
+      }
+    }
+  } catch {
+    /* 没有 interface.json 或格式不符时走 fallback */
+  }
+  for (const f of ['resource/base/pipeline', 'resource/pipeline', 'pipeline']) {
+    const dir = join(root, f)
+    if (existsSync(dir)) out.add(dir)
+  }
+  return [...out]
+}
+
+/** 解析 @maaxyz/maa-node。它可能没导出 package.json，故从入口向上找包根 */
+function resolveMaaNode(from: string): { version: string; path: string } | null {
+  try {
+    const req = createRequire(join(from, '__maa_cli_probe__.js'))
+    const entry = req.resolve('@maaxyz/maa-node')
+    let dir = dirname(entry)
+    for (let i = 0; i < 6; i++) {
+      const pkgPath = join(dir, 'package.json')
+      if (existsSync(pkgPath)) {
+        const j = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }
+        return { version: j.version ?? 'unknown', path: dir }
+      }
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  } catch {
+    /* 未安装 */
+  }
+  return null
+}
+
+/**
+ * 取 checkout 的 schema 快照版本。
+ *
+ * 优先复用 core（本生态的唯一版本真源）；core 不可用时退回直接 git describe——
+ * 探针不能因为依赖缺失而失效，这是它存在的意义。
+ */
+async function checkoutVersion(checkout: string, gitBin: string): Promise<string> {
+  try {
+    const core = (await import('@dsh-external/dsh-maafw-core')) as {
+      readCheckoutVersion?: (c: string, g?: string) => { version: string; raw: string }
+    }
+    if (core.readCheckoutVersion) {
+      const v = core.readCheckoutVersion(checkout, gitBin)
+      return v.raw || v.version || ''
+    }
+  } catch {
+    /* 退回下面的直接探测 */
+  }
+  const r = await run(gitBin, ['-C', checkout, 'describe', '--tags'], { timeout: 5000 })
+  return r.ok ? firstLine(r.stdout) : ''
+}
+
+function mark(status: Status): string {
+  return status === 'ok' ? '[ ok ]' : status === 'warn' ? '[warn]' : '[ -- ]'
+}
+
+function pad(s: string, n: number): string {
+  return s.length >= n ? s : s + ' '.repeat(n - s.length)
+}
+
+export const envCommand: Command = {
+  name: 'env',
+  summary: '探测环境与能力：项目、maa-node、MaaFramework 版本、外部工具',
+  usage: 'maafw-run env [--maafw <dir>] [--git <bin>] [--deep]   （--maafw 缺省取环境变量 MAAFW_DIR）',
+  options: {
+    maafw: { type: 'string' },
+    git: { type: 'string' },
+    deep: { type: 'boolean' },
+  },
+
+  async run(ctx): Promise<CommandResult> {
+    const cwd = ctx.cwd
+    const maafw = String(ctx.values.maafw ?? process.env.MAAFW_DIR ?? '')
+    const gitBin = String(ctx.values.git ?? 'git')
+    const deep = ctx.values.deep === true
+
+    const projectRoot = findProjectRoot(cwd)
+    const dirs = projectRoot ? pipelineDirs(projectRoot) : []
+
+    const maaNode = resolveMaaNode(cwd) ?? resolveMaaNode(maafw)
+
+    const [checkoutVer, gitV, adbV, pyV] = await Promise.all([
+      existsSync(maafw) ? checkoutVersion(maafw, gitBin) : Promise.resolve(''),
+      run(gitBin, ['--version'], { timeout: 5000 }),
+      run('adb', ['version'], { timeout: 5000 }),
+      run('python', ['--version'], { timeout: 5000 }),
+    ])
+
+    const items: Item[] = []
+
+    items.push({
+      key: 'runtime',
+      status: 'ok',
+      detail: `node ${process.version} · ${process.platform} ${process.arch}`,
+    })
+
+    items.push({
+      key: 'cwd',
+      status: 'ok',
+      detail: cwd,
+    })
+
+    items.push({
+      key: 'project',
+      status: projectRoot ? 'ok' : 'warn',
+      detail: projectRoot
+        ? `${projectRoot}${dirs.length ? '  (pipeline: ' + dirs.join(', ') + ')' : '  (未发现 pipeline 目录)'}`
+        : '未找到 interface.json / maa-project.json（当前目录不在 Maa 项目内）',
+    })
+
+    items.push({
+      key: 'maa-node',
+      status: maaNode ? 'ok' : 'missing',
+      detail: maaNode ? `${maaNode.version}  (${maaNode.path})` : '未安装（运行时命令不可用）',
+    })
+
+    items.push({
+      key: 'maafw',
+      status: !existsSync(maafw) ? 'missing' : checkoutVer ? 'ok' : 'warn',
+      detail: !maafw
+        ? '未提供 checkout 路径（--maafw 或环境变量 MAAFW_DIR；版本对账需要它）'
+        : !existsSync(maafw)
+        ? `checkout 不存在：${maafw}`
+        : checkoutVer
+          ? `${checkoutVer}  (${maafw})`
+          : `存在但 git describe 失败：${maafw}`,
+    })
+
+    items.push({
+      key: 'git',
+      status: gitV.ok ? 'ok' : 'missing',
+      detail: gitV.ok ? firstLine(gitV.stdout || gitV.stderr) : '不可用（版本对账需要它）',
+    })
+
+    // adb 与 python 是「按需」依赖：只有设备类命令和 v5 迁移脚本需要，
+    // 缺失不影响其余功能，因此记 warn 而不是 missing（不拉高退出码）。
+    items.push({
+      key: 'adb',
+      status: adbV.ok ? 'ok' : 'warn',
+      detail: adbV.ok ? firstLine(adbV.stdout || adbV.stderr) : '不可用（设备类命令需要它）',
+    })
+
+    items.push({
+      key: 'python',
+      status: pyV.ok ? 'ok' : 'warn',
+      detail: pyV.ok
+        ? firstLine(pyV.stdout || pyV.stderr)
+        : '不可用（migrate_pipeline_v5.py 需要它）',
+    })
+
+    if (deep) {
+      const npm = await run('npm', ['--version'], { timeout: 8000 })
+      items.push({
+        key: 'npm',
+        status: npm.ok ? 'ok' : 'missing',
+        detail: npm.ok ? `npm ${firstLine(npm.stdout)}` : '不可用',
+      })
+      for (const pkg of ['maa-evidence-kit', 'create-maa-project']) {
+        const r = await run('npm', ['ls', '-g', '--depth=0', pkg], { timeout: 15000 })
+        const installed = r.ok && r.stdout.includes(pkg)
+        items.push({
+          key: pkg,
+          status: installed ? 'ok' : 'warn',
+          detail: installed ? '已全局安装' : '未全局安装',
+        })
+      }
+    }
+
+    const width = Math.max(...items.map((i) => i.key.length))
+    const human = [
+      'maafw-run env',
+      ...items.map((i) => `  ${mark(i.status)} ${pad(i.key, width)}  ${i.detail}`),
+    ]
+
+    const missing = items.filter((i) => i.status === 'missing')
+    const warnings = missing.map((i) => `${i.key}: ${i.detail}`)
+
+    return {
+      exitCode: missing.length > 0 ? EXIT.ENV : EXIT.OK,
+      root: projectRoot,
+      human,
+      warnings,
+      data: {
+        runtime: { node: process.version, platform: process.platform, arch: process.arch },
+        cwd,
+        project: { root: projectRoot, pipelineDirs: dirs },
+        maaNode,
+        maafw: { path: maafw, found: existsSync(maafw), version: checkoutVer },
+        tools: {
+          git: { available: gitV.ok, version: gitV.ok ? firstLine(gitV.stdout || gitV.stderr) : '' },
+          adb: { available: adbV.ok, version: adbV.ok ? firstLine(adbV.stdout || adbV.stderr) : '' },
+          python: { available: pyV.ok, version: pyV.ok ? firstLine(pyV.stdout || pyV.stderr) : '' },
+        },
+      },
+    }
+  },
+}

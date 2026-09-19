@@ -1,0 +1,48 @@
+{
+  "name": "maafw-run",
+  "version": "0.1.0",
+  "description": "MaaFramework 工具链：设备运行时（daemon）+ 可复用客户端 + CLI。确定性能力层，不绑定宿主。",
+  "type": "module",
+  "bin": {
+    "maafw-run": "./bin/maafw-run.mjs"
+  },
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "files": [
+    "bin",
+    "lib",
+    "docs"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/daemon.d.ts",
+      "default": "./lib/client/daemon.js"
+    },
+    "./actions": {
+      "types": "./lib/runtime/actions.d.ts",
+      "default": "./lib/runtime/actions.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-daemon.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "node scripts/verify-cli.mjs"
+  },
+  "dependencies": {
+    "@dsh-external/dsh-maafw-core": "file:../dsh-maafw-core",
+    "@maaxyz/maa-node": "5.13.0-beta.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.0"
+  }
+}
