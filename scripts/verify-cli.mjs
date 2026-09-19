@@ -109,7 +109,8 @@ process.stdout.write('maafw-run CLI 装配级回归\n')
     check('[4] 数组字段均为数组', ['written', 'removed', 'skipped', 'pending', 'suggestedCommands', 'warnings']
       .every((k) => Array.isArray(e[k])))
     check('[4] data 携带 runtime 探针', e.data?.runtime?.node !== undefined)
-    check('[4] data 携带 maafw 探针', e.data?.maafw !== undefined)
+    /* 契约：应用开发者不传 --checkout 时，探针里不该出现框架源码相关项 */
+    check('[4] data.framework 缺省为 null（不要求 clone 框架源码）', e.data?.framework === null)
     check('[4] data 携带工具探针', e.data?.tools?.git !== undefined)
   }
 }

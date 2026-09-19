@@ -29,7 +29,7 @@ npm link            # 之后可直接 maafw-run --help
 
 | 命令 | 说明 |
 | --- | --- |
-| `maafw-run env` | 探测环境与能力：项目根、pipeline 目录、maa-node、框架版本、git / adb / python |
+| `maafw-run env` | 探测环境与能力：项目根、pipeline 目录、运行时绑定、外部工具（adb / python / git） |
 | `maafw-run version` | 打印 CLI 与依赖版本 |
 | `maafw-run probe` | 自检运行时：绑定版本、adb / win32 设备发现数 |
 | `maafw-run device` | 列出可连接的设备（adb 设备与 win32 窗口） |
@@ -45,6 +45,10 @@ npm link            # 之后可直接 maafw-run --help
 
 `env` 是前置命令：动手前先问它「现在有什么」，而不是各自写一遍环境检测。它有一条硬要求——
 **自身永远不能因为环境残缺而失败**，缺依赖都是探测结果，不是错误。
+
+它按**应用开发者视角**探测：写 Maa 应用的人不需要 clone 框架源码，所以默认结果里没有框架源码项。
+只有显式给 `--checkout <MaaFramework 源码目录>`（或环境变量 `MAAFW_CHECKOUT`）时才追加一项版本
+对账（native 绑定 vs checkout 里的 schema），供框架开发与静态校验使用。
 
 ## 连接：优先 `--project`
 

@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { EXIT, type Command, type CommandResult } from '../protocol.js'
 import { firstLine, run } from '../exec.js'
 
@@ -77,6 +78,11 @@ function resolveMaaNode(from: string): { version: string; path: string } | null 
   return null
 }
 
+/** 本包自身所在目录：把运行时绑定当依赖解析，而不是指望调用方目录里恰好有它 */
+function selfDir(): string {
+  return dirname(fileURLToPath(import.meta.url))
+}
+
 /**
  * 取 checkout 的 schema 快照版本。
  *
@@ -109,24 +115,30 @@ function pad(s: string, n: number): string {
 
 export const envCommand: Command = {
   name: 'env',
-  summary: '探测环境与能力：项目、maa-node、MaaFramework 版本、外部工具',
-  usage: 'maafw-run env [--maafw <dir>] [--git <bin>] [--deep]   （--maafw 缺省取环境变量 MAAFW_DIR）',
+  summary: '探测环境与能力：项目、运行时绑定、外部工具（框架源码对账见 --checkout）',
+  usage: 'maafw-run env [--checkout <MaaFramework 源码目录>] [--git <bin>] [--deep]',
   options: {
-    maafw: { type: 'string' },
+    checkout: { type: 'string' },
+    maafw: { type: 'string' },   // 兼容别名：等价于 --checkout
     git: { type: 'string' },
     deep: { type: 'boolean' },
   },
 
   async run(ctx): Promise<CommandResult> {
     const cwd = ctx.cwd
-    const maafw = String(ctx.values.maafw ?? process.env.MAAFW_DIR ?? '')
+    /* 框架源码只服务于「版本对账」这一件事，只有框架开发与静态校验才需要它——写 Maa 应用的
+       人不该被要求 clone MaaFramework，所以不传就完全不出现这一项。--maafw 保留为兼容别名。 */
+    const maafw = String(
+      ctx.values.checkout ?? ctx.values.maafw ?? process.env.MAAFW_CHECKOUT ?? process.env.MAAFW_DIR ?? '',
+    )
     const gitBin = String(ctx.values.git ?? 'git')
     const deep = ctx.values.deep === true
 
     const projectRoot = findProjectRoot(cwd)
     const dirs = projectRoot ? pipelineDirs(projectRoot) : []
 
-    const maaNode = resolveMaaNode(cwd) ?? resolveMaaNode(maafw)
+    /* 运行时绑定是本包自己的依赖：按包自身解析即可；项目目录里的副本优先（项目可能 pin 了别的版本） */
+    const maaNode = resolveMaaNode(cwd) ?? resolveMaaNode(selfDir())
 
     const [checkoutVer, gitV, adbV, pyV] = await Promise.all([
       existsSync(maafw) ? checkoutVersion(maafw, gitBin) : Promise.resolve(''),
@@ -163,11 +175,12 @@ export const envCommand: Command = {
       detail: maaNode ? `${maaNode.version}  (${maaNode.path})` : '未安装（运行时命令不可用）',
     })
 
-    items.push({
-      key: 'maafw',
+    /* 显式给了源码目录才出现：应用开发者的机器上不该看到一个「缺一项」 */
+    if (maafw) items.push({
+      key: 'framework',
       status: !existsSync(maafw) ? 'missing' : checkoutVer ? 'ok' : 'warn',
       detail: !maafw
-        ? '未提供 checkout 路径（--maafw 或环境变量 MAAFW_DIR；版本对账需要它）'
+        ? '未提供源码目录（--checkout 或 MAAFW_CHECKOUT）'
         : !existsSync(maafw)
         ? `checkout 不存在：${maafw}`
         : checkoutVer
@@ -177,8 +190,8 @@ export const envCommand: Command = {
 
     items.push({
       key: 'git',
-      status: gitV.ok ? 'ok' : 'missing',
-      detail: gitV.ok ? firstLine(gitV.stdout || gitV.stderr) : '不可用（版本对账需要它）',
+      status: gitV.ok ? 'ok' : 'warn',
+      detail: gitV.ok ? firstLine(gitV.stdout || gitV.stderr) : '不可用（仅版本对账与迁移脚本需要）',
     })
 
     // adb 与 python 是「按需」依赖：只有设备类命令和 v5 迁移脚本需要，
@@ -234,7 +247,12 @@ export const envCommand: Command = {
         cwd,
         project: { root: projectRoot, pipelineDirs: dirs },
         maaNode,
-        maafw: { path: maafw, found: existsSync(maafw), version: checkoutVer },
+        framework: maafw
+          ? {
+              checkout: { path: maafw, found: existsSync(maafw), version: checkoutVer },
+              native: maaNode?.version ?? null,
+            }
+          : null,
         tools: {
           git: { available: gitV.ok, version: gitV.ok ? firstLine(gitV.stdout || gitV.stderr) : '' },
           adb: { available: adbV.ok, version: adbV.ok ? firstLine(adbV.stdout || adbV.stderr) : '' },
