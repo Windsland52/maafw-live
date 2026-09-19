@@ -19,11 +19,11 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client/daemon.d.ts",
+      "types": "./lib/types/client/daemon.d.ts",
       "default": "./lib/client/daemon.js"
     },
     "./actions": {
-      "types": "./lib/runtime/actions.d.ts",
+      "types": "./lib/types/runtime/actions.d.ts",
       "default": "./lib/runtime/actions.js"
     },
     "./package.json": "./package.json"
