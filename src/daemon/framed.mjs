@@ -17,7 +17,7 @@
  *                  { kind:'stream_error', error }
  */
 import { createRequire } from 'node:module'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
 import readline from 'node:readline'
@@ -214,6 +214,9 @@ const S = {
   quietNow: false, stableCount: 0,
   lastPng: null,
   runActive: false,
+  /* agent 桥接（PI agent 子进程 ↔ maa.Client）：绑定在某个 Resource 实例上，
+   * 同资源 + 同声明集合复用，换资源 / disconnect / shutdown 时清理。 */
+  agentBind: null,
   /* L0 原图有界缓存（关键帧留存契约 §1-2）：滚动区=最近 K 张原图（"刚看到就能留"）；
    * 锚区=change/stable 事件锚点、动作边界、run 起止（各自 FIFO，容量有界可配）。 */
   l0: {
@@ -415,6 +418,7 @@ async function cmdConnect(args) {
 
 async function cmdDisconnect() {
   if (S.stream) await cmdStreamStop()
+  await cleanupAgents()
   if (S.tasker) { try { S.tasker.destroy() } catch (e) { /* ignore */ } S.tasker = null }
   if (S.ctrl) { try { S.ctrl.destroy() } catch (e) { /* ignore */ } S.ctrl = null }
   S.session = null
@@ -667,6 +671,82 @@ function ensureTasker() {
   return S.tasker
 }
 
+/* ────────────────────────── agent 桥接（PI agent 子进程） ──────────────────────────
+ * 模式照 maa-support-extension 的 setupAgent：new Client() 自动生成 identifier，
+ * 把 identifier 追加为子进程最后一个参数（agent 侧 sys.argv[-1] → AgentServer.start_up），
+ * bind_resource 后 connect（与子进程退出/超时竞速）。custom action/recognition 经此
+ * 注册进绑定的 Resource——依赖 agent 的节点（M9A DisableNode 等）由此可用。 */
+async function cleanupAgents() {
+  const bind = S.agentBind
+  S.agentBind = null
+  if (!bind) return
+  for (const c of bind.clients) {
+    try { c.client.disconnect() } catch (e) { /* ignore */ }
+    try { c.client.destroy() } catch (e) { /* ignore */ }
+    try { c.child.kill() } catch (e) { /* ignore */ }
+  }
+}
+
+async function setupAgents(res, decls, cwd) {
+  const key = JSON.stringify(decls)
+  if (S.agentBind && S.agentBind.res === res && S.agentBind.key === key) {
+    const alive = S.agentBind.clients.every((c) => {
+      try { return c.client.connected && c.client.alive } catch (e) { return false }
+    })
+    if (alive) return { ok: true, reused: true, clients: S.agentBind }
+  }
+  await cleanupAgents()
+  const m = loadMaa()
+  const clients = []
+  for (const d of decls) {
+    const client = new m.Client()
+    const ident = client.identifier
+    let child = null
+    try {
+      child = spawn(d.exec, [...d.args, ident], { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    } catch (e) {
+      try { client.destroy() } catch (e2) { /* ignore */ }
+      return { ok: false, error: 'agent 子进程启动失败：' + d.exec + '（' + String(e && e.message || e) + '）' }
+    }
+    let out = ''
+    const feed = (b) => { out = (out + String(b)).slice(-4000) }
+    child.stdout?.on('data', feed)
+    child.stderr?.on('data', feed)
+    try { client.timeout = 60000 } catch (e) { /* 绑定不支持时用默认 */ }
+    try { client.bind_resource(res) } catch (e) {
+      try { child.kill() } catch (e2) { /* ignore */ }
+      try { client.destroy() } catch (e2) { /* ignore */ }
+      return { ok: false, error: 'agent 绑定资源失败：' + String(e && e.message || e) }
+    }
+    const exited = new Promise((r) => child.on('exit', () => r('exit')))
+    const ok = await Promise.race([
+      client.connect().then(() => 'ok', () => 'err'),
+      exited,
+      sleep(60000).then(() => 'timeout'),
+    ])
+    /* connect() resolve 不代表可用：协议版本错配（maa-node 与 agent 侧 maa 版本不一致）时
+     * 通道建立但握手被拒——必须复核 connected && alive（maa-support 同款检查）。 */
+    let usable = ok === 'ok'
+    if (usable) {
+      try { usable = client.connected === true && client.alive === true } catch (e) { usable = false }
+    }
+    if (!usable) {
+      const why = ok === 'exit' ? '子进程提前退出' : (ok === 'timeout' ? '连接超时（60s）' : '连接失败/握手被拒（版本错配？maa-node 与 agent 侧 maa 库需同版本）')
+      try { client.disconnect() } catch (e) { /* ignore */ }
+      try { client.destroy() } catch (e) { /* ignore */ }
+      try { child.kill() } catch (e) { /* ignore */ }
+      return { ok: false, error: 'agent ' + why + '：' + [d.exec, ...d.args].join(' ') + '；输出尾部：' + out.slice(-300) }
+    }
+    clients.push({ client, child, name: [d.exec, ...d.args].join(' '), out })
+  }
+  S.agentBind = { res, key, clients }
+  let actions = null
+  let recos = null
+  try { actions = clients[0].client.custom_action_list } catch (e) { /* ignore */ }
+  try { recos = clients[0].client.custom_recognition_list } catch (e) { /* ignore */ }
+  return { ok: true, clients: S.agentBind, actions, recos }
+}
+
 const sab = new Int32Array(new SharedArrayBuffer(4))
 async function cmdRun(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
@@ -678,6 +758,15 @@ async function cmdRun(args) {
   } else {
     if (!args.resourceDir) return { ok: false, error: '缺少 resourceDir（或 resourceDirs 数组）' }
     res = await ensureResource(args.resourceDir)
+  }
+  /* agent 桥接：项目声明了 agent（PI interface 的 child_exec/child_args）就先连上——
+   * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
+  let agentInfo = null
+  if (Array.isArray(args.agents) && args.agents.length) {
+    const ag = await setupAgents(res, args.agents, String(args.agentCwd || process.cwd()))
+    agentInfo = ag.ok
+      ? { ok: true, reused: !!ag.reused, actions: ag.actions ?? null, recognitions: ag.recos ?? null }
+      : { ok: false, error: ag.error }
   }
   const tasker = ensureTasker()
   tasker.resource = res
@@ -758,6 +847,7 @@ async function cmdRun(args) {
     endSeq: S.seq,
     framesCaptured: S.seq,
     retention,
+    ...(agentInfo ? { agent: agentInfo } : {}),
     nodes: order.map((n) => ({
       id: n.id, name: n.name, status: n.status,
       ms: (n.end ?? Date.now()) - n.start, seq: n.seq, msgs: n.msgs.slice(-6),
@@ -1697,7 +1787,7 @@ const handlers = {
   run_stop: cmdRunStop,
   input: cmdInput,
   reco_test: cmdRecoTest,
-  shutdown: async () => { await cmdStreamStop(); await cmdDisconnect(); process.exit(0) },
+  shutdown: async () => { await cmdStreamStop(); await cleanupAgents(); await cmdDisconnect(); process.exit(0) },
 }
 
 /* 子进程模式：stdin JSON 行协议（每行一条消息）。非 --child（headless 单测 import）不挂监听。 */

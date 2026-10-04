@@ -232,12 +232,19 @@ export const replCommand: Command = {
               }
               /* 异步执行不阻塞提示符：--timeout 0 的长任务靠 stop 中断（同一条客户端连接） */
               out('已提交 ' + entry + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
+              const plan = state.plan
               act.run(client, explicitDir
                 ? { resourceDir: explicitDir, entry, override, timeoutMs: timeout }
-                : { resourceDirs: resDirs, entry, override, timeoutMs: timeout }, timeout)
+                : {
+                    resourceDirs: resDirs, entry, override, timeoutMs: timeout,
+                    ...(plan?.loaded.agents.length
+                      ? { agents: plan.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })), agentCwd: plan.loaded.dir ?? undefined }
+                      : {}),
+                  }, timeout)
                 .then((r) => {
-                  const rec = (r as { record?: { ok?: boolean } }).record
-                  out('run 完成：任务级 ' + (rec ? (rec.ok ? 'ok' : 'FAIL') : '未知') + '  ' + short(r, 700))
+                  const rec = (r as { record?: { ok?: boolean, agent?: { ok?: boolean } } }).record
+                  out('run 完成：任务级 ' + (rec ? (rec.ok ? 'ok' : 'FAIL') : '未知') +
+                    (rec?.agent ? '，agent ' + (rec.agent.ok ? '已连接' : '失败') : '') + '  ' + short(r, 700))
                 })
                 .catch((e) => out('run 失败：' + (e instanceof Error ? e.message : String(e))))
               break

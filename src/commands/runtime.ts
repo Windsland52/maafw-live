@@ -342,9 +342,17 @@ export const runCommand: Command = {
           if (agents.length) {
             extraWarns.push('项目声明了 ' + agents.length + ' 个 agent 子进程（' +
               agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') +
-              '）；本 CLI 未桥接 agent（maa-node 绑定无 AgentClient），依赖 custom action/recognition 的节点会以 Action is null 失败')
+              '），run 时自动 spawn 并桥接——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
           }
-          args = { resourceDirs: paths, entry: resolvedEntry, override: { ...chain.override }, timeoutMs }
+          args = {
+            resourceDirs: paths,
+            entry: resolvedEntry,
+            override: { ...chain.override },
+            timeoutMs,
+            /* agent 桥接：daemon spawn 子进程（identifier 追加为末参）并 bind/connect 到本次 Resource */
+            agents: s.plan!.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })),
+            agentCwd: s.plan!.loaded.dir ?? undefined,
+          }
         } else {
           args = { resourceDir, entry, override, timeoutMs }
         }
@@ -383,14 +391,23 @@ export const runCommand: Command = {
           startSeq?: number | null
           endSeq?: number
           framesCaptured?: number
+          agent?: { ok?: boolean; reused?: boolean; actions?: string[] | null; recognitions?: string[] | null; error?: string }
         }
         const taskOk = rec.ok === true
         const nodes = rec.nodes ?? []
+        const agentLines: string[] = []
+        if (rec.agent) {
+          agentLines.push(rec.agent.ok
+            ? '  agent 已连接' + (rec.agent.reused ? '（复用）' : '') + '：custom action ' +
+              String(rec.agent.actions?.length ?? '?') + ' 个 / recognition ' + String(rec.agent.recognitions?.length ?? '?') + ' 个'
+            : '  agent 连接失败：' + String(rec.agent.error ?? '?'))
+        }
         const human = [
           ...describeSession(s),
           '任务 ' + resolvedEntry + '：' + (taskOk ? '完成' : (rec.stopped ? '超时被停止（视为失败）' : '失败')) +
             '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms，帧序 ' +
             String(rec.startSeq) + '..' + String(rec.endSeq) + '）',
+          ...agentLines,
           ...appliedLines.map((l) => '  override: ' + l),
           ...nodes.map((n) => '  [' + n.status + '] ' + n.name + '  ' + n.ms + 'ms'),
         ]
@@ -401,11 +418,16 @@ export const runCommand: Command = {
             const agents = s.plan?.loaded.agents ?? []
             human.push('',
               '诊断：日志出现 Action/Recognition is null —— 节点依赖项目 agent 注册的 custom 回调。' +
-                (agents.length
-                  ? '本项目声明了 agent：' + agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') + '，本 CLI 未桥接。'
-                  : '项目未声明 agent，检查节点 custom_action/custom_recognition 拼写。'))
+                (rec.agent?.ok
+                  ? 'agent 已连接但该动作未注册，检查 custom_action 拼写或 agent 版本。'
+                  : agents.length
+                    ? 'agent 连接失败（版本错配？maa-node 与 agent 侧 maa 库须同版本）。'
+                    : '项目未声明 agent，检查节点 custom_action/custom_recognition 拼写。'))
             extraWarns.push('任务失败疑似缺 agent custom 回调（Action/Recognition is null）')
           }
+        }
+        if (rec.agent && rec.agent.ok === false) {
+          extraWarns.push('agent 连接失败：' + String(rec.agent.error ?? '?'))
         }
         return {
           exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
