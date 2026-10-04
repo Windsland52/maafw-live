@@ -1618,6 +1618,56 @@ async function cmdAnnotate(args) {
   }
 }
 
+/* ────────────────────────── 阈值校准（静止画面噪声定标） ──────────────────────────
+ * 采集 N 帧（要求画面静止），统计相邻帧分块亮度差与全局位差率的分布，推荐
+ * blockThresh / changeGlobal。噪声地板之上留裕量，让真变化必超、静止必不超。
+ * 期间若有真实变化会抬高推荐值——max ≫ p99 时警告重跑。 */
+async function cmdCalibrate(args) {
+  if (!S.ctrl) return { ok: false, error: '未连接设备（先连接）' }
+  const frames = Math.min(60, Math.max(6, Number(args.frames ?? 24)))
+  const interval = Math.max(120, Number(args.interval ?? 300))
+  const blockDiffs = []
+  const globals = []
+  let last = null
+  for (let i = 0; i < frames; i++) {
+    const j = S.ctrl.post_screencap()
+    await j.wait()
+    const buf = j.get()
+    if (!buf || buf.byteLength < 8) return { ok: false, error: '第 ' + (i + 1) + ' 帧截图失败' }
+    const b = Buffer.from(buf)
+    const dec = pngDecode(b)
+    pushFrame(dec, b)   // 校准采集也是观测（进环进 L0，可复核）
+    const small = downscale(toRgb(dec), dec.w, dec.h, S.streamScale)
+    const { hash, means } = blockAnalyze(small.data, small.w, small.h)
+    if (last) {
+      globals.push(hashDist(last.hash, hash))
+      for (let k = 0; k < 64; k++) blockDiffs.push(Math.abs(means[k] - last.means[k]))
+    }
+    last = { hash, means }
+    if (i < frames - 1) await sleep(interval)
+  }
+  blockDiffs.sort((a, b) => a - b)
+  globals.sort((a, b) => a - b)
+  const pct = (arr, p) => arr[Math.min(arr.length - 1, Math.floor(arr.length * p))]
+  const stats = (arr) => ({
+    p50: Math.round(pct(arr, 0.5) * 1000) / 1000,
+    p99: Math.round(pct(arr, 0.99) * 1000) / 1000,
+    max: Math.round(arr[arr.length - 1] * 1000) / 1000,
+  })
+  const bs = stats(blockDiffs)
+  const gs = stats(globals)
+  const blockThresh = Math.min(32, Math.max(2, Math.ceil(bs.max + 2)))
+  const changeGlobal = Math.min(0.3, Math.max(0.02, Math.round((gs.max + 0.01) * 1000) / 1000))
+  const moved = bs.max > bs.p99 * 2 + 1
+  return {
+    ok: true, frames,
+    block: bs, global: gs,
+    recommended: { blockThresh, changeGlobal },
+    apply: 'stream start --block-thresh ' + blockThresh + ' --change-global ' + changeGlobal,
+    ...(moved ? { warn: 'max 远超 p99（' + bs.max + ' vs ' + bs.p99 + '）：校准期间疑似有真实变化，建议静止画面重跑' } : {}),
+  }
+}
+
 /* ────────────────────────── 消息分发 ────────────────────────── */
 const handlers = {
   init: (a) => {
@@ -1639,6 +1689,7 @@ const handlers = {
   frame_get: cmdFrameGet,
   tpl_crop: cmdTplCrop,
   annotate: cmdAnnotate,
+  calibrate: cmdCalibrate,
   color_probe: cmdColorProbe,
   l0_status: cmdL0Status,
   kf_promote: cmdKfPromote,

@@ -7,6 +7,7 @@
  */
 import type { Command } from '../protocol.js'
 import { ANNOTATE_COMMANDS } from './annotate.js'
+import { CALIBRATE_COMMANDS } from './calibrate.js'
 import { COLOR_COMMANDS } from './color.js'
 import { CROP_COMMANDS } from './crop.js'
 import { envCommand } from './env.js'
@@ -17,7 +18,7 @@ import { replCommand } from './repl.js'
 import { RUNTIME_COMMANDS } from './runtime.js'
 import { versionCommand } from './version.js'
 
-/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 关键帧 → 会话。 */
+/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 校准 → 关键帧 → 会话。 */
 export const COMMANDS: Command[] = [
   envCommand,
   versionCommand,
@@ -27,6 +28,7 @@ export const COMMANDS: Command[] = [
   ...COLOR_COMMANDS,
   ...CROP_COMMANDS,
   ...ANNOTATE_COMMANDS,
+  ...CALIBRATE_COMMANDS,
   ...KF_COMMANDS,
   replCommand,
 ]

@@ -66,6 +66,8 @@ export const tplCrop = (c: DaemonClient, args: { seq?: number; roi?: number[]; p
   c.call<Record<string, unknown>>('tpl_crop', args, 240000)
 export const annotate = (c: DaemonClient, args: { seq?: number; out?: string; resourceDir?: string }) =>
   c.call<Record<string, unknown>>('annotate', args, 120000)
+export const calibrate = (c: DaemonClient, args: { frames?: number; interval?: number } = {}) =>
+  c.call<Record<string, unknown>>('calibrate', args, 120000)
 export const runStop = (c: DaemonClient) => c.call<{ ok: boolean }>('run_stop', {}, 10000)
 export const l0Status = (c: DaemonClient) => c.call<Record<string, unknown>>('l0_status', {}, 10000)
 export const kfPromote = (c: DaemonClient, args: { seq?: number; latest?: boolean; note?: string }) =>
