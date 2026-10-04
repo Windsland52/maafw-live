@@ -16,9 +16,10 @@ import { KF_COMMANDS } from './kf.js'
 import { RECO_COMMANDS } from './reco.js'
 import { replCommand } from './repl.js'
 import { RUNTIME_COMMANDS } from './runtime.js'
+import { TIMING_COMMANDS } from './timing.js'
 import { versionCommand } from './version.js'
 
-/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 校准 → 关键帧 → 会话。 */
+/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 校准 → 关键帧 → timing → 会话。 */
 export const COMMANDS: Command[] = [
   envCommand,
   versionCommand,
@@ -30,6 +31,7 @@ export const COMMANDS: Command[] = [
   ...ANNOTATE_COMMANDS,
   ...CALIBRATE_COMMANDS,
   ...KF_COMMANDS,
+  ...TIMING_COMMANDS,
   replCommand,
 ]
 
