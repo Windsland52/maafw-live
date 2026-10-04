@@ -24,8 +24,8 @@ function nums(raw: string | undefined, count: number, what: string): number[] | 
 export const cropCommand: Command = {
   name: 'crop',
   summary: '模板裁剪：宽松框/点 → snap 收紧 → L0 原图裁剪 → 自匹配验证（点→ROI 派生同链）',
-  usage: 'maafw-live crop --roi x,y,w,h | --point x,y [--pad n] [--seq n] [--out <png>] [--resource-dir <dir>] --project <dir>|--kind ...\n' +
-    '       源帧是 L0 最新原图（screencap/stream/输入都会产生）；输出模板可直接进 reco 验证',
+  usage: 'maafw-live crop --roi x,y,w,h | --point x,y [--pad n] [--seq n] [--out <png>] [--resource-dir <dir>] [--no-cross] --project <dir>|--kind ...\n' +
+    '       源帧是 L0 最新原图（screencap/stream/输入都会产生）；连接真机时自动做跨帧验证（新帧再匹配一次）',
   options: {
     ...CONNECT_OPTIONS,
     roi: { type: 'string' },
@@ -34,6 +34,7 @@ export const cropCommand: Command = {
     seq: { type: 'string' },
     out: { type: 'string' },
     'resource-dir': { type: 'string' },
+    'no-cross': { type: 'boolean' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -78,12 +79,14 @@ export const cropCommand: Command = {
           ...(seq !== undefined ? { seq } : {}),
           ...(out ? { out } : {}),
           resourceDir,
+          ...(ctx.values['no-cross'] === true ? { cross: false } : {}),
         })
         if (r.ok === false) {
           return fail('TPL_CROP', String(r.error ?? '裁剪失败'),
             '源帧取 L0 最新原图：先 screencap / stream / 输入产生观测', EXIT.FINDINGS)
         }
         const box = r.box as number[]
+        const cross = r.cross as { seq?: number; score?: number; posOk?: boolean; box?: number[] } | undefined
         const human = [
           ...describeSession(s),
           '模板 ' + String(r.w) + 'x' + String(r.h) + ' → ' + String(r.path),
@@ -91,6 +94,8 @@ export const cropCommand: Command = {
             '  宽松框 ' + JSON.stringify(r.loose) + ' → 收紧 ' + JSON.stringify(box) + (r.snapped ? '' : '（snap 无内容收紧，用原框）'),
           '  自匹配 ' + (r.positionOk === false ? '位置错误（best 落在 ' + JSON.stringify(r.selfMatchBox ?? null) + '）' : '位置正确') +
             '，得分 ' + String(r.score) + '（' + String(r.tries) + ' 次评估）',
+          ...(cross ? ['  跨帧验证 seq=' + String(cross.seq) + '：得分 ' + String(cross.score) +
+            (cross.posOk ? '，位置正确' : '，位置漂移 ' + JSON.stringify(cross.box ?? null))] : []),
         ]
         if (r.warn) human.push('  警告：' + String(r.warn))
         human.push('pipeline 用法：roi ' + box.join(',') + ' + template 该文件（同帧验证：maafw-live reco --node …）')

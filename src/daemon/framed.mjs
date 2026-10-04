@@ -1269,6 +1269,32 @@ async function cmdTplCrop(args) {
     }
     if (!improved) break
   }
+  /* 跨帧验证：同帧自匹配 1.0 只证明模板与源帧一致；真正要的是在新帧上仍稳定。
+   * 连接着真机就再抓一帧验证，得分大幅衰减或位置漂移 → 模板跨帧不稳，如实警告。 */
+  let cross = null
+  if (S.ctrl && args.cross !== false) {
+    const fresh = await captureNow('tpl-verify')
+    if (fresh.ok) {
+      writeCand(cand)
+      const frame2 = path.join(os.tmpdir(), 'maa_tpl_frame2_' + Date.now() + '.png')
+      try {
+        fs.writeFileSync(frame2, S.l0.roll[S.l0.roll.length - 1].png)
+        const r2 = await spawnRecoChild({
+          resourceDir, type: 'TemplateMatch', image: frame2, templateImage: candFile, cases: [{}],
+        }, 60000)
+        const det = r2 && r2.ok && r2.results && r2.results[0] ? r2.results[0].detail : null
+        const b2 = det && det.detail && det.detail.best
+        cross = {
+          seq: fresh.seq,
+          score: b2 ? Math.round(Number(b2.score) * 1000) / 1000 : 0,
+          posOk: b2 && Array.isArray(b2.box) ? overlapOk(b2.box.map(Number), [cand.x, cand.y, cand.w, cand.h]) : false,
+          ...(b2 && Array.isArray(b2.box) ? { box: b2.box.map(Number) } : {}),
+        }
+      } finally {
+        try { fs.rmSync(frame2, { force: true }) } catch (e) { /* ignore */ }
+      }
+    }
+  }
   try { fs.rmSync(frameFile, { force: true }); fs.rmSync(candFile, { force: true }) } catch (e) { /* ignore */ }
 
   const final = cropRgb(dec.data, dec.w, dec.h, cand)
@@ -1279,6 +1305,10 @@ async function cmdTplCrop(args) {
     ? '低纹理/不独特：模板在同帧上都定位不到自己（best 落在 ' + JSON.stringify(best.at) + '，得分 ' +
       best.score.toFixed(3) + '）——换更纹理化的框，或走点选路径'
     : (best.score < 0.7 ? '得分偏低（' + best.score.toFixed(3) + '）但位置正确：可用，注意跨帧稳定性' : null)
+  const crossWarn = cross && best.posOk && (cross.score < best.score - 0.15 || !cross.posOk)
+    ? '跨帧不稳：新帧（seq=' + cross.seq + '）上得分 ' + cross.score + (cross.posOk ? '' : '且位置漂移') +
+      '，源帧 ' + best.score.toFixed(3) + '——模板对动态区域敏感，慎用于识别'
+    : null
   return {
     ok: true, path: out, seq: ent.seq,
     box: [cand.x, cand.y, cand.w, cand.h],
@@ -1286,10 +1316,12 @@ async function cmdTplCrop(args) {
     snapped, score: Math.round(best.score * 1000) / 1000,
     positionOk: best.posOk,
     ...(best.at ? { selfMatchBox: best.at } : {}),
+    ...(cross ? { cross } : {}),
     tries: tries.n,
     w: final.w, h: final.h,
     ctrlW: dec.w, ctrlH: dec.h,
     ...(warn ? { warn } : {}),
+    ...(crossWarn ? { warn: crossWarn } : {}),
   }
 }
 

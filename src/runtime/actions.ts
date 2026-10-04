@@ -62,8 +62,8 @@ export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; 
   c.call<Record<string, unknown>>('frame_get', args, 30000)
 export const colorProbe = (c: DaemonClient, args: { seq?: number; roi?: number[] }) =>
   c.call<Record<string, unknown>>('color_probe', args, 15000)
-export const tplCrop = (c: DaemonClient, args: { seq?: number; roi?: number[]; point?: number[]; pad?: number; out?: string; resourceDir?: string }) =>
-  c.call<Record<string, unknown>>('tpl_crop', args, 180000)
+export const tplCrop = (c: DaemonClient, args: { seq?: number; roi?: number[]; point?: number[]; pad?: number; out?: string; resourceDir?: string; cross?: boolean }) =>
+  c.call<Record<string, unknown>>('tpl_crop', args, 240000)
 export const runStop = (c: DaemonClient) => c.call<{ ok: boolean }>('run_stop', {}, 10000)
 export const l0Status = (c: DaemonClient) => c.call<Record<string, unknown>>('l0_status', {}, 10000)
 export const kfPromote = (c: DaemonClient, args: { seq?: number; latest?: boolean; note?: string }) =>
