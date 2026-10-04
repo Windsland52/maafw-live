@@ -1181,12 +1181,12 @@ async function cmdTplCrop(args) {
 
   const region = cropRgb(dec.data, dec.w, dec.h, box0)
   const tight = tightenBounds(region.data, region.w, region.h)
-  let cand = tight
-    ? { x: box0.x + tight.x, y: box0.y + tight.y, w: tight.w, h: tight.h }
-    : { ...box0 }
   const snapped = !!tight
 
-  /* 自匹配闭环：裁出的模板在同帧上匹配，逐边 ±2px 贪心取得分最高边界 */
+  /* 自匹配闭环：裁出的模板在同帧上匹配，逐边 ±2px 贪心取得分最高边界。
+   * 判据两层：位置正确（best 落回裁剪处）优先于得分——大面积纯色的模板在
+   * CCOEFF_NORMED 下得分为噪声（实测同帧自匹配 best 落到别处、0.736 高于真实位置），
+   * "找不到自己"比"分数低"更能说明模板不独特。 */
   const resourceDir = String(args.resourceDir || '')
   const frameFile = path.join(os.tmpdir(), 'maa_tpl_frame_' + Date.now() + '.png')
   const candFile = path.join(os.tmpdir(), 'maa_tpl_cand_' + Date.now() + '.png')
@@ -1196,22 +1196,56 @@ async function cmdTplCrop(args) {
     fs.writeFileSync(candFile, pngEncodeRGB(c.data, c.w, c.h))
     return c
   }
+  const overlapOk = (a, b) => {
+    const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]))
+    const iy = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]))
+    const inter = ix * iy
+    const uni = a[2] * a[3] + b[2] * b[3] - inter
+    return uni > 0 && inter / uni > 0.75
+  }
   const score = async (b) => {
-    if (b.w < 8 || b.h < 8) return -1
+    if (b.w < 8 || b.h < 8) return { score: -1, posOk: false, at: null }
     writeCand(b)
     const r = await spawnRecoChild({
       resourceDir, type: 'TemplateMatch', image: frameFile, templateImage: candFile, cases: [{}],
     }, 60000)
-    if (!r || !r.ok) return -1
+    if (!r || !r.ok) return { score: -1, posOk: false, at: null }
     const det = r.results && r.results[0] ? r.results[0].detail : null
     const best = det && det.detail && det.detail.best
-    return best ? Number(best.score) : (r.results[0].ok ? 0.5 : 0)
+    if (!best || !Array.isArray(best.box)) return { score: 0, posOk: false, at: null }
+    const at = best.box.map(Number)
+    return { score: Number(best.score), posOk: overlapOk(at, [b.x, b.y, b.w, b.h]), at }
   }
-  let best = { score: await score(cand), tries: 1 }
+  const obj = (s) => (s.posOk ? 1000 : 0) + s.score
   const clampBox = (b) => ({
     x: Math.max(0, b.x), y: Math.max(0, b.y),
     w: Math.min(b.w, dec.w - Math.max(0, b.x)), h: Math.min(b.h, dec.h - Math.max(0, b.y)),
   })
+  /* 候选池：snap 可能塌成细条（背景差分在混合内容上会选中稀疏行带），单靠它起步会让
+   * ±2px 精修困死在退化框里——收紧框、加边距、外扩档、原始宽松框都进池，位置正确者优先。 */
+  const cands = []
+  if (tight) {
+    const t = { x: box0.x + tight.x, y: box0.y + tight.y, w: tight.w, h: tight.h }
+    cands.push(t)
+    cands.push(clampBox({ x: t.x - 4, y: t.y - 4, w: t.w + 8, h: t.h + 8 }))
+    for (const f of [0.25, 0.5]) {
+      cands.push(clampBox({
+        x: Math.round(t.x - t.w * f / 2), y: Math.round(t.y - t.h * f / 2),
+        w: Math.round(t.w * (1 + f)), h: Math.round(t.h * (1 + f)),
+      }))
+    }
+  }
+  cands.push({ ...box0 })
+  let cand = cands[0]
+  let best = { score: -1, posOk: false, at: null }
+  let bestObj = -Infinity
+  const tries = { n: 0 }
+  for (const c of cands) {
+    const s = await score(c)
+    tries.n++
+    if (obj(s) > bestObj) { cand = c; best = s; bestObj = obj(s) }
+    if (best.posOk && best.score >= 0.99) break
+  }
   /* 逐边移动（每边独立尝试内收/外扩 2px，取更优） */
   const moves = [
     { k: 'left', apply: (b) => clampBox({ x: b.x - 2, y: b.y, w: b.w + 2, h: b.h }) },
@@ -1230,8 +1264,8 @@ async function cmdTplCrop(args) {
       if (nb.w < 8 || nb.h < 8 || (nb.x + nb.w > dec.w) || (nb.y + nb.h > dec.h)) continue
       if (nb.x === cand.x && nb.y === cand.y && nb.w === cand.w && nb.h === cand.h) continue
       const s = await score(nb)
-      best.tries++
-      if (s > best.score + 1e-3) { cand = nb; best.score = s; improved = true }
+      tries.n++
+      if (obj(s) > bestObj + 1e-3) { cand = nb; best = s; bestObj = obj(s); improved = true }
     }
     if (!improved) break
   }
@@ -1241,14 +1275,21 @@ async function cmdTplCrop(args) {
   const out = args.out || path.join(process.cwd(), 'maa_tpl_' + Date.now() + '.png')
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
+  const warn = !best.posOk
+    ? '低纹理/不独特：模板在同帧上都定位不到自己（best 落在 ' + JSON.stringify(best.at) + '，得分 ' +
+      best.score.toFixed(3) + '）——换更纹理化的框，或走点选路径'
+    : (best.score < 0.7 ? '得分偏低（' + best.score.toFixed(3) + '）但位置正确：可用，注意跨帧稳定性' : null)
   return {
     ok: true, path: out, seq: ent.seq,
     box: [cand.x, cand.y, cand.w, cand.h],
     loose: [box0.x, box0.y, box0.w, box0.h],
-    snapped, score: Math.round(best.score * 1000) / 1000, tries: best.tries,
+    snapped, score: Math.round(best.score * 1000) / 1000,
+    positionOk: best.posOk,
+    ...(best.at ? { selfMatchBox: best.at } : {}),
+    tries: tries.n,
     w: final.w, h: final.h,
     ctrlW: dec.w, ctrlH: dec.h,
-    ...(best.score < 0.7 ? { warn: '自匹配得分偏低（' + best.score + '）：模板可能不够独特，考虑换更紧的框或改用点选路径' } : {}),
+    ...(warn ? { warn } : {}),
   }
 }
 

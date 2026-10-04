@@ -89,7 +89,8 @@ export const cropCommand: Command = {
           '模板 ' + String(r.w) + 'x' + String(r.h) + ' → ' + String(r.path),
           '  源帧 seq=' + String(r.seq) + '（' + String(r.ctrlW) + 'x' + String(r.ctrlH) + '）' +
             '  宽松框 ' + JSON.stringify(r.loose) + ' → 收紧 ' + JSON.stringify(box) + (r.snapped ? '' : '（snap 无内容收紧，用原框）'),
-          '  自匹配得分 ' + String(r.score) + '（' + String(r.tries) + ' 次评估）',
+          '  自匹配 ' + (r.positionOk === false ? '位置错误（best 落在 ' + JSON.stringify(r.selfMatchBox ?? null) + '）' : '位置正确') +
+            '，得分 ' + String(r.score) + '（' + String(r.tries) + ' 次评估）',
         ]
         if (r.warn) human.push('  警告：' + String(r.warn))
         human.push('pipeline 用法：roi ' + box.join(',') + ' + template 该文件（同帧验证：maafw-live reco --node …）')
