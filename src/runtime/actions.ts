@@ -54,7 +54,7 @@ export const connect = (c: DaemonClient, args: Record<string, unknown>) =>
 export const disconnect = (c: DaemonClient) => c.call<{ ok: boolean }>('disconnect', {}, 20000)
 export const screencap = (c: DaemonClient, out?: string) =>
   c.call<Record<string, unknown>>('screencap', out ? { out } : {}, 30000)
-export const streamStart = (c: DaemonClient, args: { fps?: number; scale?: number; maxFrames?: number; l0Roll?: number; l0Anchor?: number; blockThresh?: number; changeGlobal?: number } = {}) =>
+export const streamStart = (c: DaemonClient, args: { fps?: number; scale?: number; maxFrames?: number; l0Roll?: number; l0Anchor?: number; l0Bytes?: number; blockThresh?: number; changeGlobal?: number } = {}) =>
   c.call<Record<string, unknown>>('stream_start', args, 15000)
 export const streamStop = (c: DaemonClient) => c.call<{ ok: boolean }>('stream_stop', {}, 10000)
 export const streamStatus = (c: DaemonClient) => c.call<Record<string, unknown>>('stream_status', {}, 10000)

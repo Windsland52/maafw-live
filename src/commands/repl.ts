@@ -149,11 +149,13 @@ export const replCommand: Command = {
                 const scale = readFlag(tokens, '--scale')
                 const blockThresh = readFlag(tokens, '--block-thresh')
                 const changeGlobal = readFlag(tokens, '--change-global')
+                const l0Bytes = readFlag(tokens, '--l0-bytes')
                 out(short(await act.streamStart(client, {
                   ...(fps ? { fps: Number(fps) } : {}),
                   ...(scale ? { scale: Number(scale) } : {}),
                   ...(blockThresh ? { blockThresh: Number(blockThresh) } : {}),
                   ...(changeGlobal ? { changeGlobal: Number(changeGlobal) } : {}),
+                  ...(l0Bytes ? { l0Bytes: Number(l0Bytes) } : {}),
                 })))
               } else if (sub === 'stop') out(short(await act.streamStop(client)))
               else out(short(await act.streamStatus(client)))

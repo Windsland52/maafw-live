@@ -218,11 +218,15 @@ const S = {
    * 同资源 + 同声明集合复用，换资源 / disconnect / shutdown 时清理。 */
   agentBind: null,
   /* L0 原图有界缓存（关键帧留存契约 §1-2）：滚动区=最近 K 张原图（"刚看到就能留"）；
-   * 锚区=change/stable 事件锚点、动作边界、run 起止（各自 FIFO，容量有界可配）。 */
+   * 锚区=change/stable 事件锚点、动作边界、run 起止（各自 FIFO，容量有界可配）。
+   * 张数之外还有字节预算：跨两区唯一 seq 去重计字节，超限先淘汰滚动区（锚区是策展证据，
+   * 滚动区只是"最近"）；Buffer 由两区共享，只有两区都淘汰才真正释放。 */
   l0: {
     roll: [],                          // {seq,t,png,w,h}
     anchor: [],                        // {seq,t,png,w,h,source}
     rollCap: 16, anchorCap: 32,
+    bytesCap: 192 * 1024 * 1024,       // 唯一字节预算（默认 192MB ≈ 1080p×48 张上限）
+    evicted: 0,
   },
 }
 const STATUS = { pending: 1000, running: 2000, succeeded: 3000, failed: 4000 }
@@ -466,6 +470,28 @@ function l0AnchorAdd(entry) {
   if (S.l0.anchor.some((x) => x.seq === entry.seq)) return
   S.l0.anchor.push(entry)
   if (S.l0.anchor.length > S.l0.anchorCap) S.l0.anchor.splice(0, S.l0.anchor.length - S.l0.anchorCap)
+  l0EvictToBudget()
+}
+
+/** 字节预算淘汰：唯一 seq 去重计总字节，超限先淘汰滚动区最旧、仍超再淘汰锚区最旧。 */
+function l0EvictToBudget() {
+  const cap = S.l0.bytesCap
+  if (!(cap > 0)) return
+  const bytesOf = (e) => (e.png ? e.png.length : 0)
+  let total = 0
+  const seen = new Set()
+  for (const e of S.l0.roll) if (!seen.has(e.seq)) { seen.add(e.seq); total += bytesOf(e) }
+  for (const e of S.l0.anchor) if (!seen.has(e.seq)) { seen.add(e.seq); total += bytesOf(e) }
+  while (total > cap) {
+    const r0 = S.l0.roll[0]
+    if (r0) {
+      S.l0.roll.shift()
+      if (!S.l0.anchor.some((x) => x.seq === r0.seq)) total -= bytesOf(r0)
+    } else if (S.l0.anchor.length) {
+      total -= bytesOf(S.l0.anchor.shift())
+    } else break
+    S.l0.evicted++
+  }
 }
 
 /**
@@ -486,6 +512,7 @@ function pushFrame(dec, png) {
   const l0 = { seq: fr.seq, t: fr.t, png, w: dec.w, h: dec.h }
   S.l0.roll.push(l0)
   if (S.l0.roll.length > S.l0.rollCap) S.l0.roll.splice(0, S.l0.roll.length - S.l0.rollCap)
+  l0EvictToBudget()
   const meta = { seq: fr.seq, t: fr.t, hash: hashStr(hash), diff: Math.round(diff * 1000) / 1000, w: fr.w, h: fr.h }
   S.framesMeta.push(meta)
   if (S.framesMeta.length > 2000) S.framesMeta.splice(0, S.framesMeta.length - 2000)
@@ -582,6 +609,7 @@ async function cmdStreamStart(args) {
   if (args.maxFrames) S.maxFrames = Math.min(600, Math.max(20, Number(args.maxFrames)))
   if (args.l0Roll) S.l0.rollCap = Math.min(64, Math.max(1, Number(args.l0Roll)))
   if (args.l0Anchor) S.l0.anchorCap = Math.min(128, Math.max(1, Number(args.l0Anchor)))
+  if (args.l0Bytes !== undefined) S.l0.bytesCap = Math.max(0, Number(args.l0Bytes))
   if (args.blockThresh !== undefined) S.blockThresh = Math.min(64, Math.max(1, Number(args.blockThresh)))
   if (args.changeGlobal !== undefined) S.changeGlobal = Math.min(1, Math.max(0.005, Number(args.changeGlobal)))
   if (!S.stream) {
@@ -1183,6 +1211,11 @@ async function cmdKfPromote(args) {
 
 function cmdL0Status() {
   const brief = (e) => ({ seq: e.seq, t: e.t, source: e.source ?? null, w: e.w, h: e.h, bytes: e.png ? e.png.length : 0 })
+  /* 唯一字节：两区共享 Buffer，简单求和会双计 */
+  const seen = new Set()
+  let uniqueBytes = 0
+  for (const e of S.l0.roll) if (!seen.has(e.seq)) { seen.add(e.seq); uniqueBytes += e.png ? e.png.length : 0 }
+  for (const e of S.l0.anchor) if (!seen.has(e.seq)) { seen.add(e.seq); uniqueBytes += e.png ? e.png.length : 0 }
   const sum = (list, cap) => ({
     count: list.length, cap,
     bytes: list.reduce((a, e) => a + (e.png ? e.png.length : 0), 0),
@@ -1192,6 +1225,7 @@ function cmdL0Status() {
     ok: true, seq: S.seq,
     roll: { ...sum(S.l0.roll, S.l0.rollCap), entries: S.l0.roll.map(brief) },
     anchor: { ...sum(S.l0.anchor, S.l0.anchorCap), entries: S.l0.anchor.map(brief) },
+    bytes: { unique: uniqueBytes, cap: S.l0.bytesCap, evicted: S.l0.evicted },
     framesDir: kfRoot(),
   }
 }
