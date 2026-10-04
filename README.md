@@ -36,12 +36,14 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live device` | 列出可连接的设备（adb 设备与 win32 窗口） |
 | `maafw-live connect` | 连接设备（进程态；多步操作用 repl） |
 | `maafw-live disconnect` | 断开并销毁 Tasker / Controller |
-| `maafw-live screencap` | 截一帧并落盘 |
-| `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI） |
-| `maafw-live run` | 运行 pipeline，节点事件按帧序对齐 |
+| `maafw-live screencap` | 截一帧并落盘（同时进 L0 缓存，有捕获身份可升格） |
+| `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI，按该帧捕获时尺寸换算） |
+| `maafw-live run` | 运行 pipeline；项目模式合成 pipeline_override 四级链；`--timeout 0` 不自动停；退出码按任务级 `record.ok` |
 | `maafw-live stop` | 停止运行中的任务 |
-| `maafw-live click` / `swipe` / `key` / `text` | 输入注入（经 maafw 控制器本体） |
-| `maafw-live reco` | 识别单测（子进程隔离）与阈值扫描 |
+| `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
+| `maafw-live reco` | 识别单测（子进程隔离）：`--param`/`--sweep` 阈值扫描，或 `--node` 整节点 JSON 透传（V1/V2） |
+| `maafw-live color` | 探色：ROI 实测均值 / HSV / 主色，选色后用 reco ColorMatch 出框 |
+| `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析 |
 | `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
 
 `env` 是前置命令：动手前先问它「现在有什么」，而不是各自写一遍环境检测。它有一条硬要求——
@@ -125,15 +127,15 @@ try {
 
 | 码 | 含义 |
 | --- | --- |
-| 0 | 正常完成，未发现问题 |
-| 1 | 命令自身失败（未预期异常、IO 错误） |
+| 0 | 正常完成，未发现问题（run 的任务级 `record.ok=true`） |
+| 1 | 命令自身失败（未预期异常、IO 错误）；**run 的任务失败**（`record.ok=false`，含超时被停止） |
 | 2 | 参数 / 用法错误 |
-| 3 | 跑完了，但发现了问题（校验不通过、存在待处理项） |
+| 3 | 跑完了，但发现了问题（校验不通过、存在待处理项；run 的**调用级**失败——未连接 / 资源缺失 / 已有任务在跑） |
 | 4 | 前置环境缺失 |
 | 130 | 用户中断 |
 
-关键是 **1 与 3 的区分**：1 是「没跑成」，3 是「跑成了但有问题」。校验器发现 3 个悬空引用不是执行失败，
-但也不该返回 0 让调用方以为一切正常。
+关键是 **1 与 3 的区分**：1 是「没跑成」（含任务失败），3 是「跑成了但有问题」。任务级结果看
+JSON 信封的 `data.record.ok`，不是外层 `ok`——外层只代表调用完成。
 
 ### 全局选项
 
@@ -188,8 +190,14 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 
 ## 路线图
 
-近期只做一件事：**关键帧留存与引用**——L0 原图缓存、升格、关键帧库与离线帧解析；契约、已知缺陷与验收用例都在
-[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)。之后是 `timing`（从帧流与节点事件反推 delay / timeout）。
+已落地的大件：**关键帧留存与引用**（L0 原图缓存
+滚动区 + 锚区、输入 / run 边界帧、升格与本地关键帧库、离线帧解析；契约与验收用例在
+[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)）、PI v2 解析补齐
+（import 合并、pipeline_override 四级链、preset 默认值）、变化检测双阈值（分块亮度差 + 事件携带
+变化区域 bbox）、输入原语补齐与探色。
+
+之后的大方向：`timing`（从帧流与节点事件反推 delay / timeout）、annotate 回画（轻量 SoM）、
+template crop（从 L0 原图裁模板 + 自匹配验证）。
 
 不在本包范围（各有归属）：
 
