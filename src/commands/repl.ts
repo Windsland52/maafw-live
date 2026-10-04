@@ -26,6 +26,7 @@ const HELP = [
   '  stream start [--fps n] [--scale n] | stream stop | stream status',
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
   '  color [--roi x,y,w,h]        探色（均值/HSV/主色，最新缓冲帧）',
+  '  crop --roi x,y,w,h | --point x,y [--pad n] [--out f.png]   模板裁剪（L0 原图 + 自匹配）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
@@ -168,6 +169,19 @@ export const replCommand: Command = {
               out(short(await act.colorProbe(client, {
                 ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
               }), 400))
+              break
+            }
+            case 'crop': {
+              const roiRaw = readFlag(tokens, '--roi')
+              const pointRaw = readFlag(tokens, '--point')
+              const padRaw = readFlag(tokens, '--pad')
+              out(short(await act.tplCrop(client, {
+                ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
+                ...(pointRaw ? { point: pointRaw.split(',').map((x) => Number(x)) } : {}),
+                ...(padRaw ? { pad: Number(padRaw) } : {}),
+                ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
+                ...(state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {}),
+              }), 600))
               break
             }
             case 'events': {

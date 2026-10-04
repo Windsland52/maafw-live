@@ -1103,6 +1103,155 @@ function cmdL0Status() {
   }
 }
 
+/* ────────────────────────── 模板裁剪（snap 收紧 + 自匹配精修） ──────────────────────────
+ * 输入：宽松框（或点+外扩）；源 = L0 原图（控制器分辨率——模板尺寸必须与识别空间一致，
+ * 不能从降采样小图裁）。收紧 = 与边框背景差的行列占比；精修 = 逐边 ±2px 贪心重试，
+ * 以"裁出的模板在同帧上的 TemplateMatch 得分"为目标函数（自匹配验证闭环）。 */
+function tightenBounds(rgb, w, h) {
+  const ring = Math.max(2, Math.round(Math.min(w, h) / 12))
+  let br = 0, bg = 0, bb = 0, bn = 0
+  for (let y = 0; y < h; y++) {
+    const edgeRow = y < ring || y >= h - ring
+    for (let x = 0; x < w; x++) {
+      if (!edgeRow && !(x < ring || x >= w - ring)) continue
+      const i = (y * w + x) * 3
+      br += rgb[i]; bg += rgb[i + 1]; bb += rgb[i + 2]; bn++
+    }
+  }
+  br /= bn; bg /= bn; bb /= bn
+  const TOL = 90   // 通道差之和超过此值视为"非背景"
+  const rowHit = new Array(h).fill(0)
+  const colHit = new Array(w).fill(0)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 3
+      if (Math.abs(rgb[i] - br) + Math.abs(rgb[i + 1] - bg) + Math.abs(rgb[i + 2] - bb) > TOL) {
+        rowHit[y]++; colHit[x]++
+      }
+    }
+  }
+  const FRAC = 0.12
+  let y0 = 0, y1 = h - 1
+  while (y0 < y1 && rowHit[y0] / w < FRAC) y0++
+  while (y1 > y0 && rowHit[y1] / w < FRAC) y1--
+  let x0 = 0, x1 = w - 1
+  while (x0 < x1 && colHit[x0] / h < FRAC) x0++
+  while (x1 > x0 && colHit[x1] / h < FRAC) x1--
+  if (y1 - y0 < 3 || x1 - x0 < 3) return null   // 内容撑满或无内容：交回调用方处理
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }
+}
+
+function cropRgb(rgb, sw, sh, box) {
+  const w = Math.min(box.w, sw - box.x), h = Math.min(box.h, sh - box.y)
+  const out = Buffer.alloc(w * h * 3)
+  for (let y = 0; y < h; y++) {
+    rgb.copy(out, y * w * 3, ((box.y + y) * sw + box.x) * 3, ((box.y + y) * sw + box.x + w) * 3)
+  }
+  return { w, h, data: out }
+}
+
+async function cmdTplCrop(args) {
+  /* 源帧：L0 原图（控制器分辨率），seq 或最新 */
+  const ent = args.seq !== undefined && args.seq !== null
+    ? (S.l0.anchor.find((x) => x.seq === Number(args.seq)) ?? S.l0.roll.find((x) => x.seq === Number(args.seq)))
+    : (S.l0.anchor[S.l0.anchor.length - 1] ?? S.l0.roll[S.l0.roll.length - 1] ?? null)
+  if (!ent) {
+    return { ok: false, error: 'L0 无可用原图：先 screencap / stream / 输入产生观测（seq=' + args.seq + '）' }
+  }
+  const dec = pngDecode(ent.png)
+  /* 宽松框：显式 roi，或点 + 外扩（点→ROI 派生与裁剪共享同一条 snap 链） */
+  let loose = null
+  if (Array.isArray(args.roi) && args.roi.length === 4) {
+    loose = args.roi.map(Number)
+  } else if (Array.isArray(args.point) && args.point.length === 2) {
+    const pad = Math.max(8, Number(args.pad ?? 24))
+    const [px, py] = args.point.map(Number)
+    loose = [px - pad, py - pad, pad * 2, pad * 2]
+  } else {
+    return { ok: false, error: '给 --roi x,y,w,h 或 --point x,y [--pad n]' }
+  }
+  const cl = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)))
+  const box0 = {
+    x: cl(loose[0], 0, dec.w - 8),
+    y: cl(loose[1], 0, dec.h - 8),
+    w: 0, h: 0,
+  }
+  box0.w = cl(loose[2], 8, dec.w - box0.x)
+  box0.h = cl(loose[3], 8, dec.h - box0.y)
+
+  const region = cropRgb(dec.data, dec.w, dec.h, box0)
+  const tight = tightenBounds(region.data, region.w, region.h)
+  let cand = tight
+    ? { x: box0.x + tight.x, y: box0.y + tight.y, w: tight.w, h: tight.h }
+    : { ...box0 }
+  const snapped = !!tight
+
+  /* 自匹配闭环：裁出的模板在同帧上匹配，逐边 ±2px 贪心取得分最高边界 */
+  const resourceDir = String(args.resourceDir || '')
+  const frameFile = path.join(os.tmpdir(), 'maa_tpl_frame_' + Date.now() + '.png')
+  const candFile = path.join(os.tmpdir(), 'maa_tpl_cand_' + Date.now() + '.png')
+  fs.writeFileSync(frameFile, ent.png)
+  const writeCand = (b) => {
+    const c = cropRgb(dec.data, dec.w, dec.h, b)
+    fs.writeFileSync(candFile, pngEncodeRGB(c.data, c.w, c.h))
+    return c
+  }
+  const score = async (b) => {
+    if (b.w < 8 || b.h < 8) return -1
+    writeCand(b)
+    const r = await spawnRecoChild({
+      resourceDir, type: 'TemplateMatch', image: frameFile, templateImage: candFile, cases: [{}],
+    }, 60000)
+    if (!r || !r.ok) return -1
+    const det = r.results && r.results[0] ? r.results[0].detail : null
+    const best = det && det.detail && det.detail.best
+    return best ? Number(best.score) : (r.results[0].ok ? 0.5 : 0)
+  }
+  let best = { score: await score(cand), tries: 1 }
+  const clampBox = (b) => ({
+    x: Math.max(0, b.x), y: Math.max(0, b.y),
+    w: Math.min(b.w, dec.w - Math.max(0, b.x)), h: Math.min(b.h, dec.h - Math.max(0, b.y)),
+  })
+  /* 逐边移动（每边独立尝试内收/外扩 2px，取更优） */
+  const moves = [
+    { k: 'left', apply: (b) => clampBox({ x: b.x - 2, y: b.y, w: b.w + 2, h: b.h }) },
+    { k: 'right', apply: (b) => clampBox({ x: b.x, y: b.y, w: b.w + 2, h: b.h }) },
+    { k: 'top', apply: (b) => clampBox({ x: b.x, y: b.y - 2, w: b.w, h: b.h + 2 }) },
+    { k: 'bottom', apply: (b) => clampBox({ x: b.x, y: b.y, w: b.w, h: b.h + 2 }) },
+    { k: 'left-in', apply: (b) => clampBox({ x: b.x + 2, y: b.y, w: b.w - 2, h: b.h }) },
+    { k: 'right-in', apply: (b) => clampBox({ x: b.x, y: b.y, w: b.w - 2, h: b.h }) },
+    { k: 'top-in', apply: (b) => clampBox({ x: b.x, y: b.y + 2, w: b.w, h: b.h - 2 }) },
+    { k: 'bottom-in', apply: (b) => clampBox({ x: b.x, y: b.y, w: b.w, h: b.h - 2 }) },
+  ]
+  for (let round = 0; round < 2; round++) {
+    let improved = false
+    for (const mv of moves) {
+      const nb = mv.apply(cand)
+      if (nb.w < 8 || nb.h < 8 || (nb.x + nb.w > dec.w) || (nb.y + nb.h > dec.h)) continue
+      if (nb.x === cand.x && nb.y === cand.y && nb.w === cand.w && nb.h === cand.h) continue
+      const s = await score(nb)
+      best.tries++
+      if (s > best.score + 1e-3) { cand = nb; best.score = s; improved = true }
+    }
+    if (!improved) break
+  }
+  try { fs.rmSync(frameFile, { force: true }); fs.rmSync(candFile, { force: true }) } catch (e) { /* ignore */ }
+
+  const final = cropRgb(dec.data, dec.w, dec.h, cand)
+  const out = args.out || path.join(process.cwd(), 'maa_tpl_' + Date.now() + '.png')
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
+  return {
+    ok: true, path: out, seq: ent.seq,
+    box: [cand.x, cand.y, cand.w, cand.h],
+    loose: [box0.x, box0.y, box0.w, box0.h],
+    snapped, score: Math.round(best.score * 1000) / 1000, tries: best.tries,
+    w: final.w, h: final.h,
+    ctrlW: dec.w, ctrlH: dec.h,
+    ...(best.score < 0.7 ? { warn: '自匹配得分偏低（' + best.score + '）：模板可能不够独特，考虑换更紧的框或改用点选路径' } : {}),
+  }
+}
+
 /* ────────────────────────── 探色（ROI 实测，模型只选色不报色值） ──────────────────────────
  * 在缓冲帧（小图）上实测 ROI 的均值/HSV/主色；坐标用控制器空间（与 frame_get --roi 同语义，
  * 按该帧捕获时尺寸换算）。选色后用 reco ColorMatch 出框（走已修好的参数透传链）。 */
@@ -1185,6 +1334,7 @@ const handlers = {
   stream_stop: cmdStreamStop,
   stream_status: cmdStreamStatus,
   frame_get: cmdFrameGet,
+  tpl_crop: cmdTplCrop,
   color_probe: cmdColorProbe,
   l0_status: cmdL0Status,
   kf_promote: cmdKfPromote,
