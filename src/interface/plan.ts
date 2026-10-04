@@ -37,6 +37,8 @@ export interface ControllerPlan {
 export interface ResourcePlan {
   paths: string[]
   names: string[]
+  /** 本次实际选中的 resource 名（attach_resource_path 之外的来源条目） */
+  selected: string | null
 }
 
 const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad' }
@@ -179,29 +181,39 @@ export function planController(
 }
 
 /**
- * 解析资源路径：声明目录相对 interface.json、按声明顺序叠加（后者覆盖前者），
- * 只取适用于所选控制器的条目；attach_resource_path 在选中控制器后追加。
- * override（--resource）直接替换整组。
+ * 解析资源路径：resource[] 是互斥单选（Client 语义）——不传 override 时取第一个适用于
+ * 所选控制器的条目，条目自身多路径按声明顺序叠加（如"B 服"= base + bilibili）；
+ * attach_resource_path 在选中控制器后追加。override（--resource）先按资源名匹配，
+ * 匹配不上再按文件系统路径解释（原有行为）。
  */
 export function resolveResourcePaths(
   loaded: LoadedInterface,
   controllerName?: string,
   override?: string,
 ): ResourcePlan {
-  if (override) return { paths: [resolve(override)], names: ['(--resource)'] }
   const dir = loaded.dir
-  if (!dir) return { paths: [], names: [] }
+  if (override) {
+    const byName = loaded.resources.find((r) => r.name === override)
+    if (byName && dir) {
+      const paths = [...new Set(byName.paths.map((p) => resolve(dir, p)))]
+      return { paths, names: [byName.name], selected: byName.name }
+    }
+    return { paths: [resolve(override)], names: ['(--resource)'], selected: null }
+  }
+  if (!dir) return { paths: [], names: [], selected: null }
 
+  const applicable = loaded.resources.filter(
+    (r) => !controllerName || !r.controllers.length || r.controllers.includes(controllerName),
+  )
   const paths: string[] = []
-  const names: string[] = []
-  for (const r of loaded.resources) {
-    if (controllerName && r.controllers.length && !r.controllers.includes(controllerName)) continue
-    for (const p of r.paths) paths.push(resolve(dir, p))
-    names.push(r.name)
+  let selected: string | null = null
+  if (applicable.length) {
+    selected = applicable[0].name
+    for (const p of applicable[0].paths) paths.push(resolve(dir, p))
   }
   if (controllerName) {
     const c = loaded.controllers.find((x) => x.name === controllerName)
     for (const p of c?.attachResourcePath ?? []) paths.push(resolve(dir, p))
   }
-  return { paths: [...new Set(paths)], names }
+  return { paths: [...new Set(paths)], names: selected ? [selected] : [], selected }
 }

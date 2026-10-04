@@ -2,7 +2,8 @@
  * 项目声明（interface.json / ProjectInterface v2）的窄解析与连接规划。
  *
  * 这是"认识项目"的唯一一份实现：控制器声明 → daemon connect 参数、
- * 资源声明 → resource 目录、task 声明 → run 入口解析。
+ * 资源声明 → resource 目录、task 声明 → run 入口解析、
+ * option/preset → pipeline_override 四级合并链。
  */
 export { parseJsonc } from './jsonc.js'
 export {
@@ -11,10 +12,13 @@ export {
   type DisplayDecl,
   type GamepadDecl,
   type InterfaceController,
+  type InterfaceOption,
+  type InterfacePreset,
   type InterfaceProblem,
   type InterfaceResource,
   type InterfaceTask,
   type LoadedInterface,
+  type OptionCase,
   type Win32Decl,
 } from './load.js'
 export {
@@ -25,3 +29,4 @@ export {
   type PlanOverrides,
   type ResourcePlan,
 } from './plan.js'
+export { computePipelineOverride, type OverrideInput, type OverrideResult } from './override.js'

@@ -45,6 +45,8 @@ export interface InterfaceController {
   gamepad?: GamepadDecl
   /** v2.2.0：在 resource.path 之后追加加载的资源目录（相对 interface.json 所在目录） */
   attachResourcePath: string[]
+  /** v2.3.0：控制器级配置项名单（override 链第三级） */
+  option?: string[]
 }
 
 export interface InterfaceResource {
@@ -53,12 +55,45 @@ export interface InterfaceResource {
   paths: string[]
   /** 只对这些控制器生效；空数组 = 全部 */
   controllers: string[]
+  /** v2.3.0：资源级配置项名单（override 链第二级） */
+  option?: string[]
 }
 
 export interface InterfaceTask {
   name: string
   /** pipeline 入口节点名；缺省时入口即任务名 */
   entry?: string
+  /** 只在这些控制器下可用（隐藏/禁用语义）；空 = 全部 */
+  controller?: string[]
+  /** 只在这些资源下可用；空 = 全部 */
+  resource?: string[]
+  /** 配置项键名（按展示顺序）；对应 InterfaceOption 字典的键 */
+  option?: string[]
+}
+
+/** option 字典条目：switch/select/checkbox 的 case 携带 pipeline_override。 */
+export interface OptionCase {
+  name: string
+  pipelineOverride?: Record<string, unknown>
+  /** 选中该 case 后生效的子配置项 */
+  option?: string[]
+}
+
+export interface InterfaceOption {
+  name: string
+  type: string
+  cases: OptionCase[]
+  /** 初始选中：switch/select 单 case 名；checkbox 为 case 名数组 */
+  defaultCase?: string | string[]
+  /** 适用性过滤（v2.3.1：不满足的 option 不得产生 pipeline_override） */
+  controller?: string[]
+  resource?: string[]
+}
+
+/** preset：任务与 option 取值的快照（v2.3.0），应用时覆盖 default_case。 */
+export interface InterfacePreset {
+  name: string
+  task: Array<{ name: string; enabled?: boolean; option?: Record<string, unknown> }>
 }
 
 export interface LoadedInterface {
@@ -71,6 +106,13 @@ export interface LoadedInterface {
   controllers: InterfaceController[]
   resources: InterfaceResource[]
   tasks: InterfaceTask[]
+  /** option 字典（主文件 + import 合并，后导入覆盖同名） */
+  options: Record<string, InterfaceOption>
+  presets: InterfacePreset[]
+  /** 全局配置项键名（override 链最低级） */
+  globalOption: string[]
+  /** controller 启动前任务；CLI 不执行，仅用于警告 */
+  pretask: Array<{ name?: string; exec?: string }>
   problems: InterfaceProblem[]
 }
 
@@ -114,6 +156,10 @@ export function loadInterface(dir: string): LoadedInterface {
     controllers: [],
     resources: [],
     tasks: [],
+    options: {},
+    presets: [],
+    globalOption: [],
+    pretask: [],
     problems: [],
   }
   if (!file) {
@@ -178,6 +224,7 @@ export function loadInterface(dir: string): LoadedInterface {
           }
         : undefined,
       attachResourcePath: strList(c.attach_resource_path),
+      option: strList(c.option),
     })
   }
   if (!controllers.length) problems.push({ message: 'controller[] 为空：项目没有声明任何控制器' })
@@ -191,18 +238,123 @@ export function loadInterface(dir: string): LoadedInterface {
       problems.push({ message: 'resource 项缺少 name 或 path，已跳过' })
       continue
     }
-    resources.push({ name, paths, controllers: strList(r.controller) })
+    resources.push({ name, paths, controllers: strList(r.controller), option: strList(r.option) })
   }
 
   const tasks: InterfaceTask[] = []
-  for (const item of Array.isArray(o.task) ? o.task : []) {
-    const t = obj(item)
-    const name = t ? str(t.name) : undefined
-    if (!t || !name) {
-      problems.push({ message: 'task 项缺少 name，已跳过' })
+  const options: Record<string, InterfaceOption> = {}
+  const presets: InterfacePreset[] = []
+  const globalOption: string[] = []
+  const pretask: Array<{ name?: string; exec?: string }> = []
+
+  const readTasks = (list: unknown, src: string): void => {
+    for (const item of Array.isArray(list) ? list : []) {
+      const t = obj(item)
+      const name = t ? str(t.name) : undefined
+      if (!t || !name) {
+        problems.push({ message: 'task 项缺少 name，已跳过（' + src + '）' })
+        continue
+      }
+      tasks.push({
+        name,
+        entry: str(t.entry),
+        controller: strList(t.controller),
+        resource: strList(t.resource),
+        option: strList(t.option),
+      })
+    }
+  }
+  const readOptions = (dict: unknown, src: string): void => {
+    const d = obj(dict)
+    if (!d) {
+      if (dict !== undefined) problems.push({ message: 'option 应为对象（键=配置项名），已忽略（' + src + '）' })
+      return
+    }
+    for (const [key, val] of Object.entries(d)) {
+      const v = obj(val)
+      if (!v || !str(v.type)) {
+        problems.push({ message: 'option ' + key + ' 缺少 type，已跳过（' + src + '）' })
+        continue
+      }
+      const cases: OptionCase[] = []
+      for (const cs of Array.isArray(v.cases) ? v.cases : []) {
+        const c2 = obj(cs)
+        const cname = c2 ? str(c2.name) : undefined
+        if (!c2 || !cname) continue
+        const po = obj(c2.pipeline_override)
+        cases.push({
+          name: cname,
+          ...(po ? { pipelineOverride: po } : {}),
+          option: strList(c2.option),
+        })
+      }
+      options[key] = {
+        name: key,
+        type: String(v.type),
+        cases,
+        ...(v.default_case !== undefined ? { defaultCase: v.default_case as string | string[] } : {}),
+        controller: strList(v.controller),
+        resource: strList(v.resource),
+      }
+    }
+  }
+  const readPresets = (list: unknown): void => {
+    for (const item of Array.isArray(list) ? list : []) {
+      const p = obj(item)
+      const name = p ? str(p.name) : undefined
+      if (!p || !name) continue
+      const tlist: InterfacePreset['task'] = []
+      for (const tp of Array.isArray(p.task) ? p.task : []) {
+        const t2 = obj(tp)
+        const tname = t2 ? str(t2.name) : undefined
+        if (!t2 || !tname) continue
+        const pv = obj(t2.option)
+        tlist.push({ name: tname, enabled: t2.enabled !== false, ...(pv ? { option: pv } : {}) })
+      }
+      presets.push({ name, task: tlist })
+    }
+  }
+
+  readTasks(o.task, '主文件')
+  readOptions(o.option, '主文件')
+  readPresets(o.preset)
+  for (const g of strList(o.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
+  const mainPretasks = Array.isArray(o.pretask) ? o.pretask : (o.pretask !== undefined ? [o.pretask] : [])
+  for (const pt of mainPretasks) {
+    const p2 = obj(pt)
+    if (p2) pretask.push({ name: str(p2.name), exec: str(p2.exec) })
+  }
+
+  /* import 合并（v2.2.0）：只合 task/option/preset/global_option/pretask（及 group/setting，本工具不消费）。
+   * controller/resource 不可导入——子文件声明了也忽略并记 problems。循环导入用 visited 集合挡住。 */
+  const seen = new Set([file])
+  const imports = strList(o.import)
+  for (const rel of imports) {
+    const childFile = join(dirname(file), rel)
+    if (seen.has(childFile)) {
+      problems.push({ message: 'import 循环引用，已跳过：' + rel })
       continue
     }
-    tasks.push({ name, entry: str(t.entry) })
+    seen.add(childFile)
+    let child: Record<string, unknown> | null = null
+    try {
+      child = obj(parseJsonc(readFileSync(childFile, 'utf8')))
+    } catch (e) {
+      problems.push({ message: 'import 文件读取/解析失败：' + rel + '（' + String((e as Error).message) + '）' })
+      continue
+    }
+    if (!child) continue
+    if (child.controller !== undefined || child.resource !== undefined) {
+      problems.push({ message: 'import 文件 ' + rel + ' 声明了 controller/resource：协议不可导入，已忽略' })
+    }
+    readTasks(child.task, rel)
+    readOptions(child.option, rel)
+    readPresets(child.preset)
+    for (const g of strList(child.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
+    for (const pt of Array.isArray(child.pretask) ? child.pretask : []) {
+      const p2 = obj(pt)
+      if (p2) pretask.push({ name: str(p2.name), exec: str(p2.exec) })
+    }
   }
 
   return {
@@ -212,6 +364,10 @@ export function loadInterface(dir: string): LoadedInterface {
     controllers,
     resources,
     tasks,
+    options,
+    presets,
+    globalOption,
+    pretask,
     problems,
   }
 }

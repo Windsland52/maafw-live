@@ -7,6 +7,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { defaultRunDir } from '../client/daemon.js'
+import { computePipelineOverride } from '../interface/index.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
@@ -260,14 +261,16 @@ export const frameCommand: Command = {
 export const runCommand: Command = {
   name: 'run',
   summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐。退出码按任务级 record.ok',
-  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>]\n' +
-    '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop',
+  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>] [--preset <name>] [--resource <名|路径>]\n' +
+    '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
+    '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖',
   options: {
     ...CONNECT_OPTIONS,
     entry: { type: 'string' },
     'resource-dir': { type: 'string' },
     timeout: { type: 'string' },
     override: { type: 'string' },
+    preset: { type: 'string' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -300,6 +303,9 @@ export const runCommand: Command = {
         const s = await ensureSession(client, o)
         let args: Record<string, unknown>
         let resolvedEntry: string = entry
+        let chain: ReturnType<typeof computePipelineOverride> | null = null
+        let extraWarns: string[] = []
+        let appliedLines: string[] = []
         if (o.project) {
           const paths = s.plan?.resource?.paths ?? []
           if (!paths.length) {
@@ -307,9 +313,48 @@ export const runCommand: Command = {
           }
           const task = s.plan?.loaded.tasks.find((t) => t.name === entry || t.entry === entry)
           resolvedEntry = task?.entry ?? entry
-          args = { resourceDirs: paths, entry: resolvedEntry, override, timeoutMs }
+          /* task 适用性（task.controller / task.resource 声明） */
+          const ctrlName = s.plan?.controllerName ?? null
+          const resName = s.plan?.resource?.selected ?? null
+          if (task?.controller?.length && ctrlName && !task.controller.includes(ctrlName)) {
+            return fail('TASK_NOT_APPLICABLE',
+              '任务 ' + task.name + ' 不支持当前控制器 ' + ctrlName + '（声明：' + task.controller.join(' / ') + '）',
+              '换 --controller ' + task.controller[0] + '，或选别的任务', EXIT.FINDINGS)
+          }
+          if (task?.resource?.length && resName && !task.resource.includes(resName)) {
+            extraWarns.push('任务 ' + task.name + ' 声明资源 ' + task.resource.join(' / ') + '，当前选中的是 ' + resName)
+          }
+          /* pipeline_override 四级合并链（preset > default_case 取值） + 用户 --override 最后覆盖 */
+          chain = computePipelineOverride({
+            loaded: s.plan!.loaded,
+            controllerName: ctrlName,
+            resourceName: resName,
+            taskName: task?.name ?? null,
+            presetName: typeof ctx.values.preset === 'string' ? ctx.values.preset : null,
+          })
+          extraWarns = [...extraWarns, ...chain.warns]
+          appliedLines = chain.applied
+          const pt = s.plan!.loaded.pretask
+          if (pt.length) {
+            extraWarns.push('项目声明了 ' + pt.length + ' 条 pretask（' + pt.map((p) => p.exec ?? p.name ?? '?').join(' , ') + '），本 CLI 不执行——需自行保证前置条件')
+          }
+          args = { resourceDirs: paths, entry: resolvedEntry, override: { ...chain.override }, timeoutMs }
         } else {
           args = { resourceDir, entry, override, timeoutMs }
+        }
+        if (o.project && chain) {
+          /* 用户 --override 最后覆盖合成结果（同节点字段替换） */
+          const merged = args.override as Record<string, unknown>
+          for (const [node, fields] of Object.entries(override)) {
+            if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
+              merged[node] = {
+                ...((merged[node] as Record<string, unknown>) ?? {}),
+                ...(fields as Record<string, unknown>),
+              }
+            } else {
+              merged[node] = fields
+            }
+          }
         }
         const r = await act.run(client, args, timeoutMs)
         if (r.ok === false || !r.record) {
@@ -318,7 +363,7 @@ export const runCommand: Command = {
             exitCode: EXIT.FINDINGS,
             human: [...describeSession(s), '调用失败：' + String(r.error ?? 'run 未返回记录')],
             data: r,
-            warnings: (r.warns as string[] | undefined) ?? [],
+            warnings: [...extraWarns, ...((r.warns as string[] | undefined) ?? [])],
           }
         }
         /* 任务级结果以 record.ok 为准（daemon 外层 ok 只代表调用完成）。
@@ -340,6 +385,7 @@ export const runCommand: Command = {
           '任务 ' + resolvedEntry + '：' + (taskOk ? '完成' : (rec.stopped ? '超时被停止（视为失败）' : '失败')) +
             '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms，帧序 ' +
             String(rec.startSeq) + '..' + String(rec.endSeq) + '）',
+          ...appliedLines.map((l) => '  override: ' + l),
           ...nodes.map((n) => '  [' + n.status + '] ' + n.name + '  ' + n.ms + 'ms'),
         ]
         if (!taskOk) {
@@ -349,7 +395,7 @@ export const runCommand: Command = {
           exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
           human,
           data: r,
-          warnings: (r.warns as string[] | undefined) ?? [],
+          warnings: [...extraWarns, ...((r.warns as string[] | undefined) ?? [])],
         }
       })
     } catch (e) {
