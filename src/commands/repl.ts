@@ -80,8 +80,27 @@ export const replCommand: Command = {
     }
 
     const rl = readline.createInterface({ input: process.stdin, terminal: process.stdin.isTTY === true })
-    const ask = (): Promise<string | null> =>
-      new Promise((resolve) => rl.once('line', (line: string) => resolve(line)))
+    /* 行队列：readline 的 'line' 事件不排队——命令 await 期间到达的行会被 once('line') 直接丢失，
+     * 管道驱动的多行脚本（printf 'connect…\nscreencap\nquit\n' | repl）就死在第二行。
+     * 持续监听 + 队列缓冲，ask() 从队列取或挂起等新行/EOF。 */
+    let rlEnded = false
+    const lineQueue: string[] = []
+    let lineWake: (() => void) | null = null
+    rl.on('line', (l: string) => {
+      lineQueue.push(l)
+      if (lineWake) { const w = lineWake; lineWake = null; w() }
+    })
+    rl.on('close', () => {
+      rlEnded = true
+      if (lineWake) { const w = lineWake; lineWake = null; w() }
+    })
+    const ask = async (): Promise<string | null> => {
+      for (;;) {
+        if (lineQueue.length) return lineQueue.shift() ?? null
+        if (rlEnded) return null
+        await new Promise<void>((r) => { lineWake = r })
+      }
+    }
 
     try {
       for (;;) {
