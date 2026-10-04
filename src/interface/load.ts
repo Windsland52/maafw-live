@@ -96,6 +96,13 @@ export interface InterfacePreset {
   task: Array<{ name: string; enabled?: boolean; option?: Record<string, unknown> }>
 }
 
+/** PI `agent` 声明：宿主侧子进程（如 uv run python agent/main.py），经 agent 协议注册 custom
+ * action / recognition。maa-node 绑定未暴露 AgentClient 桥接——本工具只能诊断，不能 spawn。 */
+export interface InterfaceAgent {
+  exec: string
+  args: string[]
+}
+
 export interface LoadedInterface {
   /** interface.json 绝对路径；未找到为 null */
   file: string | null
@@ -113,6 +120,8 @@ export interface LoadedInterface {
   globalOption: string[]
   /** controller 启动前任务；CLI 不执行，仅用于警告 */
   pretask: Array<{ name?: string; exec?: string }>
+  /** agent 子进程声明；CLI 未桥接（绑定无 AgentClient），仅用于警告与失败归因 */
+  agents: InterfaceAgent[]
   problems: InterfaceProblem[]
 }
 
@@ -160,6 +169,7 @@ export function loadInterface(dir: string): LoadedInterface {
     presets: [],
     globalOption: [],
     pretask: [],
+    agents: [],
     problems: [],
   }
   if (!file) {
@@ -246,6 +256,16 @@ export function loadInterface(dir: string): LoadedInterface {
   const presets: InterfacePreset[] = []
   const globalOption: string[] = []
   const pretask: Array<{ name?: string; exec?: string }> = []
+  const agents: InterfaceAgent[] = []
+
+  const readAgents = (list: unknown): void => {
+    for (const item of Array.isArray(list) ? list : (list !== undefined ? [list] : [])) {
+      const a = obj(item)
+      const exec = a ? str(a.child_exec) : undefined
+      if (!a || !exec) continue
+      agents.push({ exec, args: strList(a.child_args) })
+    }
+  }
 
   const readTasks = (list: unknown, src: string): void => {
     for (const item of Array.isArray(list) ? list : []) {
@@ -318,6 +338,7 @@ export function loadInterface(dir: string): LoadedInterface {
   readTasks(o.task, '主文件')
   readOptions(o.option, '主文件')
   readPresets(o.preset)
+  readAgents(o.agent)
   for (const g of strList(o.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
   const mainPretasks = Array.isArray(o.pretask) ? o.pretask : (o.pretask !== undefined ? [o.pretask] : [])
   for (const pt of mainPretasks) {
@@ -350,6 +371,7 @@ export function loadInterface(dir: string): LoadedInterface {
     readTasks(child.task, rel)
     readOptions(child.option, rel)
     readPresets(child.preset)
+    readAgents(child.agent)
     for (const g of strList(child.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
     for (const pt of Array.isArray(child.pretask) ? child.pretask : []) {
       const p2 = obj(pt)
@@ -368,6 +390,7 @@ export function loadInterface(dir: string): LoadedInterface {
     presets,
     globalOption,
     pretask,
+    agents,
     problems,
   }
 }

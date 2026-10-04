@@ -338,6 +338,12 @@ export const runCommand: Command = {
           if (pt.length) {
             extraWarns.push('项目声明了 ' + pt.length + ' 条 pretask（' + pt.map((p) => p.exec ?? p.name ?? '?').join(' , ') + '），本 CLI 不执行——需自行保证前置条件')
           }
+          const agents = s.plan!.loaded.agents
+          if (agents.length) {
+            extraWarns.push('项目声明了 ' + agents.length + ' 个 agent 子进程（' +
+              agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') +
+              '）；本 CLI 未桥接 agent（maa-node 绑定无 AgentClient），依赖 custom action/recognition 的节点会以 Action is null 失败')
+          }
           args = { resourceDirs: paths, entry: resolvedEntry, override: { ...chain.override }, timeoutMs }
         } else {
           args = { resourceDir, entry, override, timeoutMs }
@@ -390,6 +396,16 @@ export const runCommand: Command = {
         ]
         if (!taskOk) {
           human.push('', 'daemon 原生日志尾部：', ...client.logTail(20).map((l) => '  ' + l))
+          /* agent 缺位的失败归因：原生层只会说 Action is null，翻译成可行动的诊断 */
+          if (/Action is null|Recognition is null/.test(client.logTail(40).join('\n'))) {
+            const agents = s.plan?.loaded.agents ?? []
+            human.push('',
+              '诊断：日志出现 Action/Recognition is null —— 节点依赖项目 agent 注册的 custom 回调。' +
+                (agents.length
+                  ? '本项目声明了 agent：' + agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') + '，本 CLI 未桥接。'
+                  : '项目未声明 agent，检查节点 custom_action/custom_recognition 拼写。'))
+            extraWarns.push('任务失败疑似缺 agent custom 回调（Action/Recognition is null）')
+          }
         }
         return {
           exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
