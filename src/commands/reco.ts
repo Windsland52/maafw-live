@@ -22,8 +22,9 @@ function parseJson<T>(raw: unknown, what: string): { value?: T; error?: string }
 
 export const recoCommand: Command = {
   name: 'reco',
-  summary: '识别单测（子进程隔离）+ 阈值扫描：给资源目录与图像或缓冲帧',
-  usage: 'maafw-live reco --type TemplateMatch --resource-dir <dir> --image <png> [--param <json>] [--sweep <json>] [--project <dir>]',
+  summary: '识别单测（子进程隔离）：--param/--sweep 阈值扫描，或 --node 整节点 JSON 透传',
+  usage: 'maafw-live reco --type TemplateMatch --resource-dir <dir> --image <png> [--param <json>] [--sweep <json>] [--project <dir>]\n' +
+    '       maafw-live reco --node <json> --resource-dir <dir> --image <png>   （V1 扁平 / V2 嵌套节点均原样透传）',
   options: {
     ...CONNECT_OPTIONS,
     type: { type: 'string' },
@@ -32,6 +33,7 @@ export const recoCommand: Command = {
     seq: { type: 'string' },
     param: { type: 'string' },
     sweep: { type: 'string' },
+    node: { type: 'string' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -39,6 +41,16 @@ export const recoCommand: Command = {
     const type = typeof ctx.values.type === 'string' ? ctx.values.type : 'TemplateMatch'
     const image = typeof ctx.values.image === 'string' ? ctx.values.image : undefined
     const seq = typeof ctx.values.seq === 'string' ? Number(ctx.values.seq) : undefined
+    const nodeRaw = typeof ctx.values.node === 'string' ? ctx.values.node : undefined
+    let node: Record<string, unknown> | undefined
+    if (nodeRaw !== undefined) {
+      const parsed = parseJson<Record<string, unknown>>(nodeRaw, '--node')
+      if (parsed.error) return fail('BAD_ARGUMENTS', parsed.error, undefined, EXIT.USAGE)
+      if (!parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+        return fail('BAD_ARGUMENTS', '--node 必须是 JSON 对象（pipeline 节点）', undefined, EXIT.USAGE)
+      }
+      node = parsed.value
+    }
     const param = parseJson<Record<string, unknown>>(ctx.values.param, '--param')
     if (param.error) return fail('BAD_ARGUMENTS', param.error, undefined, EXIT.USAGE)
     const sweep = parseJson<Record<string, unknown>>(ctx.values.sweep, '--sweep')
@@ -61,13 +73,14 @@ export const recoCommand: Command = {
           resourceDir, type,
           ...(image ? { image } : {}),
           ...(seq !== undefined ? { seq } : {}),
-          ...(param.value ? { param: param.value } : {}),
-          ...(sweep.value ? { sweep: sweep.value } : {}),
+          ...(node ? { node } : {}),
+          ...(!node && param.value ? { param: param.value } : {}),
+          ...(!node && sweep.value ? { sweep: sweep.value } : {}),
         })
         const results = (r.results as Array<{ param: Record<string, unknown>; ms: number; ok: boolean }> | undefined) ?? []
         const human = [
           ...describeSession(s),
-          '识别 ' + type + '：' + results.length + ' 例',
+          '识别 ' + String(r.type ?? type) + '：' + results.length + ' 例' + (node ? '（整节点透传）' : ''),
           ...results.map((x) => '  ' + (x.ok ? '[命中]' : '[未中]') + ' ' + JSON.stringify(x.param) + '  ' + x.ms + 'ms'),
         ]
         if (r.ok === false) human.push('error: ' + String(r.error))

@@ -693,11 +693,23 @@ async function cmdRecoTest(args) {
     fs.writeFileSync(imageFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
     meta = { seq: fr.seq, w: fr.w, h: fr.h, t: fr.t }
   }
+  /* --node：整节点 JSON 原样透传给子进程（V1 扁平 / V2 嵌套由框架解析，daemon 不转换） */
+  const node = args.node && typeof args.node === 'object' && !Array.isArray(args.node) ? args.node : null
+  if (node && (typeof node.recognition !== 'string') &&
+      !(node.recognition && typeof node.recognition === 'object' && !Array.isArray(node.recognition))) {
+    return { ok: false, error: '--node 缺少可用的 recognition 字段（V1 字符串或 V2 {type,param}）' }
+  }
   const baseParam = args.param && typeof args.param === 'object' ? args.param : {}
   const sweep = args.sweep && typeof args.sweep === 'object' ? args.sweep : null
   const cases = []
   if (sweep && typeof sweep.min === 'number' && typeof sweep.max === 'number') {
-    for (let v = sweep.min; v <= sweep.max + 1e-9; v += Math.abs(sweep.step || 1)) {
+    /* step 带方向：升序 0.5→0.9 / 降序 0.9→0.5 都合法；区间为空明确报错，不静默测个空 */
+    const step = sweep.step !== undefined && Number(sweep.step) !== 0 ? Number(sweep.step) : 1
+    const up = step > 0
+    if ((up && sweep.min > sweep.max) || (!up && sweep.min < sweep.max)) {
+      return { ok: false, error: 'sweep 区间为空：min=' + sweep.min + ' max=' + sweep.max + ' step=' + step + '（step 带方向）' }
+    }
+    for (let v = sweep.min; up ? v <= sweep.max + 1e-9 : v >= sweep.max - 1e-9; v += step) {
       cases.push({ ...baseParam, [String(sweep.key || 'threshold')]: Math.round(v * 1000) / 1000 })
     }
   } else cases.push(baseParam)
@@ -707,9 +719,15 @@ async function cmdRecoTest(args) {
     image: imageFile,
     /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
     ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
-    cases,
+    ...(node ? { node } : { cases }),
   }, 90000)
-  if (r && r.ok) return { ok: true, type: args.type, meta, results: r.results }
+  if (r && r.ok) {
+    const rec = node && node.recognition
+    const shownType = node
+      ? (rec && typeof rec === 'object' ? String(rec.type ?? 'DirectHit') : String(rec))
+      : args.type
+    return { ok: true, type: shownType, meta, results: r.results }
+  }
   return { ok: false, error: (r && r.error) || 'reco 失败', meta }
 }
 
