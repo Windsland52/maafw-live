@@ -311,27 +311,41 @@ export const runCommand: Command = {
           args = { resourceDir, entry, override, timeoutMs }
         }
         const r = await act.run(client, args, timeoutMs)
-        const rec = (r.record ?? r) as {
+        if (r.ok === false || !r.record) {
+          /* 调用级失败：任务根本没跑起来（未连接 / 资源缺失 / 已有任务在跑）→ FINDINGS */
+          return {
+            exitCode: EXIT.FINDINGS,
+            human: [...describeSession(s), '调用失败：' + String(r.error ?? 'run 未返回记录')],
+            data: r,
+            warnings: (r.warns as string[] | undefined) ?? [],
+          }
+        }
+        /* 任务级结果以 record.ok 为准（daemon 外层 ok 只代表调用完成）。
+         * 任务失败退出 FAIL——不能吞成 0，也不占用 FINDINGS（那是调用级失败的语义）。 */
+        const rec = r.record as {
+          ok?: boolean
           status?: unknown
+          stopped?: boolean
           durationMs?: number
           nodes?: Array<{ name: string; status: string; ms: number }>
           startSeq?: number | null
           endSeq?: number
           framesCaptured?: number
         }
+        const taskOk = rec.ok === true
         const nodes = rec.nodes ?? []
         const human = [
           ...describeSession(s),
-          '任务 ' + resolvedEntry + '：' + (r.ok === false ? '失败' : '完成') +
+          '任务 ' + resolvedEntry + '：' + (taskOk ? '完成' : (rec.stopped ? '超时被停止（视为失败）' : '失败')) +
             '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms，帧序 ' +
             String(rec.startSeq) + '..' + String(rec.endSeq) + '）',
           ...nodes.map((n) => '  [' + n.status + '] ' + n.name + '  ' + n.ms + 'ms'),
         ]
-        if (r.ok === false) {
+        if (!taskOk) {
           human.push('', 'daemon 原生日志尾部：', ...client.logTail(20).map((l) => '  ' + l))
         }
         return {
-          exitCode: r.ok === false ? EXIT.FINDINGS : EXIT.OK,
+          exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
           human,
           data: r,
           warnings: (r.warns as string[] | undefined) ?? [],
