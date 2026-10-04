@@ -860,7 +860,84 @@ function spawnRecoChild(payload, timeoutMs) {
   })
 }
 
+/* 识别详情瘦身：像素类字段（draws / raw）一律不带出去（与 reco_child 同一规则）。 */
+function stripDetail(d) {
+  if (!d || typeof d !== 'object') return null
+  const copy = { ...d }
+  delete copy.draws
+  delete copy.raw
+  return copy
+}
+
+/**
+ * 节点级单测（--act）：识别拿框 → 用框 run_action，动作半在真机 daemon 侧执行。
+ * 与 reco_child 的静态路径互补：那条只测识别（图像假控制器、无输入）；这条串起两半，
+ * 专测 target 框语义（框中心/偏移）与组合动作。识别输入 = 抓帧时的当前画面原图
+ * （也是 action-before 边界锚点），动作执行后的画面另抓 action-after——效果可复核。
+ */
+async function recoActTest(args, node) {
+  const res = await ensureResource(String(args.resourceDir))
+  const tasker = ensureTasker()
+  tasker.resource = res
+  tasker.controller = S.ctrl
+  const before = await captureNow('action-before')
+  if (!before.ok) return { ok: false, error: '识别输入抓帧失败：' + before.error }
+  const imgBuf = S.l0.roll[S.l0.roll.length - 1].png
+  const image = imgBuf.buffer.slice(imgBuf.byteOffset, imgBuf.byteOffset + imgBuf.byteLength)
+  let out = null
+  res.register_custom_action('@reco/act', async (self) => {
+    let detail = null
+    try {
+      detail = await self.context.run_recognition('@reco/node', image, { '@reco/node': node })
+    } catch (e) {
+      out = { ok: false, stage: 'recognition', error: String(e && e.message || e) }
+      return true
+    }
+    if (!detail || !detail.box) {
+      out = { ok: false, stage: 'recognition', miss: true, ...(detail ? { reco: stripDetail(detail) } : {}) }
+      return true
+    }
+    const rec = stripDetail(detail)
+    try {
+      const act = await self.context.run_action('@reco/node', detail.box, JSON.stringify(rec), { '@reco/node': node })
+      out = { ok: !!act, stage: 'action', reco: rec, action: stripDetail(act) }
+    } catch (e) {
+      out = { ok: false, stage: 'action', error: String(e && e.message || e), reco: rec }
+    }
+    return true
+  })
+  try {
+    await tasker.post_task('@reco/entry', { '@reco/entry': { action: 'Custom', custom_action: '@reco/act' } }).wait()
+  } catch (e) {
+    return { ok: false, error: '动作探针任务失败：' + String(e && e.message || e) }
+  } finally {
+    try { res.unregister_custom_action('@reco/act') } catch (e) { /* ignore */ }
+  }
+  const after = await captureNow('action-after')
+  if (!out) return { ok: false, error: '动作探针未被执行（custom action 回调未触发）' }
+  const rec = node && node.recognition
+  const shownType = rec && typeof rec === 'object' ? String(rec.type ?? 'DirectHit') : String(rec ?? 'DirectHit')
+  return {
+    ok: out.ok,
+    type: shownType,
+    meta: { seq: before.seq, w: before.w, h: before.h, t: before.t },
+    ...(out.error !== undefined ? { error: out.error } : {}),
+    ...(out.stage ? { stage: out.stage } : {}),
+    ...(out.miss !== undefined ? { miss: out.miss } : {}),
+    ...(out.reco ? { reco: out.reco } : {}),
+    ...(out.action ? { action: out.action } : {}),
+    retention: { before, after },
+  }
+}
+
 async function cmdRecoTest(args) {
+  /* --act：节点级单测（识别拿框 → 真机执行动作半），在 daemon 进程内跑（要真控制器） */
+  const actNode = args.act === true && args.node && typeof args.node === 'object' && !Array.isArray(args.node) ? args.node : null
+  if (args.act === true) {
+    if (!actNode) return { ok: false, error: '--act 需要同时给 --node（整节点 JSON，含 action）' }
+    if (!S.ctrl) return { ok: false, error: '--act 要在真机上执行动作：需要已连接设备（REPL 或 --project/--kind）' }
+    return await recoActTest(args, actNode)
+  }
   await ensureResource(args.resourceDir)   // 校验资源可加载（子进程会重新加载）
   // 图像来源：缓冲帧 seq（降采样 PNG 重编码）或文件
   let imageFile = null

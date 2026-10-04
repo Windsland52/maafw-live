@@ -22,9 +22,10 @@ function parseJson<T>(raw: unknown, what: string): { value?: T; error?: string }
 
 export const recoCommand: Command = {
   name: 'reco',
-  summary: '识别单测（子进程隔离）：--param/--sweep 阈值扫描，或 --node 整节点 JSON 透传',
+  summary: '识别单测（子进程隔离）：--param/--sweep 阈值扫描，或 --node 整节点 JSON 透传；--act 真机执行动作半',
   usage: 'maafw-live reco --type TemplateMatch --resource-dir <dir> --image <png> [--param <json>] [--sweep <json>] [--project <dir>]\n' +
-    '       maafw-live reco --node <json> --resource-dir <dir> --image <png>   （V1 扁平 / V2 嵌套节点均原样透传）',
+    '       maafw-live reco --node <json> --resource-dir <dir> --image <png>   （V1 扁平 / V2 嵌套节点均原样透传）\n' +
+    '       maafw-live reco --node <json> --act --project <dir>               （识别拿框 → 用框 run_action 真机执行）',
   options: {
     ...CONNECT_OPTIONS,
     type: { type: 'string' },
@@ -34,6 +35,7 @@ export const recoCommand: Command = {
     param: { type: 'string' },
     sweep: { type: 'string' },
     node: { type: 'string' },
+    act: { type: 'boolean' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -56,6 +58,8 @@ export const recoCommand: Command = {
     const sweep = parseJson<Record<string, unknown>>(ctx.values.sweep, '--sweep')
     if (sweep.error) return fail('BAD_ARGUMENTS', sweep.error, undefined, EXIT.USAGE)
 
+    const act = ctx.values.act === true
+
     try {
       return await withDaemon(async (client) => {
         const s = await ensureSession(client, o)
@@ -64,6 +68,35 @@ export const recoCommand: Command = {
         if (!resourceDir) {
           return fail('BAD_ARGUMENTS', '缺少资源目录：给 --resource-dir <dir>，或用 --project <dir> 让 interface.json 决定',
             undefined, EXIT.USAGE)
+        }
+        if (act) {
+          /* --act：识别拿框 → 真机 run_action。图像来自当前画面（daemon 抓帧），不吃 --image/--seq */
+          if (!node) {
+            return fail('BAD_ARGUMENTS', '--act 需要同时给 --node <json>（整节点，含 action）', undefined, EXIT.USAGE)
+          }
+          if (!o.project && !o.kind) {
+            return fail('BAD_ARGUMENTS', '--act 要真机执行动作：给 --project <dir> 或 --kind 连接设备',
+              '多步操作用 maafw-live repl', EXIT.USAGE)
+          }
+          const r = await recoTest(client, { resourceDir, act: true, node })
+          if (r.ok === false) {
+            return fail('RECO_ACT', String(r.error ?? '动作单测失败'),
+              r.stage === 'recognition' ? '识别未命中/报错——动作半未执行' : undefined, EXIT.FINDINGS)
+          }
+          const reco = r.reco as { box?: number[] } | undefined
+          const retention = r.retention as { before?: { seq?: number }, after?: { seq?: number } } | undefined
+          return {
+            exitCode: EXIT.OK,
+            human: [
+              ...describeSession(s),
+              '节点单测（识别→动作，真机执行）：',
+              '  识别框 ' + JSON.stringify(reco?.box ?? null),
+              '  动作回执 ' + JSON.stringify(r.action ?? null),
+              '  边界帧 seq ' + String(retention?.before?.seq) + ' → ' + String(retention?.after?.seq) +
+                '（frame_get / kf promote 可复核动作效果）',
+            ],
+            data: r,
+          }
         }
         if (!image && seq === undefined) {
           return fail('BAD_ARGUMENTS', '缺少图像：一次性命令给 --image <png>；用缓冲帧（--seq）需要在 maafw-live repl 里先 stream start',
