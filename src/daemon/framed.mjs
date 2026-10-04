@@ -159,8 +159,8 @@ function downscale(rgb, sw, sh, maxSide) {
   }
   return { w, h, data: out }
 }
-/** 8×8 分块亮度哈希（相对整体均值） */
-function blockHash(rgb, w, h) {
+/** 8×8 分块亮度哈希（相对整体均值）+ 分块亮度均值（局部变化检测用） */
+function blockAnalyze(rgb, w, h) {
   const cells = new Float64Array(64)
   const cnt = new Float64Array(64)
   let total = 0, n = 0
@@ -174,9 +174,17 @@ function blockHash(rgb, w, h) {
     }
   }
   const mean = total / Math.max(1, n)
-  const out = new Uint8Array(64)
-  for (let k = 0; k < 64; k++) out[k] = cells[k] / Math.max(1, cnt[k]) >= mean ? 1 : 0
-  return out
+  const hash = new Uint8Array(64)
+  const means = new Float64Array(64)
+  for (let k = 0; k < 64; k++) {
+    means[k] = cells[k] / Math.max(1, cnt[k])
+    hash[k] = means[k] >= mean ? 1 : 0
+  }
+  return { hash, means }
+}
+/** 兼容导出：只要哈希位 */
+function blockHash(rgb, w, h) {
+  return blockAnalyze(rgb, w, h).hash
 }
 function hashDist(a, b) {
   let d = 0
@@ -196,6 +204,9 @@ const S = {
   previewPath: null,                   // 面板实时预览帧落盘路径（host 传 runDir 初始化）
   stream: false, streamTimer: null,
   streamFps: 8, streamScale: 480, maxFrames: 120,
+  /* 变化检测双阈值：全局 blockHash 位差率（分布式变化）+ 分块亮度差（局部变化，任一块超限即变化）。
+   * blockThresh 单位为亮度（0-255），默认 8 ≈ 3%；阈值需按真机噪声实测校准（roadmap 条目13）。 */
+  changeGlobal: 0.06, blockThresh: 8,
   seq: 0,
   ring: [],                            // {seq,t,rgb,w,h,fw,fh,hash,diff}——fw/fh 为该帧捕获时控制器尺寸
   events: [],                          // {type:'change'|'stable', seq, t, diff, dur?}
@@ -390,6 +401,25 @@ async function cmdScreencap(outFile) {
 }
 
 /* ────────────────────────── 帧流（自适应节奏 + 事件合并） ────────────────────────── */
+/** 变化块的联合 bbox：小图坐标 + 控制器坐标（8×8 网格，块边界按小图像素取整，外扩不收缩） */
+function regionOfBlocks(blocks, w, h, fw, fh) {
+  let bx0 = 8, by0 = 8, bx1 = -1, by1 = -1
+  for (const k of blocks) {
+    const bx = k % 8, by = (k / 8) | 0
+    if (bx < bx0) bx0 = bx
+    if (by < by0) by0 = by
+    if (bx > bx1) bx1 = bx
+    if (by > by1) by1 = by
+  }
+  const x0 = Math.round(bx0 * w / 8), y0 = Math.round(by0 * h / 8)
+  const x1 = Math.round((bx1 + 1) * w / 8), y1 = Math.round((by1 + 1) * h / 8)
+  const sx = fw > 0 ? fw / w : 1, sy = fh > 0 ? fh / h : 1
+  return {
+    small: [x0, y0, x1 - x0, y1 - y0],
+    ctrl: [Math.round(x0 * sx), Math.round(y0 * sy), Math.round((x1 - x0) * sx), Math.round((y1 - y0) * sy)],
+  }
+}
+
 /** L0 锚区入队（按 seq 去重：同一捕获可能既是滚动帧又是事件锚点，字节共用同一 Buffer）。 */
 function l0AnchorAdd(entry) {
   if (S.l0.anchor.some((x) => x.seq === entry.seq)) return
@@ -404,11 +434,11 @@ function l0AnchorAdd(entry) {
 function pushFrame(dec, png) {
   const rgb = toRgb(dec)
   const small = downscale(rgb, dec.w, dec.h, S.streamScale)
-  const hash = blockHash(small.data, small.w, small.h)
+  const { hash, means } = blockAnalyze(small.data, small.w, small.h)
   const prev = S.ring.length ? S.ring[S.ring.length - 1] : null
   const diff = prev ? hashDist(prev.hash, hash) : 0
   S.seq++
-  const fr = { seq: S.seq, t: Date.now(), rgb: small.data, w: small.w, h: small.h, fw: dec.w, fh: dec.h, hash, diff }
+  const fr = { seq: S.seq, t: Date.now(), rgb: small.data, w: small.w, h: small.h, fw: dec.w, fh: dec.h, hash, means, diff }
   S.ring.push(fr)
   if (S.ring.length > S.maxFrames) S.ring.shift()
   S.fullW = dec.w; S.fullH = dec.h
@@ -425,17 +455,31 @@ function pushFrame(dec, png) {
     try { fs.writeFileSync(tmp, preview); fs.renameSync(tmp, S.previewPath) } catch (e) { /* 落盘失败不致命 */ }
   }
   send({ kind: 'frame', meta, preview: S.previewPath })
-  // 变化 / 稳定事件（400ms 窗口合并）；锚区只收"新事件"的首帧，合并窗口内不重复入锚
-  if (diff > 0.06) {
+  /* 变化 / 稳定事件（400ms 窗口合并）；锚区只收"新事件"的首帧，合并窗口内不重复入锚。
+   * 双阈值：全局位差率管分布式小变化，分块亮度差管局部小区域变化（小区域位差占比低，
+   * 单看全局阈值会漏检且漏检导致降频加剧漏检）。变化事件携带变化区域 bbox（小图与控制器两套坐标）。 */
+  let changed = null
+  if (prev && means) {
+    const blocks = []
+    for (let k = 0; k < 64; k++) {
+      if (Math.abs(means[k] - prev.means[k]) > S.blockThresh) blocks.push(k)
+    }
+    if (blocks.length) changed = { blocks, region: regionOfBlocks(blocks, fr.w, fr.h, fr.fw, fr.fh) }
+  }
+  const isChange = diff > S.changeGlobal || changed !== null
+  if (isChange) {
     S.quietNow = false
     const last = S.events.length ? S.events[S.events.length - 1] : null
     if (last && last.type === 'change' && fr.t - last.t < 400) {
       last.t = fr.t; last.seq = fr.seq; last.diff = Math.max(last.diff, diff)
     } else {
-      pushEvent({ type: 'change', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
+      pushEvent({
+        type: 'change', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000,
+        ...(changed ? { blocks: changed.blocks.length, region: changed.region } : {}),
+      })
       l0AnchorAdd({ ...l0, source: 'change' })
     }
-  } else if (prev && diff <= 0.06) {
+  } else if (prev) {
     if (!S.quietNow) {
       S.quietNow = true
       pushEvent({ type: 'stable', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
@@ -485,7 +529,7 @@ async function streamTick() {
   if (!S.stream) return
   const elapsed = Date.now() - t0
   const recent = S.ring.slice(-3)
-  const quiet = S.quietNow || (recent.length >= 2 && recent.every((r) => r.diff <= 0.06))
+  const quiet = S.quietNow || (recent.length >= 2 && recent.every((r) => r.diff <= S.changeGlobal))
   const wait = quiet ? 1000 : Math.max(60, Math.round(1000 / Math.max(1, S.streamFps)))
   S.streamTimer = setTimeout(streamTick, Math.max(0, wait - elapsed))
 }
@@ -497,12 +541,18 @@ async function cmdStreamStart(args) {
   if (args.maxFrames) S.maxFrames = Math.min(600, Math.max(20, Number(args.maxFrames)))
   if (args.l0Roll) S.l0.rollCap = Math.min(64, Math.max(1, Number(args.l0Roll)))
   if (args.l0Anchor) S.l0.anchorCap = Math.min(128, Math.max(1, Number(args.l0Anchor)))
+  if (args.blockThresh !== undefined) S.blockThresh = Math.min(64, Math.max(1, Number(args.blockThresh)))
+  if (args.changeGlobal !== undefined) S.changeGlobal = Math.min(1, Math.max(0.005, Number(args.changeGlobal)))
   if (!S.stream) {
     S.stream = true
     S.quietNow = false
     S.streamTimer = setTimeout(streamTick, 0)
   }
-  return { ok: true, fps: S.streamFps, scale: S.streamScale, maxFrames: S.maxFrames, l0Roll: S.l0.rollCap, l0Anchor: S.l0.anchorCap }
+  return {
+    ok: true, fps: S.streamFps, scale: S.streamScale, maxFrames: S.maxFrames,
+    l0Roll: S.l0.rollCap, l0Anchor: S.l0.anchorCap,
+    blockThresh: S.blockThresh, changeGlobal: S.changeGlobal,
+  }
 }
 async function cmdStreamStop() {
   S.stream = false
