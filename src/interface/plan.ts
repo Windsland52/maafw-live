@@ -20,6 +20,8 @@ export interface PlanOverrides {
   win32?: { hwnd?: string | null }
   gamepad?: { hwnd?: string | null }
   adb?: { address?: string | null }
+  /** 手动 target（--target）：playcover=<address>/<uuid>；linux=<config JSON> */
+  manualTarget?: string | null
 }
 
 export interface ControllerPlan {
@@ -41,7 +43,7 @@ export interface ResourcePlan {
   selected: string | null
 }
 
-const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad' }
+const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', Linux: 'linux' }
 
 function safeRegExp(pattern: string): RegExp | null {
   try {
@@ -90,7 +92,7 @@ export function planController(
       controllerName: c.name,
       connect: {},
       candidates: [],
-      error: '控制器 ' + c.name + ' 的类型 ' + c.type + ' 暂不受支持（本 CLI 支持 Adb / Win32 / Gamepad）',
+      error: '控制器 ' + c.name + ' 的类型 ' + c.type + ' 暂不受支持（本 CLI 支持 Adb / Win32 / Gamepad / PlayCover / Linux；MacOS 走手动 --kind macos）',
     }
   }
 
@@ -100,6 +102,21 @@ export function planController(
   if (c.display?.longSide !== undefined) connect.longSide = c.display.longSide
   if (c.display?.raw) connect.rawSize = true
   if (c.display?.expand) notes.push('display_expand 暂不生效（daemon 未接入），已忽略')
+
+  if (kind === 'playcover' || kind === 'linux') {
+    /* 两类控制器没有可枚举的设备发现：必须显式给 target（playcover=<address>/<uuid>，
+       linux=<config JSON>），工具不猜会话形态。 */
+    const t = overrides.manualTarget ?? null
+    if (!t) {
+      return fail(c, 'TARGET_REQUIRED',
+        kind === 'playcover'
+          ? 'PlayCover 需要 --target <address>/<uuid>（PlayCover 设置里可见）'
+          : 'Linux 需要 --target <config JSON>（含 screencap_method / input_method 等必填字段）',
+        [], connect, notes)
+    }
+    connect.target = t
+    return { ok: true, controllerName: c.name, connect, notes }
+  }
 
   if (kind === 'adb') {
     const addr = overrides.adb?.address ?? null

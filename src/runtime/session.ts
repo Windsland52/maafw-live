@@ -50,6 +50,7 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
       hwnd: o.hwnd,
       address: o.address,
       resource: o.resource,
+      manualTarget: o.target ?? undefined,
     })
     if (!planned.plan) throw new SessionError(planned.error ?? '控制器规划失败', 'PLAN_FAILED')
     if (!planned.plan.ok) {

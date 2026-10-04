@@ -343,13 +343,50 @@ async function cmdConnect(args) {
     }
   } else if (args.kind === 'playcover' || args.kind === 'macos') {
     /* PlayCover / MacOS 控制器仅 macOS 可用（maa-node 本体在其它平台编译即排除）。
-       Windows/Linux 宿主上不给"也许能连"的尝试，直接说明。 */
-    return { ok: false, error: '控制器类型 ' + args.kind + ' 仅支持在 macOS 上使用；当前宿主是 ' + process.platform }
+       非 macOS 宿主不给"也许能连"的尝试，直接说明。 */
+    if (process.platform !== 'darwin') {
+      return { ok: false, error: '控制器类型 ' + args.kind + ' 仅支持在 macOS 上使用；当前宿主是 ' + process.platform }
+    }
+    if (args.kind === 'playcover') {
+      /* PlayCoverController(address, uuid)：address 是 PlayCover 设备侧服务地址（如 127.0.0.1:port），
+         uuid 是 PlayCover 显示的设备 UUID；两个都必须显式给，猜不了。 */
+      const parts = String(args.target ?? '').split('/')
+      const address = parts[0] || ''
+      const uuid = args.uuid ? String(args.uuid) : (parts[1] || '')
+      if (!address || !uuid) {
+        return { ok: false, error: 'playcover 需要 target=<address>/<uuid>（PlayCover 设置里可见，两者都必填）' }
+      }
+      ctrl = new m.PlayCoverController(address, uuid)
+      session = { kind: 'playcover', target: address + '/' + uuid }
+    } else {
+      /* MacOSController(window_id, screencap_method, input_method)：窗口用 MacOSController.find() 枚举。 */
+      const wins = (await m.MacOSController.find()) || []
+      const pick = args.target
+        ? (wins.find((d) => String(d[0]) === String(args.target)) ??
+           wins.find((d) => String(d[2] ?? '').includes(String(args.target))))
+        : (wins[0] ?? null)
+      if (!pick) {
+        return { ok: false, error: args.target ? 'macOS 窗口未找到：' + args.target : '未发现 macOS 窗口' }
+      }
+      const cap = resolveEnum(m.MacOSScreencapMethod, args.screencap, m.MacOSScreencapMethod?.ScreenCaptureKit ?? 2, 'screencap', warns)
+      const input = resolveEnum(m.MacOSScreencapMethod, args.keyboard, m.MacOSScreencapMethod?.ScreenCaptureKit ?? 2, 'keyboard', warns)
+      ctrl = new m.MacOSController(pick.id ?? pick[0], cap, input)
+      session = { kind: 'macos', target: String(pick[0]), name: String(pick[2] ?? ''), method: { screencap: cap, input } }
+    }
   } else if (args.kind === 'linux') {
-    /* LinuxController 需 wlroots/pipewire/uinput 会话；当前 daemon 未接入。 */
-    return { ok: false, error: 'Linux 控制器尚未接入当前 daemon（需要 wlroots/pipewire/uinput 会话配置）' }
+    /* LinuxController(config JSON)：wlroots / PipeWire / uinput / Libei 会话按配置串交给本体。
+       config 必须显式给（含 screencap_method / input_method 等必填字段），工具不猜会话形态。 */
+    if (process.platform !== 'linux') {
+      return { ok: false, error: '控制器类型 linux 仅支持在 Linux 上使用；当前宿主是 ' + process.platform }
+    }
+    const cfg = String(args.config ?? args.target ?? '')
+    if (!cfg.trim().startsWith('{')) {
+      return { ok: false, error: 'linux 控制器需要 config=<JSON>（screencap_method/input_method 必填；wlroots 要 wlr_socket_path，PipeWire 要 pw_socket_fd+pw_node_id 等）' }
+    }
+    ctrl = new m.LinuxController(cfg)
+    session = { kind: 'linux', target: '(config)' }
   } else {
-    return { ok: false, error: '未知控制器类型：' + args.kind + '（支持 win32/adb/gamepad）' }
+    return { ok: false, error: '未知控制器类型：' + args.kind + '（支持 win32/adb/gamepad/playcover/macos/linux）' }
   }
   /* 截图缩放目标：默认不干预 —— maafw 本体按 interface.json 的 short_side（缺省最短边 720p）缩放。
    * 只有用户显式传参才覆盖；注意这会改变 Tasker 识别图像的尺寸（模板/ROI 坐标系随之变化）。 */
