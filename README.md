@@ -43,7 +43,9 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
 | `maafw-live reco` | 识别单测（子进程隔离）：`--param`/`--sweep` 阈值扫描，`--node` 整节点透传（V1/V2），`--act` 识别拿框 → 真机执行动作半 |
 | `maafw-live color` | 探色：ROI 实测均值 / HSV / 主色，选色后用 reco ColorMatch 出框 |
-| `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → L0 原图裁剪 → 同帧自匹配逐边精修 |
+| `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → L0 原图裁剪 → 同帧自匹配逐边精修 + 跨帧验证 |
+| `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标） |
+| `maafw-live calibrate` | 变化检测阈值校准：静止画面定噪声地板，推荐 blockThresh / changeGlobal |
 | `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析 |
 | `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
 
@@ -195,9 +197,10 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 滚动区 + 锚区、输入 / run 边界帧、升格与本地关键帧库、离线帧解析；契约与验收用例在
 [`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)）、PI v2 解析补齐
 （import 合并、pipeline_override 四级链、preset 默认值、agent 诊断）、变化检测双阈值（分块亮度差 +
-事件携带变化区域 bbox）、输入原语补齐、探色、节点级单测（reco `--act`）与模板裁剪（crop）。
+事件携带变化区域 bbox、阈值校准命令）、输入原语补齐、探色、节点级单测（reco `--act`）、模板裁剪
+（crop，位置优先判据 + 跨帧验证）与轻量 SoM（annotate）。
 
-之后的大方向：`timing`（从帧流与节点事件反推 delay / timeout）、annotate 回画（轻量 SoM）。
+之后的大方向：`timing`（从帧流与节点事件反推 delay / timeout）、agent 完整桥接（待 maa-node 绑定）。
 
 不在本包范围（各有归属）：
 
