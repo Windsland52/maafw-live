@@ -1,7 +1,7 @@
 /**
  * CLI 协议层：统一 JSON 信封 + 命令契约 + 退出码语义。
  *
- * 信封结构抄 create-maa-project 的 `--report`——它已经被 dsh-maafw-dev 消费验证过，
+ * 信封结构抄 create-maa-project 的 `--report`——它已被真实消费方验证过，
  * 属于本生态的既有事实标准。目的：让「技能 / 脚本 / CI / 人」消费同一份稳定结构，
  * 不必各自解析文本输出，也不必各自发明字段名。
  *
@@ -95,7 +95,7 @@ export interface Command {
   name: string
   /** 一行说明，用于顶层 help 列表 */
   summary: string
-  /** 完整用法行，如 `maafw-run env [--deep] [--maafw <dir>]` */
+  /** 完整用法行，如 `maafw-live env [--deep] [--maafw <dir>]` */
   usage: string
   /** 命令私有选项；全局选项由入口自动合并 */
   options?: ParseArgsOptionsConfig

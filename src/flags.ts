@@ -1,7 +1,7 @@
 /**
  * 全局选项。
  *
- * 三条约定与 create-maa-project 对齐，理由都在 dsh-maafw-dev 的封装注释里记着：
+ * 三条约定与 create-maa-project 对齐：
  *  - `--no-interactive` / `--yes`：交互式提问会让工具调用永久挂住，agent 场景必须能强制非交互；
  *  - `--no-color`：ANSI 转义会混进 JSON；
  *  - `--json`：稳定信封，供技能与 CI 解析。

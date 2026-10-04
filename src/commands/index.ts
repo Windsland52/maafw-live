@@ -1,9 +1,9 @@
 /**
  * 命令注册表。
  *
- * 只注册**已经实现且能跑通**的命令。未实现的域（validate / node / migrate / template /
- * device / log）列在 README 的路线图里，不在这里挂空壳——挂空壳会让 `maa <cmd>` 的
- * 失败原因从「没这个命令」变成「没实现」，技能无法区分，也会让 help 撒谎。
+ * 只注册**已经实现且能跑通**的命令。未实现的能力（timing、关键帧留存）列在 README 的
+ * 路线图与 `--help` 里，不在这里挂空壳——挂空壳会让 `maa <cmd>` 的失败原因从
+ * 「没这个命令」变成「没实现」，技能无法区分，也会让 help 撒谎。
  */
 import type { Command } from '../protocol.js'
 import { envCommand } from './env.js'

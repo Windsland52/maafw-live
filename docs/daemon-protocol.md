@@ -1,10 +1,10 @@
-# daemon 协议（maafw-run core）
+# daemon 协议（maafw-live core）
 
 这份文档是**为了被复用而存在**的：任何宿主（编辑器插件、自动化平台、CI 脚本、
 其他语言写的壳）都可以直接跟这个 daemon 说话，而不必依赖本仓库的 CLI 或 TypeScript 客户端。
 
 实现：`src/daemon/framed.mjs`（随包发布为 `lib/daemon/framed.mjs`）。
-客户端参考实现：`src/client/daemon.ts`（`maafw-run/client` 导出）。
+客户端参考实现：`src/client/daemon.ts`（`maafw-live/client` 导出）。
 
 ## 传输
 
@@ -73,7 +73,7 @@
 
 ## 复用示例
 
-    import { spawnDaemon } from 'maafw-run/client'
+    import { spawnDaemon } from 'maafw-live/client'
 
     const c = spawnDaemon({ runDir: '/tmp/maa-run' })
     try {
@@ -87,4 +87,4 @@
       c.close()
     }
 
-CLI 侧的等价物是 `maafw-run repl`（一次连接、多步操作），以及 `maafw-run probe|device|connect|run|click|reco` 等一次性命令。
+CLI 侧的等价物是 `maafw-live repl`（一次连接、多步操作），以及 `maafw-live probe|device|connect|run|click|reco` 等一次性命令。

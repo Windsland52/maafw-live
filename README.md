@@ -1,17 +1,18 @@
-# maafw-run
+# maafw-live
 
-MaaFramework 的 Node 工具链：**设备运行时（daemon）+ 可复用客户端 + CLI**。
+MaaFramework 的**设备交互与实时观测底座**：常驻 daemon（连续帧流 + 变化/稳定检测 + 环形缓冲）+ 可复用客户端 + 确定性 CLI。
 
 面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON 信封；daemon 协议与客户端不绑定任何宿主，
-编辑器插件、自动化平台、CI 都能直接接。
+编辑器插件、自动化平台、CI 都能直接接。连续观测到的帧可选择性地留存为跨工作会话证据——契约见
+[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)（待实现，接口未冻结）。
 
 ## 三件东西
 
 | 部分 | 位置 | 做什么 |
 | --- | --- | --- |
 | daemon | `src/daemon/framed.mjs` | 独立子进程，持有 Controller / Resource / Tasker、帧流与环形缓冲；说 JSON 行协议 |
-| client | `maafw-run/client` | 可复用客户端：spawn、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
-| CLI | `bin/maafw-run.mjs` | 命令面：探针、设备、输入、识别、会话 |
+| client | `maafw-live/client` | 可复用客户端：spawn、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
+| CLI | `bin/maafw-live.mjs` | 命令面：探针、设备、输入、识别、会话 |
 
 协议的完整契约（消息形状、命令表、坐标系与稳定性约定）见 [`docs/daemon-protocol.md`](docs/daemon-protocol.md)。
 
@@ -20,7 +21,7 @@ MaaFramework 的 Node 工具链：**设备运行时（daemon）+ 可复用客户
 ```bash
 npm install
 npm run build
-npm link            # 之后可直接 maafw-run --help
+npm link            # 之后可直接 maafw-live --help
 ```
 
 需要 Node >= 22.13；`@maaxyz/maa-node` 会在安装时按平台取对应的原生包。
@@ -29,19 +30,19 @@ npm link            # 之后可直接 maafw-run --help
 
 | 命令 | 说明 |
 | --- | --- |
-| `maafw-run env` | 探测环境与能力：项目根、pipeline 目录、运行时绑定、外部工具（adb / python / git） |
-| `maafw-run version` | 打印 CLI 与依赖版本 |
-| `maafw-run probe` | 自检运行时：绑定版本、adb / win32 设备发现数 |
-| `maafw-run device` | 列出可连接的设备（adb 设备与 win32 窗口） |
-| `maafw-run connect` | 连接设备（进程态；多步操作用 repl） |
-| `maafw-run disconnect` | 断开并销毁 Tasker / Controller |
-| `maafw-run screencap` | 截一帧并落盘 |
-| `maafw-run frame` | 帧流状态与历史帧取用（可带 ROI） |
-| `maafw-run run` | 运行 pipeline，节点事件按帧序对齐 |
-| `maafw-run stop` | 停止运行中的任务 |
-| `maafw-run click` / `swipe` / `key` / `text` | 输入注入（经 maafw 控制器本体） |
-| `maafw-run reco` | 识别单测（子进程隔离）与阈值扫描 |
-| `maafw-run repl` | 交互 / 管道会话：连接一次，命令复用 |
+| `maafw-live env` | 探测环境与能力：项目根、pipeline 目录、运行时绑定、外部工具（adb / python / git） |
+| `maafw-live version` | 打印 CLI 与依赖版本 |
+| `maafw-live probe` | 自检运行时：绑定版本、adb / win32 设备发现数 |
+| `maafw-live device` | 列出可连接的设备（adb 设备与 win32 窗口） |
+| `maafw-live connect` | 连接设备（进程态；多步操作用 repl） |
+| `maafw-live disconnect` | 断开并销毁 Tasker / Controller |
+| `maafw-live screencap` | 截一帧并落盘 |
+| `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI） |
+| `maafw-live run` | 运行 pipeline，节点事件按帧序对齐 |
+| `maafw-live stop` | 停止运行中的任务 |
+| `maafw-live click` / `swipe` / `key` / `text` | 输入注入（经 maafw 控制器本体） |
+| `maafw-live reco` | 识别单测（子进程隔离）与阈值扫描 |
+| `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
 
 `env` 是前置命令：动手前先问它「现在有什么」，而不是各自写一遍环境检测。它有一条硬要求——
 **自身永远不能因为环境残缺而失败**，缺依赖都是探测结果，不是错误。
@@ -62,14 +63,14 @@ npm link            # 之后可直接 maafw-run --help
 连接是**进程态**的：命令退出即断开。多步操作走 `repl`（连接一次、命令复用，也能被管道驱动）：
 
 ```bash
-maafw-run repl --project ./my-maa-project
+maafw-live repl --project ./my-maa-project
 maa> stream start --fps 10
 maa> frame get --roi 0,0,200,120
 maa> click 100 200
 maa> run StartUp --timeout 60000
 maa> quit
 
-printf "probe\nquit\n" | maafw-run repl      # 脚本 / agent 用法
+printf "probe\nquit\n" | maafw-live repl      # 脚本 / agent 用法
 ```
 
 ## 坐标系（最容易出错的一条）
@@ -81,7 +82,7 @@ printf "probe\nquit\n" | maafw-run repl      # 脚本 / agent 用法
 ## 复用 daemon
 
 ```js
-import { spawnDaemon } from "maafw-run/client"
+import { spawnDaemon } from "maafw-live/client"
 
 const c = spawnDaemon({ runDir: "/tmp/maa-run" })
 try {
@@ -157,14 +158,15 @@ src/
   runtime/
     actions.ts        动作层：把 daemon 命令包成有类型 / 超时 / 默认值的函数
     session.ts        一次性命令如何先连接再干活
+  interface/          interface.json（ProjectInterface v2）的窄解析：控制器规划与资源路径
   commands/           命令面（index 是注册表；env / runtime / input / reco / repl / version）
-bin/maafw-run.mjs     启动器（未构建时给人话提示，而不是堆栈）
-docs/                 协议契约
+bin/maafw-live.mjs     启动器（未构建时给人话提示，而不是堆栈）
+docs/                 协议与留存契约
 scripts/              回归与构建辅助
 ```
 
 **加一个新命令**：在 `src/commands/` 写一个导出 `Command` 的文件，在 `commands/index.ts` 注册。
-选项解析、cwd 校验、错误兜底、JSON 输出都由入口统一处理。注册表只放能跑通的命令，未实现的域列在
+选项解析、cwd 校验、错误兜底、JSON 输出都由入口统一处理。注册表只放能跑通的命令，未实现的能力列在
 `--help` 的路线图里——挂空壳会让失败原因从「没这个命令」变成「没实现」，也会让 help 撒谎。
 
 ## 回归
@@ -181,16 +183,19 @@ npm run verify      # 装配级回归：全部通过真实子进程断言外部�
 | 依赖 | 用途 |
 | --- | --- |
 | `@maaxyz/maa-node` | 官方 Node 绑定：设备连接、截图、识别、输入。原生能力全走它，不走旁路 |
-| 领域内核（core） | 版本对账、schema 推导、pipeline 节点图、interface.json 规划。当前以 `file:` 引用兄弟目录，发布后改为常规依赖 |
 
-core 的使用是**惰性**的：不可用时 `env` 会退回直接探测，保证探针本身永远可用。
+interface.json 的解析与控制器规划内建在 `src/interface/`（无外部依赖）。
 
 ## 路线图
 
-| 域 | 子命令 |
+近期只做一件事：**关键帧留存与引用**——L0 原图缓存、升格、关键帧库与离线帧解析；契约、已知缺陷与验收用例都在
+[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)。之后是 `timing`（从帧流与节点事件反推 delay / timeout）。
+
+不在本包范围（各有归属）：
+
+| 域 | 归属 |
 | --- | --- |
-| 静态知识 | `validate`、`graph`、`lookup`、`project` |
-| pipeline 改写 | `node rename`、`node edit`、`node prune`、`migrate`、`interface sync` |
-| 资产 | `template audit`、`template crop` |
-| 时序 | `timing`（从帧流与节点事件反推 delay / timeout） |
-| 日志 | `log analyze`、`log query`、`evidence build`、`evidence query` |
+| 静态知识（validate / graph / lookup / project） | MaaLLMWiki 技能 |
+| pipeline 改写（node / migrate / interface） | maafw-pipeline 技能 + agent 对文件的直接编辑 |
+| 模板资产（template audit / crop） | pipeline 编写动线；裁剪派生物（L2）在留存契约内 |
+| 日志与诊断证据（log / evidence） | MaaEvidenceKit + maa-evidence 技能 |

@@ -1,9 +1,9 @@
 /**
- * `maafw-run env` —— 环境与能力探针。
+ * `maafw-live env` —— 环境与能力探针。
  *
  * 这是整个 CLI 的前置命令：技能在动手前先问它「现在有什么」，而不是各自写一遍检测。
- * 因此它有一条硬要求：**它本身永远不能因为环境残缺而失败**。缺 core、缺 adb、
- * 缺 python 都是「探测结果」，不是错误。
+ * 因此它有一条硬要求：**它本身永远不能因为环境残缺而失败**。缺 adb、缺 python、
+ * 缺框架源码都是「探测结果」，不是错误。
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EXIT, type Command, type CommandResult } from '../protocol.js'
 import { firstLine, run } from '../exec.js'
+import { loadInterface, resolveResourcePaths } from '../interface/index.js'
 
 type Status = 'ok' | 'warn' | 'missing'
 
@@ -32,22 +33,12 @@ function findProjectRoot(start: string): string | null {
   return null
 }
 
-/** 从 interface.json 的 resource.path 推导 pipeline 目录；找不到时退回常见目录 */
+/** 从 interface.json 的 resource 声明推导 pipeline 目录；找不到时退回常见目录 */
 function pipelineDirs(root: string): string[] {
   const out = new Set<string>()
-  try {
-    const iface = JSON.parse(readFileSync(join(root, 'interface.json'), 'utf8')) as {
-      resource?: Array<{ path?: string | string[] }>
-    }
-    for (const r of iface.resource ?? []) {
-      const paths = Array.isArray(r.path) ? r.path : r.path ? [r.path] : []
-      for (const p of paths) {
-        const dir = join(resolve(root, p), 'pipeline')
-        if (existsSync(dir)) out.add(dir)
-      }
-    }
-  } catch {
-    /* 没有 interface.json 或格式不符时走 fallback */
+  for (const p of resolveResourcePaths(loadInterface(root)).paths) {
+    const dir = join(p, 'pipeline')
+    if (existsSync(dir)) out.add(dir)
   }
   for (const f of ['resource/base/pipeline', 'resource/pipeline', 'pipeline']) {
     const dir = join(root, f)
@@ -86,21 +77,9 @@ function selfDir(): string {
 /**
  * 取 checkout 的 schema 快照版本。
  *
- * 优先复用 core（本生态的唯一版本真源）；core 不可用时退回直接 git describe——
- * 探针不能因为依赖缺失而失效，这是它存在的意义。
+ * checkout 的版本快照用 git describe 取；取不到就是空串——探针不因环境残缺而失败。
  */
 async function checkoutVersion(checkout: string, gitBin: string): Promise<string> {
-  try {
-    const core = (await import('@dsh-external/dsh-maafw-core')) as {
-      readCheckoutVersion?: (c: string, g?: string) => { version: string; raw: string }
-    }
-    if (core.readCheckoutVersion) {
-      const v = core.readCheckoutVersion(checkout, gitBin)
-      return v.raw || v.version || ''
-    }
-  } catch {
-    /* 退回下面的直接探测 */
-  }
   const r = await run(gitBin, ['-C', checkout, 'describe', '--tags'], { timeout: 5000 })
   return r.ok ? firstLine(r.stdout) : ''
 }
@@ -116,7 +95,7 @@ function pad(s: string, n: number): string {
 export const envCommand: Command = {
   name: 'env',
   summary: '探测环境与能力：项目、运行时绑定、外部工具（框架源码对账见 --checkout）',
-  usage: 'maafw-run env [--checkout <MaaFramework 源码目录>] [--git <bin>] [--deep]',
+  usage: 'maafw-live env [--checkout <MaaFramework 源码目录>] [--git <bin>] [--deep]',
   options: {
     checkout: { type: 'string' },
     maafw: { type: 'string' },   // 兼容别名：等价于 --checkout
@@ -230,7 +209,7 @@ export const envCommand: Command = {
 
     const width = Math.max(...items.map((i) => i.key.length))
     const human = [
-      'maafw-run env',
+      'maafw-live env',
       ...items.map((i) => `  ${mark(i.status)} ${pad(i.key, width)}  ${i.detail}`),
     ]
 

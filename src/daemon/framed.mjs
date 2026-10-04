@@ -1,20 +1,19 @@
 /**
- * FrameDaemon worker —— 运行于 worker_thread（maa-node 的 .wait() 可能同步阻塞，
- * 绝不允许进入 DSH host 主线程）。
+ * FrameDaemon —— 设备 daemon，独立子进程运行（maa-node 的 .wait() 可能同步阻塞，
+ * 绝不允许进入宿主进程）。
  *
  * 职责（分层消费模型的生产端）：
  *  - 持有 maa-node 的 Controller / Resource / Tasker（连接能力全部来自 maafw 本体）
- *  - 全速抓帧循环 → 降采样 → dHash/块亮度差 → 变化/稳定事件（合并）→ 环形缓冲
- *  - 像素默认不出 worker：仅发元数据；面板实时预览走最新帧 PNG；精查走 ROI 裁剪
+ *  - 抓帧循环 → 降采样 → 块亮度哈希 → 变化/稳定事件（合并）→ 环形缓冲
+ *  - 像素默认不出 daemon：仅发元数据；面板实时预览走落盘的预览帧；精查走 ROI 裁剪
  *  - Tasker 运行：节点事件流按帧序对齐，内置超时 + post_stop（防 JumpBack 死循环）
  *  - 识别单测：在环形缓冲历史帧上跑 post_recognition（支持阈值扫描）
  *
- * 协议（postMessage，JSON + 可选二进制）：
- *   main → worker: { id, cmd, ...args }
- *   worker → main: { kind:'reply', id, ok, data|error }        （请求应答）
- *                  { kind:'frame', meta }                      （每接受帧的元数据）
- *                  { kind:'event', ev }                        （变化/稳定事件）
- *                  { kind:'png', buf }                         （最新预览帧 PNG）
+ * 协议（--child 模式：stdin/stdout JSON 行协议，一行一条消息）：
+ *   host → daemon: { id, cmd, ...args }
+ *   daemon → host: { kind:'reply', id, ok, data|error }   （请求应答）
+ *                  { kind:'frame', meta, preview }         （每接受帧的元数据与预览帧路径）
+ *                  { kind:'event', ev }                    （变化/稳定/节点事件）
  *                  { kind:'stream_error', error }
  */
 import { createRequire } from 'node:module'
@@ -653,7 +652,7 @@ async function cmdInput(args) {
 }
 
 /* 识别单测：子进程隔离执行（beta 绑定的 post_recognition 在无效模板上会原生崩溃，
- * 子进程炸掉只损失一次测试，绝不让 DSH host 陪葬）。 */
+ * 子进程炸掉只损失一次测试，绝不让宿主陪葬）。 */
 function spawnRecoChild(payload, timeoutMs) {
   const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'reco_child.mjs')
   const file = path.join(os.tmpdir(), 'maa_reco_' + Date.now() + '_' + Math.floor(Math.random() * 1e6) + '.json')
@@ -758,5 +757,5 @@ if (CHILD) {
   })
 }
 
-/* 纯函数导出（供无 DSH 的 headless 验证直接断言，子进程运行中不使用） */
+/* 纯函数导出（供 headless 验证直接断言，子进程运行中不使用） */
 export const __test = { pngDecode, pngEncodeRGB, downscale, blockHash, hashDist }

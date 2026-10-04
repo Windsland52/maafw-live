@@ -1,5 +1,5 @@
 /**
- * 识别单测：maafw-run reco。
+ * 识别单测：maafw-live reco。
  *
  * 走 daemon 的 reco_test —— 它把识别放进一次性子进程执行（beta 绑定在无效模板上会原生崩溃，
  * 子进程炸掉只损失一次测试，不带走调用方）。支持阈值扫描：一次调用给出阈值-命中曲线。
@@ -23,7 +23,7 @@ function parseJson<T>(raw: unknown, what: string): { value?: T; error?: string }
 export const recoCommand: Command = {
   name: 'reco',
   summary: '识别单测（子进程隔离）+ 阈值扫描：给资源目录与图像或缓冲帧',
-  usage: 'maafw-run reco --type TemplateMatch --resource-dir <dir> --image <png> [--param <json>] [--sweep <json>] [--project <dir>]',
+  usage: 'maafw-live reco --type TemplateMatch --resource-dir <dir> --image <png> [--param <json>] [--sweep <json>] [--project <dir>]',
   options: {
     ...CONNECT_OPTIONS,
     type: { type: 'string' },
@@ -54,7 +54,7 @@ export const recoCommand: Command = {
             undefined, EXIT.USAGE)
         }
         if (!image && seq === undefined) {
-          return fail('BAD_ARGUMENTS', '缺少图像：一次性命令给 --image <png>；用缓冲帧（--seq）需要在 maafw-run repl 里先 stream start',
+          return fail('BAD_ARGUMENTS', '缺少图像：一次性命令给 --image <png>；用缓冲帧（--seq）需要在 maafw-live repl 里先 stream start',
             undefined, EXIT.USAGE)
         }
         const r = await recoTest(client, {

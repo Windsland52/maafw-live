@@ -16,12 +16,10 @@ const GLOBAL_HELP: Array<[string, string]> = [
   ['-V, --version', '显示版本'],
 ]
 
-/** 尚未实现的域。列出来是为了让使用者知道 CLI 的最终形状，而不是让 help 撒谎。 */
+/** 尚未实现的能力。列出来是为了让使用者知道下一步，而不是让 help 撒谎。 */
 const ROADMAP = [
-  'validate / graph / lookup / project',
-  'node / migrate / interface / template',
   'timing（时序反推）',
-  'log / evidence',
+  '关键帧留存与引用（docs/keyframe-retention-contract-v0.md）',
 ]
 
 function pad(s: string, n: number): string {
@@ -33,10 +31,10 @@ export function topLevelUsage(): string[] {
   const nameWidth = Math.max(...COMMANDS.map((c) => c.name.length), 7)
 
   return [
-    `${pkg.name} ${pkg.version} — MaaFramework 工具链统一 CLI`,
+    `${pkg.name} ${pkg.version} — MaaFramework 设备运行时与观测底座`,
     '',
     '用法：',
-    '  maafw-run <command> [options]',
+    '  maafw-live <command> [options]',
     '',
     '命令：',
     ...COMMANDS.map((c) => `  ${pad(c.name, nameWidth + 2)}${c.summary}`),

@@ -1,5 +1,5 @@
 /**
- * maafw-run CLI 入口：解析 → 分发 → 输出。
+ * maafw-live CLI 入口：解析 → 分发 → 输出。
  *
  * 入口只做四件事，任何领域逻辑都不许放进来：
  *  1. 处理无命令 / --help / --version 这类不进入命令的路径
@@ -69,7 +69,7 @@ export async function main(argv: string[]): Promise<number> {
       error: {
         code: 'UNKNOWN_COMMAND',
         message: `未知命令：${head}`,
-        ...(suggestion ? { hint: `是否想执行 maa ${suggestion}？` } : {}),
+        ...(suggestion ? { hint: `是否想执行 ${cliPackage().name} ${suggestion}？` } : {}),
       },
     }
     emit(head, result, { json: argv.includes('--json'), color: false })
@@ -136,7 +136,7 @@ function isDirectory(p: string): boolean {
   }
 }
 
-/* 允许 `node lib/index.js` 直接运行（bin/maafw-run.mjs 是常规入口） */
+/* 允许 `node lib/index.js` 直接运行（bin/maafw-live.mjs 是常规入口） */
 const directRun = (() => {
   const entry = process.argv[1]
   if (!entry) return false

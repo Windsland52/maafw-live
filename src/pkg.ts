@@ -15,9 +15,9 @@ export function cliPackage(): PackageInfo {
   try {
     const p = fileURLToPath(new URL('../package.json', import.meta.url))
     const j = JSON.parse(readFileSync(p, 'utf8')) as Partial<PackageInfo>
-    cached = { name: j.name ?? 'maafw-run', version: j.version ?? '0.0.0', description: j.description }
+    cached = { name: j.name ?? 'maafw-live', version: j.version ?? '0.0.0', description: j.description }
   } catch {
-    cached = { name: 'maafw-run', version: '0.0.0' }
+    cached = { name: 'maafw-live', version: '0.0.0' }
   }
   return cached
 }

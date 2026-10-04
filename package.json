@@ -1,10 +1,10 @@
 {
-  "name": "maafw-run",
+  "name": "maafw-live",
   "version": "0.1.0",
-  "description": "MaaFramework 工具链：设备运行时（daemon）+ 可复用客户端 + CLI。确定性能力层，不绑定宿主。",
+  "description": "MaaFramework 设备交互与实时观测底座：常驻 daemon + 可复用客户端 + 确定性 CLI。不绑定宿主。",
   "type": "module",
   "bin": {
-    "maafw-run": "./bin/maafw-run.mjs"
+    "maafw-live": "./bin/maafw-live.mjs"
   },
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
@@ -42,7 +42,6 @@
     "verify": "node scripts/verify-cli.mjs"
   },
   "dependencies": {
-    "@dsh-external/dsh-maafw-core": "file:../dsh-maafw-core",
     "@maaxyz/maa-node": "5.13.0-beta.4"
   },
   "devDependencies": {

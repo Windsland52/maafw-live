@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * maafw-run CLI 装配级回归。
+ * maafw-live CLI 装配级回归。
  *
  * 全部通过**真实子进程**断言，不 import 内部函数——因为技能与 CI 消费的是
  * 「stdout/stderr/退出码」这个外部契约，内部重构不该影响它，内部单测也测不到它。
@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const BIN = join(ROOT, 'bin', 'maafw-run.mjs')
+const BIN = join(ROOT, 'bin', 'maafw-live.mjs')
 
 /** 信封字段集：只增不改。改动此表必须同步 README 与 protocol.ts 的 SCHEMA_VERSION。 */
 const ENVELOPE_KEYS = [
@@ -66,7 +66,7 @@ function parseEnvelope(stdout) {
   }
 }
 
-process.stdout.write('maafw-run CLI 装配级回归\n')
+process.stdout.write('maafw-live CLI 装配级回归\n')
 
 /* [1] 帮助路径 */
 {
@@ -84,12 +84,12 @@ process.stdout.write('maafw-run CLI 装配级回归\n')
 {
   const v = runCli(['version'])
   check('[3] version 退出 0', v.code === 0, `code=${v.code}`)
-  check('[3] version 含 CLI 版本号', /maafw-run \d+\.\d+\.\d+/.test(v.stdout), v.stdout.split('\n')[0])
+  check('[3] version 含 CLI 版本号', /maafw-live \d+\.\d+\.\d+/.test(v.stdout), v.stdout.split('\n')[0])
 
   const vj = runCli(['version', '--json'])
   const e = parseEnvelope(vj.stdout)
   check('[3] version --json 可解析', e !== null)
-  check('[3] version --json 带 core 版本', e?.data?.core !== null && e?.data?.core !== undefined)
+  check('[3] version --json 带 node 版本', typeof e?.data?.node === 'string')
 }
 
 /* [4] 信封契约 */
@@ -113,6 +113,11 @@ process.stdout.write('maafw-run CLI 装配级回归\n')
     check('[4] data.framework 缺省为 null（不要求 clone 框架源码）', e.data?.framework === null)
     check('[4] data 携带工具探针', e.data?.tools?.git !== undefined)
   }
+
+  /* 建议命令必须指向本 CLI，否则调用方会去执行不存在的命令 */
+  const dev = parseEnvelope(runCli(['device', '--json']).stdout)
+  const suggested = Array.isArray(dev?.suggestedCommands) ? dev.suggestedCommands : []
+  check('[4] suggestedCommands 指向本 CLI', suggested.every((c) => String(c).startsWith('maafw-live')), JSON.stringify(suggested))
 }
 
 /* [5] 退出码随环境缺失变化，且 stdout 仍是纯 JSON */
@@ -166,10 +171,10 @@ process.stdout.write('maafw-run CLI 装配级回归\n')
 {
   const r = runCli(['env', '--help'])
   check('[10] 命令级 --help 退出 0', r.code === 0, `code=${r.code}`)
-  check('[10] 命令级 --help 含用法行', r.stdout.includes('maafw-run env'))
+  check('[10] 命令级 --help 含用法行', r.stdout.includes('maafw-live env'))
 
   const h = runCli(['help', 'env'])
-  check('[10] help <cmd> 等价', h.code === 0 && h.stdout.includes('maafw-run env'), `code=${h.code}`)
+  check('[10] help <cmd> 等价', h.code === 0 && h.stdout.includes('maafw-live env'), `code=${h.code}`)
 
   const bad = runCli(['help', 'nope'])
   check('[10] help <未知> 退出 2', bad.code === 2, `code=${bad.code}`)

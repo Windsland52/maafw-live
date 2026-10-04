@@ -1,11 +1,11 @@
 /**
- * maafw-run repl —— 一次连接、多步操作的会话外壳。
+ * maafw-live repl —— 一次连接、多步操作的会话外壳。
  *
  * 为什么需要它：daemon 的连接是进程态，而设备操作天生是多步的（连上 → 看画面 → 点 → 再看）。
  * 一次性命令每次都要重连，所以把"连接一次、命令复用"做成一个前台循环：内部与一次性命令
  * 走同一批动作函数（runtime/actions），因此不存在第二套参数规则。
  *
- * 既能交互用，也能被脚本/agent 用管道驱动：printf 'probe\nquit\n' | maafw-run repl
+ * 既能交互用，也能被脚本/agent 用管道驱动：printf 'probe\nquit\n' | maafw-live repl
  */
 import readline from 'node:readline'
 import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
@@ -51,7 +51,7 @@ function short(v: unknown, max = 400): string {
 export const replCommand: Command = {
   name: 'repl',
   summary: '交互/管道会话：连接一次，后续命令复用同一个 daemon 与设备会话',
-  usage: 'maafw-run repl [--project <dir>|--kind win32|adb|gamepad [--target ...]]',
+  usage: 'maafw-live repl [--project <dir>|--kind win32|adb|gamepad [--target ...]]',
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {

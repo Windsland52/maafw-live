@@ -3,7 +3,7 @@
  *
  * daemon 是 `daemon/framed.mjs`：一个独立子进程，经 stdin/stdout 说 JSON 行协议，持有
  * Controller / Resource / Tasker、帧流与环形缓冲。本模块负责 spawn、请求应答配对、超时硬杀
- * 自愈、原生 stderr 日志环、以及帧/事件汇聚——CLI 命令、`maafw-run repl`、宿主插件与任何 headless
+ * 自愈、原生 stderr 日志环、以及帧/事件汇聚——CLI 命令、`maafw-live repl`、宿主插件与任何 headless
  * harness 都用它，避免每个消费者各写一遍同一套管道。
  *
  * 两条不变量：
@@ -63,7 +63,7 @@ export interface DaemonClient {
 }
 
 export interface SpawnOptions {
-  /** 预览帧与临时产物的目录；默认 ~/.maafw-run */
+  /** 预览帧与临时产物的目录；默认 ~/.maafw-live */
   runDir?: string
   /** 显式 daemon 路径；默认包内 lib/daemon/framed.mjs，可用 MAA_DAEMON 覆盖 */
   daemonPath?: string
@@ -75,7 +75,7 @@ const CAP = { frames: 2000, events: 2000, logs: 400 }
 const DEFAULT_TIMEOUT = 30000
 
 export function defaultRunDir(): string {
-  return join(homedir(), '.maafw-run')
+  return join(homedir(), '.maafw-live')
 }
 
 /** 定位 daemon 脚本：显式参数 → MAA_DAEMON → 包内 lib/daemon/framed.mjs。 */

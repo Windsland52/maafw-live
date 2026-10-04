@@ -1,14 +1,14 @@
 /**
  * 运行时动作层：把 daemon 的 JSON 行命令包成有类型、有超时、有默认值的函数。
  *
- * 命令（`src/commands/*`）与 `maafw-run repl` 都只调这一层——同一条链路上不允许出现第二份
+ * 命令（`src/commands/*`）与 `maafw-live repl` 都只调这一层——同一条链路上不允许出现第二份
  * 参数拼装逻辑，否则 CLI 与 REPL 会各长出一套规则。项目（interface.json）驱动的连接与运行
  * 也在这里收口，避免"手动连 vs 项目连"两条路径对资源与坐标系的解释分叉。
  */
 import {
   loadInterface, planController, resolveResourcePaths,
   type ControllerPlan, type DeviceLike, type LoadedInterface,
-} from '@dsh-external/dsh-maafw-core'
+} from '../interface/index.js'
 import { spawnDaemon, type DaemonClient, type SpawnOptions } from '../client/daemon.js'
 
 /** 设备会话的连接参数（手动路径）。kind/target 之外全部来自 maafw 的控制器能力。 */
@@ -94,7 +94,7 @@ export interface ProjectPlan {
  *
  * 为什么不猜设备：interface.json 的 controller[] 已经声明了 Adb/Win32、窗口类名与标题正则、
  * 截图与输入方法、以及识别缩放（display_short_side）——猜错不只是连错窗口，还会把 roi 与
- * 模板的坐标系一起猜错。CLI 与面板走同一套规划（core 的纯函数），规则不允许漂移。
+ * 模板的坐标系一起猜错。interface.json 的读法只有 src/interface/ 一份，别处不许再解析一遍。
  */
 export async function planProject(
   c: DaemonClient,

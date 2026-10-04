@@ -50,13 +50,13 @@ export function sessionOptions(values: Record<string, unknown>): SessionOptions 
 export function daemonFail(e: unknown, hint?: string): CommandResult {
   if (e instanceof SessionError) return fail(e.code, e.message, hint, EXIT.ENV)
   const msg = e instanceof Error ? e.message : String(e)
-  return fail('DAEMON_ERROR', msg, hint ?? '用 maafw-run probe 检查运行时；连接类错误先 maafw-run device 看有没有设备', EXIT.ENV)
+  return fail('DAEMON_ERROR', msg, hint ?? '用 maafw-live probe 检查运行时；连接类错误先 maafw-live device 看有没有设备', EXIT.ENV)
 }
 
 export const probeCommand: Command = {
   name: 'probe',
   summary: '自检 maa-node 运行时：绑定版本、adb/win32 设备发现数',
-  usage: 'maafw-run probe',
+  usage: 'maafw-live probe',
 
   async run(): Promise<CommandResult> {
     try {
@@ -81,7 +81,7 @@ export const probeCommand: Command = {
 export const deviceCommand: Command = {
   name: 'device',
   summary: '列出可连接的设备：adb 设备与 win32 窗口',
-  usage: 'maafw-run device [--kind all|adb|win32]',
+  usage: 'maafw-live device [--kind all|adb|win32]',
   options: { kind: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
@@ -104,7 +104,7 @@ export const deviceCommand: Command = {
           exitCode: list.length ? EXIT.OK : EXIT.FINDINGS,
           human: ['设备 ' + list.length + ' 个：', ...human],
           data: { count: list.length, devices: list },
-          ...(list.length ? {} : { suggestedCommands: ['maafw-cli device'] }),
+          ...(list.length ? {} : { suggestedCommands: ['maafw-live device'] }),
         }
       })
     } catch (e) {
@@ -115,8 +115,8 @@ export const deviceCommand: Command = {
 
 export const connectCommand: Command = {
   name: 'connect',
-  summary: '连接设备（进程态：命令退出即断开；多步操作用 maafw-run repl）',
-  usage: 'maafw-run connect --project <dir> | --kind win32|adb|gamepad [--target ...]',
+  summary: '连接设备（进程态：命令退出即断开；多步操作用 maafw-live repl）',
+  usage: 'maafw-live connect --project <dir> | --kind win32|adb|gamepad [--target ...]',
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
@@ -129,7 +129,7 @@ export const connectCommand: Command = {
       return await withDaemon(async (client) => {
         const s = await ensureSession(client, o)
         const lines = describeSession(s)
-        lines.push('', '注意：连接是进程态，本命令退出即断开。多步操作请用 maafw-run repl（连接一次、命令复用）。')
+        lines.push('', '注意：连接是进程态，本命令退出即断开。多步操作请用 maafw-live repl（连接一次、命令复用）。')
         return {
           exitCode: EXIT.OK,
           human: lines,
@@ -141,7 +141,7 @@ export const connectCommand: Command = {
         }
       })
     } catch (e) {
-      return daemonFail(e, '没有匹配的窗口/设备时：先 maafw-run device 看目标是否存在，或用 --hwnd 显式指定')
+      return daemonFail(e, '没有匹配的窗口/设备时：先 maafw-live device 看目标是否存在，或用 --hwnd 显式指定')
     }
   },
 }
@@ -149,7 +149,7 @@ export const connectCommand: Command = {
 export const disconnectCommand: Command = {
   name: 'disconnect',
   summary: '断开设备并销毁 Tasker/Controller（一次性命令，等价于结束 REPL 会话）',
-  usage: 'maafw-run disconnect --project <dir> | --kind ...',
+  usage: 'maafw-live disconnect --project <dir> | --kind ...',
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
@@ -172,7 +172,7 @@ export const disconnectCommand: Command = {
 export const screencapCommand: Command = {
   name: 'screencap',
   summary: '截一帧图并落盘（需要连接：给 --project 或 --kind）',
-  usage: 'maafw-run screencap [--project <dir>|--kind ...] [--out <png>]',
+  usage: 'maafw-live screencap [--project <dir>|--kind ...] [--out <png>]',
   options: { ...CONNECT_OPTIONS, out: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
@@ -203,7 +203,7 @@ export const screencapCommand: Command = {
 export const frameCommand: Command = {
   name: 'frame',
   summary: '帧流状态与历史帧取用（环形缓冲只在 REPL 会话里才有内容）',
-  usage: 'maafw-run frame status | maafw-run frame get [seq] [--roi x,y,w,h] [--out <png>]',
+  usage: 'maafw-live frame status | maafw-live frame get [seq] [--roi x,y,w,h] [--out <png>]',
   options: { ...CONNECT_OPTIONS, roi: { type: 'string' }, out: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
@@ -221,7 +221,7 @@ export const frameCommand: Command = {
       }
     }
     if (sub !== 'get') {
-      return fail('BAD_ARGUMENTS', '用法：maafw-run frame status | maafw-run frame get [seq]', undefined, EXIT.USAGE)
+      return fail('BAD_ARGUMENTS', '用法：maafw-live frame status | maafw-live frame get [seq]', undefined, EXIT.USAGE)
     }
 
     const rawSeq = ctx.positionals[1]
@@ -260,7 +260,7 @@ export const frameCommand: Command = {
 export const runCommand: Command = {
   name: 'run',
   summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐',
-  usage: 'maafw-run run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms>] [--override <json>]',
+  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms>] [--override <json>]',
   options: {
     ...CONNECT_OPTIONS,
     entry: { type: 'string' },
@@ -346,7 +346,7 @@ export const runCommand: Command = {
 export const stopCommand: Command = {
   name: 'stop',
   summary: '停止运行中的任务（post_stop）',
-  usage: 'maafw-run stop',
+  usage: 'maafw-live stop',
 
   async run(): Promise<CommandResult> {
     try {
