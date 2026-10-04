@@ -595,7 +595,10 @@ async function cmdRun(args) {
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl
-  const timeoutMs = Math.min(300000, Math.max(500, Number(args.timeoutMs || 30000)))
+  /* timeoutMs=0：不自动 post_stop，停止权交调用方（LLM 看事件流自行判断 + run_stop）。
+   * >0 时沿用超时保护（防 JumpBack 死循环）。300s 硬上限已移除——长任务用 0。 */
+  const rawT = Number(args.timeoutMs)
+  const timeoutMs = rawT === 0 ? 0 : (Number.isFinite(rawT) && rawT > 0 ? Math.max(500, rawT) : 30000)
   const t0 = Date.now()
   const retention = { start: await captureNow('run-start') }
   const nodes = new Map()   // node_id → {name, start, end, msg, success, seq}
@@ -634,14 +637,18 @@ async function cmdRun(args) {
     /* 超时保护：与 wait() 竞速。wait() 内部会泵事件循环（探针实测：节点回调在 wait 期间送达），
      * 因此 setTimeout 分支可在此期间触发并执行 post_stop —— JumpBack 死循环无法挂死 worker。 */
     let finished = false
-    await Promise.race([
-      job.wait().then(() => { finished = true }),
-      sleep(timeoutMs),
-    ])
-    if (!finished) {
-      try { tasker.post_stop() } catch (e) { /* ignore */ }
-      stopped = true
-      await Promise.race([job.wait().catch(() => null), sleep(1500)])
+    if (timeoutMs > 0) {
+      await Promise.race([
+        job.wait().then(() => { finished = true }),
+        sleep(timeoutMs),
+      ])
+      if (!finished) {
+        try { tasker.post_stop() } catch (e) { /* ignore */ }
+        stopped = true
+        await Promise.race([job.wait().catch(() => null), sleep(1500)])
+      }
+    } else {
+      await job.wait()
     }
     status = job.status
   } catch (e) {

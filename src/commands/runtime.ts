@@ -259,8 +259,9 @@ export const frameCommand: Command = {
 
 export const runCommand: Command = {
   name: 'run',
-  summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐',
-  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms>] [--override <json>]',
+  summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐。退出码按任务级 record.ok',
+  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>]\n' +
+    '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop',
   options: {
     ...CONNECT_OPTIONS,
     entry: { type: 'string' },

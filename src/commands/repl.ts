@@ -12,7 +12,7 @@ import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
-import { ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
+import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 
 const HELP = [
@@ -27,7 +27,7 @@ const HELP = [
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
-  '  run <entry> [--timeout ms] [--override json]',
+  '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
   '  stop                           停止运行中的任务',
   '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] | key <code> | text <string>',
   '  reco <type> [k=v ...] [--sweep json]   识别单测（用缓冲最新帧）',
@@ -59,7 +59,11 @@ export const replCommand: Command = {
   async run(ctx): Promise<CommandResult> {
     const client = spawnDaemon()
     const out = (line: string): void => { process.stdout.write(line + '\n') }
-    const state: { session: string } = { session: '(未连接)' }
+    const state: { session: string; plan: SessionState['plan'] | null } = { session: '(未连接)', plan: null }
+    const remember = (s: SessionState): void => {
+      state.session = String((s.session as { target?: unknown } | null)?.target ?? '(已连接)')
+      state.plan = s.plan ?? null
+    }
 
     const o: SessionOptions = sessionOptions(ctx.values)
     if (o.project || o.kind) {
@@ -104,7 +108,7 @@ export const replCommand: Command = {
               } else {
                 s = await ensureSession(client, { kind: tokens[1], target: tokens[2] })
               }
-              state.session = String((s.session as { target?: unknown } | null)?.target ?? '(已连接)')
+              remember(s)
               out('已连接：' + state.session)
               break
             }
@@ -152,7 +156,7 @@ export const replCommand: Command = {
             }
             case 'run': {
               const entry = tokens[1]
-              if (!entry) { out('用法：run <entry> [--timeout ms] [--override json]'); break }
+              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--override json] [--resource-dir d]'); break }
               const timeout = Number(readFlag(tokens, '--timeout') ?? 30000)
               const overrideRaw = readFlag(tokens, '--override')
               let override: Record<string, unknown> = {}
@@ -160,10 +164,23 @@ export const replCommand: Command = {
                 try { override = JSON.parse(overrideRaw) as Record<string, unknown> }
                 catch { out('--override 不是合法 JSON'); break }
               }
-              const paths = (ctx.values.project ? await act.probe(client).catch(() => null) : null) as unknown
-              void paths
-              const r = await act.run(client, { resourceDir: readFlag(tokens, '--resource-dir'), entry, override, timeoutMs: timeout }, timeout)
-              out(short(r, 800))
+              /* 资源目录：--resource-dir 优先，其次当前项目规划（connect project 的 interface.json） */
+              const resDirs = state.plan?.resource?.paths ?? []
+              const explicitDir = readFlag(tokens, '--resource-dir')
+              if (!explicitDir && !resDirs.length) {
+                out('缺资源：给 --resource-dir <dir>，或先 connect project <dir>')
+                break
+              }
+              /* 异步执行不阻塞提示符：--timeout 0 的长任务靠 stop 中断（同一条客户端连接） */
+              out('已提交 ' + entry + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
+              act.run(client, explicitDir
+                ? { resourceDir: explicitDir, entry, override, timeoutMs: timeout }
+                : { resourceDirs: resDirs, entry, override, timeoutMs: timeout }, timeout)
+                .then((r) => {
+                  const rec = (r as { record?: { ok?: boolean } }).record
+                  out('run 完成：任务级 ' + (rec ? (rec.ok ? 'ok' : 'FAIL') : '未知') + '  ' + short(r, 700))
+                })
+                .catch((e) => out('run 失败：' + (e instanceof Error ? e.message : String(e))))
               break
             }
             case 'stop':

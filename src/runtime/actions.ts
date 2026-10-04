@@ -66,8 +66,11 @@ export const kfPromote = (c: DaemonClient, args: { seq?: number; latest?: boolea
   c.call<Record<string, unknown>>('kf_promote', args, 30000)
 
 export function run(c: DaemonClient, args: Record<string, unknown>, timeoutMs = 30000) {
-  const budget = Math.min(300000, Math.max(500, Number(timeoutMs || 30000)))
-  return c.call<Record<string, unknown>>('run', { ...args, timeoutMs: budget }, budget + 15000)
+  /* timeoutMs=0 = 不自动停（停止权交调用方）：客户端调用超时放到 24h 档。
+   * 不用 Infinity——Node 的 setTimeout 上限 2^31-1，超限会立即触发，反而误杀。 */
+  const t = Number(timeoutMs)
+  const budget = t === 0 ? 86400000 : Math.min(86400000, Math.max(500, t || 30000))
+  return c.call<Record<string, unknown>>('run', { ...args, timeoutMs: t === 0 ? 0 : budget }, budget + 15000)
 }
 
 export const input = (c: DaemonClient, payload: Record<string, unknown>, timeoutMs = 20000) =>
