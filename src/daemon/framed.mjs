@@ -1388,6 +1388,236 @@ function cmdColorProbe(args) {
   }
 }
 
+/* ────────────────────────── annotate（轻量 SoM：候选区域 + 编号回画） ──────────────────────────
+ * 候选源：OCR 框（MaaFW OCR 管线，detail.all）+ 连通域（积分图背景差 + BFS）+ 边缘密度
+ * （Sobel 块 z 值聚类）+ 变化 diff 区域（change 事件的 ctrl bbox）。回画编号图 + 候选表，
+ * 模型看图选号 → 查 ctrl 坐标 → click/reco。半透明/粒子/渐变场景候选质量降级，走点选路径。 */
+const FONT3X5 = {
+  0: ['111', '101', '101', '101', '111'], 1: ['010', '110', '010', '010', '111'],
+  2: ['111', '001', '111', '100', '111'], 3: ['111', '001', '111', '001', '111'],
+  4: ['101', '101', '111', '001', '001'], 5: ['111', '100', '111', '001', '111'],
+  6: ['111', '100', '111', '101', '111'], 7: ['111', '001', '001', '001', '001'],
+  8: ['111', '101', '111', '101', '111'], 9: ['111', '101', '111', '001', '111'],
+}
+function drawLabel(buf, w, h, x, y, num, color) {
+  const s = String(num)
+  const lw = s.length * 4 + 1, lh = 7
+  const px = Math.max(0, Math.min(w - lw, x)), py = Math.max(0, Math.min(h - lh, y))
+  for (let yy = 0; yy < lh; yy++) for (let xx = 0; xx < lw; xx++) {
+    const i = ((py + yy) * w + px + xx) * 3
+    buf[i] = 255; buf[i + 1] = 255; buf[i + 2] = 255
+  }
+  for (let k = 0; k < s.length; k++) {
+    const glyph = FONT3X5[s[k]]
+    for (let gy = 0; gy < 5; gy++) for (let gx = 0; gx < 3; gx++) {
+      if (glyph[gy][gx] !== '1') continue
+      const i = ((py + 1 + gy) * w + px + 1 + k * 4 + gx) * 3
+      buf[i] = color[0]; buf[i + 1] = color[1]; buf[i + 2] = color[2]
+    }
+  }
+}
+function drawRect(buf, w, h, box, color) {
+  const [x, y, bw, bh] = box
+  const x1 = Math.min(w - 1, x + bw - 1), y1 = Math.min(h - 1, y + bh - 1)
+  for (let xx = Math.max(0, x); xx <= x1; xx++) {
+    for (const yy of [Math.max(0, y), y1]) {
+      const i = (yy * w + xx) * 3
+      buf[i] = color[0]; buf[i + 1] = color[1]; buf[i + 2] = color[2]
+    }
+  }
+  for (let yy = Math.max(0, y); yy <= y1; yy++) {
+    for (const xx of [Math.max(0, x), x1]) {
+      const i = (yy * w + xx) * 3
+      buf[i] = color[0]; buf[i + 1] = color[1]; buf[i + 2] = color[2]
+    }
+  }
+}
+
+/** 灰度图积分图 → 均值背景 → 背景差二值 → BFS 连通域（面积过滤） */
+function connComponents(rgb, w, h) {
+  const gray = new Float64Array(w * h)
+  for (let i = 0, p = 0; i < w * h; i++, p += 3) {
+    gray[i] = (rgb[p] * 3 + rgb[p + 1] * 6 + rgb[p + 2]) * 0.1
+  }
+  const integ = new Float64Array((w + 1) * (h + 1))
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0
+    for (let x = 0; x < w; x++) {
+      rowSum += gray[y * w + x]
+      integ[(y + 1) * (w + 1) + (x + 1)] = integ[y * (w + 1) + (x + 1)] + rowSum
+    }
+  }
+  const R = 12
+  const dev = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1)
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1)
+      const area = (x1 - x0) * (y1 - y0)
+      const sum = integ[y1 * (w + 1) + x1] - integ[y0 * (w + 1) + x1] - integ[y1 * (w + 1) + x0] + integ[y0 * (w + 1) + x0]
+      if (Math.abs(gray[y * w + x] - sum / area) > 26) dev[y * w + x] = 1
+    }
+  }
+  const seen = new Uint8Array(w * h)
+  const boxes = []
+  const queue = new Int32Array(w * h)
+  for (let start = 0; start < w * h; start++) {
+    if (!dev[start] || seen[start]) continue
+    let qs = 0, qe = 0
+    queue[qe++] = start
+    seen[start] = 1
+    let minX = w, minY = h, maxX = 0, maxY = 0, area = 0
+    while (qs < qe) {
+      const p = queue[qs++]
+      const px = p % w, py = (p / w) | 0
+      area++
+      if (px < minX) minX = px; if (px > maxX) maxX = px
+      if (py < minY) minY = py; if (py > maxY) maxY = py
+      if (px > 0 && dev[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; queue[qe++] = p - 1 }
+      if (px < w - 1 && dev[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; queue[qe++] = p + 1 }
+      if (py > 0 && dev[p - w] && !seen[p - w]) { seen[p - w] = 1; queue[qe++] = p - w }
+      if (py < h - 1 && dev[p + w] && !seen[p + w]) { seen[p + w] = 1; queue[qe++] = p + w }
+    }
+    if (area >= 120 && area <= 24000 && maxX - minX >= 10 && maxY - minY >= 10) {
+      boxes.push([minX, minY, maxX - minX + 1, maxY - minY + 1])
+    }
+  }
+  return boxes
+}
+
+/** Sobel 边缘密度的块级聚类（16px 块，z 值超限块 BFS 成框） */
+function edgeDensityBoxes(rgb, w, h) {
+  const BS = 16
+  const bw = Math.ceil(w / BS), bh = Math.ceil(h / BS)
+  const mag = new Float64Array(w * h)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 3
+      const gx = (rgb[i + 3] * 2 + rgb[i - w * 3 + 3] + rgb[i + w * 3 + 3]) - (rgb[i - 3] * 2 + rgb[i - w * 3 - 3] + rgb[i + w * 3 - 3])
+      const gy = (rgb[i + w * 3] * 2 + rgb[i + w * 3 + 1] + rgb[i + w * 3 - 1]) - (rgb[i - w * 3] * 2 + rgb[i - w * 3 + 1] + rgb[i - w * 3 - 1])
+      mag[y * w + x] = Math.abs(gx) + Math.abs(gy)
+    }
+  }
+  const blk = new Float64Array(bw * bh)
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) blk[((y / BS) | 0) * bw + ((x / BS) | 0)] += mag[y * w + x]
+  let mean = 0
+  for (const v of blk) mean += v
+  mean /= blk.length
+  let sd = 0
+  for (const v of blk) sd += (v - mean) * (v - mean)
+  sd = Math.sqrt(sd / blk.length)
+  const hot = new Uint8Array(bw * bh)
+  for (let k = 0; k < blk.length; k++) if (blk[k] > mean + 1.2 * sd && blk[k] > 2000) hot[k] = 1
+  const seen = new Uint8Array(bw * bh)
+  const boxes = []
+  const stack = []
+  for (let k = 0; k < bw * bh; k++) {
+    if (!hot[k] || seen[k]) continue
+    stack.length = 0
+    stack.push(k)
+    seen[k] = 1
+    let minX = bw, minY = bh, maxX = 0, maxY = 0, n = 0
+    while (stack.length) {
+      const p = stack.pop()
+      const px = p % bw, py = (p / bw) | 0
+      n++
+      if (px < minX) minX = px; if (px > maxX) maxX = px
+      if (py < minY) minY = py; if (py > maxY) maxY = py
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = px + dx, ny = py + dy
+        if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue
+        const q = ny * bw + nx
+        if (hot[q] && !seen[q]) { seen[q] = 1; stack.push(q) }
+      }
+    }
+    if (n >= 2) {
+      const x = minX * BS, y = minY * BS
+      boxes.push([x, y, Math.min(w - x, (maxX - minX + 1) * BS), Math.min(h - y, (maxY - minY + 1) * BS)])
+    }
+  }
+  return boxes
+}
+
+const SOM_COLORS = { ocr: [0, 190, 255], conn: [60, 220, 60], edge: [255, 160, 0], diff: [255, 70, 70] }
+const SOM_PRIORITY = { ocr: 0, diff: 1, conn: 2, edge: 3 }
+
+async function cmdAnnotate(args) {
+  const fr = args.seq !== undefined && args.seq !== null
+    ? S.ring.find((r) => r.seq === Number(args.seq))
+    : S.ring[S.ring.length - 1]
+  if (!fr) return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）：先 screencap / stream 产生观测' }
+  const sx = fr.fw > 0 ? fr.fw / fr.w : 1
+  const sy = fr.fh > 0 ? fr.fh / fr.h : 1
+  const toCtrl = (b) => [Math.round(b[0] * sx), Math.round(b[1] * sy), Math.round(b[2] * sx), Math.round(b[3] * sy)]
+  const raw = []
+
+  /* 源 1：OCR 框（子进程跑 MaaFW OCR，detail.all 是全部文本框） */
+  if (args.resourceDir) {
+    const imgFile = path.join(os.tmpdir(), 'maa_som_' + Date.now() + '.png')
+    try {
+      fs.writeFileSync(imgFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
+      const r = await spawnRecoChild({ resourceDir: String(args.resourceDir), type: 'OCR', image: imgFile, cases: [{}] }, 60000)
+      if (r && r.ok) {
+        const det = r.results && r.results[0] && r.results[0].detail
+        const all = det && det.detail && Array.isArray(det.detail.all) ? det.detail.all : []
+        for (const hit of all) {
+          if (!Array.isArray(hit.box) || Number(hit.score) < 0.5) continue
+          raw.push({ source: 'ocr', box: hit.box.map(Number), extra: { text: String(hit.text ?? ''), score: Number(hit.score) } })
+        }
+      }
+    } finally {
+      try { fs.rmSync(imgFile, { force: true }) } catch (e) { /* ignore */ }
+    }
+  }
+  /* 源 2/3：连通域与边缘密度（纯 CPU，小图上毫秒级） */
+  for (const b of connComponents(fr.rgb, fr.w, fr.h)) raw.push({ source: 'conn', box: b })
+  for (const b of edgeDensityBoxes(fr.rgb, fr.w, fr.h)) raw.push({ source: 'edge', box: b })
+  /* 源 4：最近 change 事件的 diff 区域（ctrl → 小图坐标） */
+  const diffs = []
+  for (let i = S.events.length - 1; i >= 0 && diffs.length < 3; i--) {
+    const ev = S.events[i]
+    if (ev.type === 'change' && ev.region && ev.region.ctrl) diffs.push(ev.region.ctrl)
+  }
+  for (const c of diffs) {
+    raw.push({ source: 'diff', box: [Math.round(c[0] / sx), Math.round(c[1] / sy), Math.round(c[2] / sx), Math.round(c[3] / sy)] })
+  }
+
+  /* 去重合并：IoU>0.6 保留优先级高的源（ocr > diff > conn > edge）；上限 30 */
+  raw.sort((a, b) => (SOM_PRIORITY[a.source] ?? 9) - (SOM_PRIORITY[b.source] ?? 9))
+  const iou = (a, b) => {
+    const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]))
+    const iy = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]))
+    const inter = ix * iy
+    const uni = a[2] * a[3] + b[2] * b[3] - inter
+    return uni > 0 ? inter / uni : 0
+  }
+  const cands = []
+  for (const c of raw) {
+    if (c.box[2] < 8 || c.box[3] < 8) continue
+    if (cands.some((x) => iou(x.box, c.box) > 0.6)) continue
+    cands.push(c)
+    if (cands.length >= 30) break
+  }
+  /* 回画：源配色边框 + 编号标签 */
+  const buf = Buffer.from(fr.rgb)
+  cands.forEach((c, i) => {
+    const color = SOM_COLORS[c.source] ?? [200, 200, 200]
+    drawRect(buf, fr.w, fr.h, c.box, color)
+    drawLabel(buf, fr.w, fr.h, c.box[0], c.box[1] - 8, i + 1, [20, 20, 20])
+  })
+  const out = args.out || path.join(process.cwd(), 'maa_som_' + Date.now() + '.png')
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  fs.writeFileSync(out, pngEncodeRGB(buf, fr.w, fr.h))
+  return {
+    ok: true, out, seq: fr.seq,
+    small: [fr.w, fr.h], ctrl: [fr.fw, fr.fh],
+    count: cands.length,
+    sources: { ocr: cands.filter((c) => c.source === 'ocr').length, conn: cands.filter((c) => c.source === 'conn').length, edge: cands.filter((c) => c.source === 'edge').length, diff: cands.filter((c) => c.source === 'diff').length },
+    candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...(c.extra ?? {}) })),
+    ...(cands.length === 0 ? { warn: '无候选：画面可能静止且低对比；换帧或走点选路径' } : {}),
+  }
+}
+
 /* ────────────────────────── 消息分发 ────────────────────────── */
 const handlers = {
   init: (a) => {
@@ -1408,6 +1638,7 @@ const handlers = {
   stream_status: cmdStreamStatus,
   frame_get: cmdFrameGet,
   tpl_crop: cmdTplCrop,
+  annotate: cmdAnnotate,
   color_probe: cmdColorProbe,
   l0_status: cmdL0Status,
   kf_promote: cmdKfPromote,

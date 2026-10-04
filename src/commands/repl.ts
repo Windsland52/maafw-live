@@ -27,6 +27,7 @@ const HELP = [
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
   '  color [--roi x,y,w,h]        探色（均值/HSV/主色，最新缓冲帧）',
   '  crop --roi x,y,w,h | --point x,y [--pad n] [--out f.png]   模板裁剪（L0 原图 + 自匹配）',
+  '  annotate [--out f.png]        SoM 候选与编号回画（OCR/diff/连通域/边缘）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
@@ -146,9 +147,13 @@ export const replCommand: Command = {
               if (sub === 'start') {
                 const fps = readFlag(tokens, '--fps')
                 const scale = readFlag(tokens, '--scale')
+                const blockThresh = readFlag(tokens, '--block-thresh')
+                const changeGlobal = readFlag(tokens, '--change-global')
                 out(short(await act.streamStart(client, {
                   ...(fps ? { fps: Number(fps) } : {}),
                   ...(scale ? { scale: Number(scale) } : {}),
+                  ...(blockThresh ? { blockThresh: Number(blockThresh) } : {}),
+                  ...(changeGlobal ? { changeGlobal: Number(changeGlobal) } : {}),
                 })))
               } else if (sub === 'stop') out(short(await act.streamStop(client)))
               else out(short(await act.streamStatus(client)))
@@ -182,6 +187,18 @@ export const replCommand: Command = {
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
                 ...(state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {}),
               }), 600))
+              break
+            }
+            case 'annotate': {
+              const r = await act.annotate(client, {
+                ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
+                ...(state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {}),
+              })
+              if (r.ok === false) { out('annotate 失败：' + String(r.error)); break }
+              out('SoM ' + String(r.count) + ' 候选 → ' + String(r.out))
+              for (const c of (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string }>) ?? []) {
+                out('  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',') + (c.text ? '  "' + c.text + '"' : ''))
+              }
               break
             }
             case 'events': {
