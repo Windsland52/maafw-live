@@ -22,7 +22,7 @@ const HELP = [
   '  connect <win32|adb|gamepad> [target]   手动连接',
   '  connect project <dir> [hwnd|address]   按 interface.json 规划连接（推荐）',
   '  disconnect                     断开并销毁 Tasker/Controller',
-  '  screencap [out.png]            截一帧落盘',
+  '  screencap [out.png]            截一帧落盘（同时进 L0，可升格）',
   '  stream start [--fps n] [--scale n] | stream stop | stream status',
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
@@ -30,6 +30,7 @@ const HELP = [
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
   '  stop                           停止运行中的任务',
   '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] | key <code> | text <string>',
+  '  press <x> <y> [--duration ms] | dbclick <x> <y> | keys <c[,c+..]> | scroll <dx> <dy> | move <dx> <dy>',
   '  reco <type> [k=v ...] [--sweep json]   识别单测（用缓冲最新帧）',
   '  kf status | kf promote [seq|latest] [--note s] | kf list | kf resolve <kf:...>',
   '  help | quit',
@@ -69,7 +70,7 @@ export const replCommand: Command = {
     if (o.project || o.kind) {
       try {
         const s = await ensureSession(client, o)
-        state.session = String((s.session as { target?: unknown } | null)?.target ?? '(已连接)')
+        remember(s)
         out('已连接：' + state.session)
       } catch (e) {
         out('连接失败：' + (e instanceof Error ? e.message : String(e)))
@@ -199,6 +200,27 @@ export const replCommand: Command = {
               break
             case 'key':
               out(short(await act.input(client, { kind: 'key', code: Number(tokens[1]) })))
+              break
+            case 'keys':
+              out(short(await act.input(client, {
+                kind: 'keys',
+                codes: String(tokens[1] ?? '').split(/[+,]/).map((s) => Number(s.trim())),
+              })))
+              break
+            case 'press':
+              out(short(await act.input(client, {
+                kind: 'press', x: Number(tokens[1]), y: Number(tokens[2]),
+                duration: Number(readFlag(tokens, '--duration') ?? 800),
+              })))
+              break
+            case 'dbclick':
+              out(short(await act.input(client, { kind: 'dbclick', x: Number(tokens[1]), y: Number(tokens[2]) })))
+              break
+            case 'scroll':
+              out(short(await act.input(client, { kind: 'scroll', dx: Number(tokens[1]), dy: Number(tokens[2]) })))
+              break
+            case 'move':
+              out(short(await act.input(client, { kind: 'move', dx: Number(tokens[1]), dy: Number(tokens[2]) })))
               break
             case 'text':
               out(short(await act.input(client, { kind: 'text', text: line.trim().slice(5) })))

@@ -701,11 +701,39 @@ async function cmdInput(args) {
   let job = null
   if (k === 'click') {
     job = S.ctrl.post_click(Number(args.x), Number(args.y), Number(args.contact ?? 0), Number(args.pressure ?? 1))
+  } else if (k === 'dbclick') {
+    /* 双击：两次 click 间隔一拍（控制器消息模型下无原子双击原语） */
+    await S.ctrl.post_click(Number(args.x), Number(args.y)).wait()
+    await sleep(Math.max(20, Number(args.gap ?? 60)))
+    job = S.ctrl.post_click(Number(args.x), Number(args.y))
+  } else if (k === 'press') {
+    /* 长按：touch_down → 保持 → touch_up（保持期不占用事件循环之外的资源） */
+    const contact = Number(args.contact ?? 0)
+    await S.ctrl.post_touch_down(contact, Number(args.x), Number(args.y), Number(args.pressure ?? 1)).wait()
+    await sleep(Math.max(50, Number(args.duration ?? 800)))
+    job = S.ctrl.post_touch_up(contact)
   } else if (k === 'swipe') {
     job = S.ctrl.post_swipe(Number(args.x1), Number(args.y1), Number(args.x2), Number(args.y2),
       Number(args.duration ?? 300), Number(args.contact ?? 0), Number(args.pressure ?? 1))
   } else if (k === 'key') {
     job = S.ctrl.post_click_key(Number(args.code))
+  } else if (k === 'keys') {
+    /* 组合键：全按下再全抬起（按下顺序=给定顺序，抬起反序，模拟真实手型） */
+    const codes = (Array.isArray(args.codes) ? args.codes : String(args.codes ?? '').split(/[+,]/))
+      .map((c) => Number(String(c).trim())).filter((c) => Number.isFinite(c) && c > 0)
+    if (!codes.length) return { ok: false, error: 'keys 需要至少一个键码（数组或逗号/加号分隔）' }
+    const hold = Math.max(20, Number(args.hold ?? 60))
+    for (const c of codes) await S.ctrl.post_key_down(c).wait()
+    await sleep(hold)
+    for (const c of codes.slice().reverse()) await S.ctrl.post_key_up(c).wait()
+    retention.after = await captureNow('action-after')
+    return done(null)
+  } else if (k === 'scroll') {
+    /* 滚轮：dx/dy 为格数，建议 120 的倍数（WHEEL_DELTA） */
+    job = S.ctrl.post_scroll(Number(args.dx ?? 0), Number(args.dy ?? 0))
+  } else if (k === 'move') {
+    /* 相对移动（Win32/MacOS；FPS 锁鼠标场景配 mouse_lock_follow） */
+    job = S.ctrl.post_relative_move(Number(args.dx ?? 0), Number(args.dy ?? 0))
   } else if (k === 'text') {
     job = S.ctrl.post_input_text(String(args.text ?? ''))
   } else if (k === 'app') {
@@ -713,7 +741,7 @@ async function cmdInput(args) {
       ? S.ctrl.post_stop_app(String(args.intent ?? ''))
       : S.ctrl.post_start_app(String(args.intent ?? ''))
   } else {
-    return { ok: false, error: 'unknown input kind: ' + k + '（click|swipe|key|text|app）' }
+    return { ok: false, error: 'unknown input kind: ' + k + '（click|dbclick|press|swipe|key|keys|scroll|move|text|app）' }
   }
   await job.wait()
   retention.after = await captureNow('action-after')

@@ -109,6 +109,109 @@ export const keyCommand: Command = {
   },
 }
 
+export const keysCommand: Command = {
+  name: 'keys',
+  summary: '组合键（key_down 全按下 → key_up 反序抬起；如 Ctrl+C = 17,67）',
+  usage: 'maafw-live keys <code[,code+...]> [--hold ms] [--project <dir>|--kind ...]',
+  options: { ...CONNECT_OPTIONS, hold: { type: 'string' } },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const miss = needSession(o)
+    if (miss) return miss
+    const raw = String(ctx.positionals[0] ?? '')
+    const codes = raw.split(/[+,]/).map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0)
+    if (!codes.length) {
+      return fail('BAD_ARGUMENTS', '用法：maafw-live keys <code[,code+...]>（至少一个正整数键码）', undefined, EXIT.USAGE)
+    }
+    return inject(
+      o,
+      { kind: 'keys', codes, hold: num(ctx.values, 'hold') ?? 60 },
+      (r) => ['已组合键 ' + codes.join('+') + '，' + String(r.ms) + 'ms'],
+    )
+  },
+}
+
+export const pressCommand: Command = {
+  name: 'press',
+  summary: '长按（touch_down → 保持 duration → touch_up）',
+  usage: 'maafw-live press <x> <y> [--duration ms] [--project <dir>|--kind ...]',
+  options: { ...CONNECT_OPTIONS, duration: { type: 'string' } },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const miss = needSession(o)
+    if (miss) return miss
+    const x = Number(ctx.positionals[0])
+    const y = Number(ctx.positionals[1])
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return fail('BAD_ARGUMENTS', '用法：maafw-live press <x> <y>', undefined, EXIT.USAGE)
+    }
+    return inject(
+      o,
+      { kind: 'press', x, y, duration: num(ctx.values, 'duration') ?? 800 },
+      (r) => ['已长按 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'],
+    )
+  },
+}
+
+export const dbclickCommand: Command = {
+  name: 'dbclick',
+  summary: '双击（两次 click，间隔 --gap，默认 60ms）',
+  usage: 'maafw-live dbclick <x> <y> [--gap ms] [--project <dir>|--kind ...]',
+  options: { ...CONNECT_OPTIONS, gap: { type: 'string' } },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const miss = needSession(o)
+    if (miss) return miss
+    const x = Number(ctx.positionals[0])
+    const y = Number(ctx.positionals[1])
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return fail('BAD_ARGUMENTS', '用法：maafw-live dbclick <x> <y>', undefined, EXIT.USAGE)
+    }
+    return inject(o, { kind: 'dbclick', x, y, gap: num(ctx.values, 'gap') ?? 60 }, (r) => ['已双击 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'])
+  },
+}
+
+export const scrollCommand: Command = {
+  name: 'scroll',
+  summary: '滚轮（dx/dy 格数，建议 120 的倍数 = WHEEL_DELTA；Win32/MacOS）',
+  usage: 'maafw-live scroll <dx> <dy> [--project <dir>|--kind ...]',
+  options: { ...CONNECT_OPTIONS },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const miss = needSession(o)
+    if (miss) return miss
+    const dx = Number(ctx.positionals[0])
+    const dy = Number(ctx.positionals[1])
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+      return fail('BAD_ARGUMENTS', '用法：maafw-live scroll <dx> <dy>（如 0 -120 向上一格）', undefined, EXIT.USAGE)
+    }
+    return inject(o, { kind: 'scroll', dx, dy }, (r) => ['已滚动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
+  },
+}
+
+export const moveCommand: Command = {
+  name: 'move',
+  summary: '鼠标相对移动（Win32/MacOS；FPS 锁鼠标场景配合 mouse_lock_follow）',
+  usage: 'maafw-live move <dx> <dy> [--project <dir>|--kind ...]',
+  options: { ...CONNECT_OPTIONS },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const miss = needSession(o)
+    if (miss) return miss
+    const dx = Number(ctx.positionals[0])
+    const dy = Number(ctx.positionals[1])
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+      return fail('BAD_ARGUMENTS', '用法：maafw-live move <dx> <dy>', undefined, EXIT.USAGE)
+    }
+    return inject(o, { kind: 'move', dx, dy }, (r) => ['已相对移动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
+  },
+}
+
 export const textCommand: Command = {
   name: 'text',
   summary: '输入文本（经控制器注入）',
@@ -125,4 +228,7 @@ export const textCommand: Command = {
   },
 }
 
-export const INPUT_COMMANDS: Command[] = [clickCommand, swipeCommand, keyCommand, textCommand]
+export const INPUT_COMMANDS: Command[] = [
+  clickCommand, swipeCommand, keyCommand, keysCommand,
+  pressCommand, dbclickCommand, scrollCommand, moveCommand, textCommand,
+]
