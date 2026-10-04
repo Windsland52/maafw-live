@@ -465,9 +465,15 @@ function regionOfBlocks(blocks, w, h, fw, fh) {
   }
 }
 
-/** L0 锚区入队（按 seq 去重：同一捕获可能既是滚动帧又是事件锚点，字节共用同一 Buffer）。 */
-function l0AnchorAdd(entry) {
-  if (S.l0.anchor.some((x) => x.seq === entry.seq)) return
+/** L0 锚区入队（按 seq 去重：同一捕获可能既是滚动帧又是事件锚点，字节共用同一 Buffer）。
+ * relabel：显式来源（动作边界/节点锚点）覆盖同帧已被事件路径标上的 change/stable——
+ * 一个捕获一个锚点，但标签以显式意图为准。 */
+function l0AnchorAdd(entry, relabel = false) {
+  const existing = S.l0.anchor.find((x) => x.seq === entry.seq)
+  if (existing) {
+    if (relabel && entry.source) existing.source = entry.source
+    return
+  }
   S.l0.anchor.push(entry)
   if (S.l0.anchor.length > S.l0.anchorCap) S.l0.anchor.splice(0, S.l0.anchor.length - S.l0.anchorCap)
   l0EvictToBudget()
@@ -570,11 +576,32 @@ async function captureNow(source) {
     const dec = pngDecode(b)
     pushFrame(dec, b)
     const ent = S.l0.roll[S.l0.roll.length - 1]
-    l0AnchorAdd({ ...ent, source })
+    l0AnchorAdd({ ...ent, source }, true)
     return { ok: true, seq: ent.seq, t: ent.t, w: ent.w, h: ent.h }
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) }
   }
+}
+
+/**
+ * 用控制器缓存图入锚区（node-ok/fail 锚点的实现方式）。
+ * 关键约束：不要在节点回调里发 post_screencap——add_sink 回调中并发截图会与 Tasker
+ * 识别回路竞争控制器，实测触发原生崩溃 0xC0000005（maa-node 5.14.2 win32-x64，
+ * 2026-10-05 真机：同任务关锚点正常 / 开锚点必崩）。
+ * cached_image 是框架识别回路自己截的图：零新任务、无竞争，且节点回调时刻的缓存
+ * 通常就是该节点识别所用的那张（bound 倾向）；但下一节点识别可能已刷新缓存，
+ * 关联强度按 adjacent 报，不冒称 bound（契约 §4）。 */
+function anchorFromCache(source) {
+  if (!S.ctrl) return
+  let img = null
+  try { img = S.ctrl.cached_image } catch (e) { return }
+  if (!img || img.byteLength < 9) return
+  const b = Buffer.from(img)
+  let dec = null
+  try { dec = pngDecode(b) } catch (e) { return }
+  pushFrame(dec, b)
+  const ent = S.l0.roll[S.l0.roll.length - 1]
+  l0AnchorAdd({ ...ent, source }, true)
 }
 /** 事件入环 + 推送 host（cap 1200） */
 function pushEvent(ev) {
@@ -818,12 +845,10 @@ async function cmdRun(args) {
         nodes.set(String(m.node_id), n)
         order.push(n)
       }
-      /* 注意：不要在节点回调里抓帧（node-ok/fail 锚点）——add_sink 回调中并发 post_screencap
-       * 会与 Tasker 识别回路竞争控制器，实测触发原生崩溃 0xC0000005（maa-node 5.14.2 win32-x64，
-       * 2026-10-05 真机：同任务 off 正常 / on 崩溃）。节点证据走 adjacent 语义（流帧与 change 锚点）。 */
+      /* node-ok/fail 锚点：读控制器缓存图（不发新截图任务，规避并发崩溃，见 anchorFromCache） */
       if (/Starting$/.test(m.msg)) { n.status = 'running'; n.start = t }
-      else if (/Succeeded$/.test(m.msg)) { n.status = 'ok'; n.end = t }
-      else if (/Failed$/.test(m.msg)) { n.status = 'fail'; n.end = t }
+      else if (/Succeeded$/.test(m.msg)) { n.status = 'ok'; n.end = t; anchorFromCache('node-ok') }
+      else if (/Failed$/.test(m.msg)) { n.status = 'fail'; n.end = t; anchorFromCache('node-fail') }
       else if (n.msgs.length < 6) n.msgs.push(m.msg)
       n.seq = seq
       /* 节点级消息进事件流：maa_frame_poll / maa_timing_measure 直接消费 */

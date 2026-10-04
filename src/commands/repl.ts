@@ -218,6 +218,10 @@ export const replCommand: Command = {
             case 'run': {
               const entry = tokens[1]
               if (!entry) { out('用法：run <entry> [--timeout ms|0] [--override json] [--resource-dir d]'); break }
+              /* 任务名 → pipeline 入口解析（与一次性 CLI 同规则）：interface 的 task 名（如中文
+               * "启动游戏"）不是 pipeline 节点名，不解析会 task not exist 秒败 */
+              const task = state.plan?.loaded.tasks.find((t) => t.name === entry || t.entry === entry)
+              const resolvedEntry = task?.entry ?? entry
               const timeout = Number(readFlag(tokens, '--timeout') ?? 30000)
               const overrideRaw = readFlag(tokens, '--override')
               let override: Record<string, unknown> = {}
@@ -233,12 +237,12 @@ export const replCommand: Command = {
                 break
               }
               /* 异步执行不阻塞提示符：--timeout 0 的长任务靠 stop 中断（同一条客户端连接） */
-              out('已提交 ' + entry + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
+              out('已提交 ' + resolvedEntry + (task && task.name !== resolvedEntry ? '（任务 ' + task.name + '）' : '') + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
               const plan = state.plan
               act.run(client, explicitDir
-                ? { resourceDir: explicitDir, entry, override, timeoutMs: timeout }
+                ? { resourceDir: explicitDir, entry: resolvedEntry, override, timeoutMs: timeout }
                 : {
-                    resourceDirs: resDirs, entry, override, timeoutMs: timeout,
+                    resourceDirs: resDirs, entry: resolvedEntry, override, timeoutMs: timeout,
                     ...(plan?.loaded.agents.length
                       ? { agents: plan.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })), agentCwd: plan.loaded.dir ?? undefined }
                       : {}),
