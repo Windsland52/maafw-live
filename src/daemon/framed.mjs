@@ -790,6 +790,9 @@ async function cmdRun(args) {
         nodes.set(String(m.node_id), n)
         order.push(n)
       }
+      /* 注意：不要在节点回调里抓帧（node-ok/fail 锚点）——add_sink 回调中并发 post_screencap
+       * 会与 Tasker 识别回路竞争控制器，实测触发原生崩溃 0xC0000005（maa-node 5.14.2 win32-x64，
+       * 2026-10-05 真机：同任务 off 正常 / on 崩溃）。节点证据走 adjacent 语义（流帧与 change 锚点）。 */
       if (/Starting$/.test(m.msg)) { n.status = 'running'; n.start = t }
       else if (/Succeeded$/.test(m.msg)) { n.status = 'ok'; n.end = t }
       else if (/Failed$/.test(m.msg)) { n.status = 'fail'; n.end = t }
