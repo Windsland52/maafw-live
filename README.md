@@ -196,11 +196,12 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 已落地的大件：**关键帧留存与引用**（L0 原图缓存
 滚动区 + 锚区、输入 / run 边界帧、升格与本地关键帧库、离线帧解析；契约与验收用例在
 [`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)）、PI v2 解析补齐
-（import 合并、pipeline_override 四级链、preset 默认值、agent 诊断）、变化检测双阈值（分块亮度差 +
-事件携带变化区域 bbox、阈值校准命令）、输入原语补齐、探色、节点级单测（reco `--act`）、模板裁剪
-（crop，位置优先判据 + 跨帧验证）与轻量 SoM（annotate）。
+（import 合并、pipeline_override 四级链、preset 默认值）、**agent 完整桥接**（run 时 spawn agent
+子进程并经 `maa.Client` 接入；注意 maa-node 与 agent 侧 maa 库须同版本，协议握手要求）、
+变化检测双阈值（分块亮度差 + 事件携带变化区域 bbox、阈值校准命令）、输入原语补齐、探色、
+节点级单测（reco `--act`）、模板裁剪（crop，位置优先判据 + 跨帧验证）与轻量 SoM（annotate）。
 
-之后的大方向：`timing`（从帧流与节点事件反推 delay / timeout）、agent 完整桥接（待 maa-node 绑定）。
+之后的大方向：`timing`（从帧流与节点事件反推 delay / timeout）。
 
 不在本包范围（各有归属）：
 
