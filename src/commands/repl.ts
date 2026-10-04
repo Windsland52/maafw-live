@@ -11,6 +11,7 @@ import readline from 'node:readline'
 import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
+import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
 import { ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 
@@ -30,6 +31,7 @@ const HELP = [
   '  stop                           停止运行中的任务',
   '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] | key <code> | text <string>',
   '  reco <type> [k=v ...] [--sweep json]   识别单测（用缓冲最新帧）',
+  '  kf status | kf promote [seq|latest] [--note s] | kf list | kf resolve <kf:...>',
   '  help | quit',
 ]
 
@@ -201,6 +203,32 @@ export const replCommand: Command = {
                 resourceDir, type, param,
                 ...(sweepRaw ? { sweep: JSON.parse(sweepRaw) } : {}),
               }), 800))
+              break
+            }
+            case 'kf': {
+              const sub = tokens[1] ?? 'status'
+              if (sub === 'status') {
+                out(short(await act.l0Status(client), 600))
+              } else if (sub === 'promote') {
+                const what = tokens[2]
+                const note = readFlag(tokens, '--note')
+                const r = await act.kfPromote(client, /^\d+$/.test(String(what))
+                  ? { seq: Number(what), ...(note ? { note } : {}) }
+                  : { latest: true, ...(note ? { note } : {}) })
+                if (r.ok === false) out('升格失败：' + String(r.error))
+                else out('已升格 ' + String(r.id) + ' → ' + String(r.path) + (r.idempotent ? '（幂等重试）' : ''))
+              } else if (sub === 'list') {
+                const { manifest, error } = loadManifest(defaultFramesDir())
+                if (error) { out('库不可读：' + error); break }
+                if (!manifest) { out('关键帧库尚无留存'); break }
+                out('关键帧库 ' + manifest.frames.length + ' 条（libraryId ' + manifest.libraryId + '）')
+                for (const f of manifest.frames) out('  ' + describeRecord(f))
+              } else if (sub === 'resolve') {
+                const r = resolveFrame(defaultFramesDir(), String(tokens[2] ?? ''))
+                out(r.status + (r.reason ? '（' + r.reason + '）' : '') + (r.path ? '  ' + r.path : ''))
+              } else {
+                out('用法：kf status | kf promote [seq|latest] [--note s] | kf list | kf resolve <kf:...>')
+              }
               break
             }
             default:

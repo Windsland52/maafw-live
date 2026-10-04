@@ -19,6 +19,7 @@
 import { createRequire } from 'node:module'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createHash, randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 import zlib from 'node:zlib'
 import fs from 'node:fs'
@@ -188,17 +189,27 @@ const hashStr = (h) => Array.from(h, (v) => (v ? '1' : '0')).join('')
 const S = {
   ctrl: null, res: null, tasker: null,
   session: null,                       // { kind, target, method }
+  daemonId: randomUUID(),              // 本 daemon 实例身份（留存记录的 session.daemon）
+  connGen: 0,                          // 连接代次：每次 connect 成功 +1（留存记录定位用）
+  runDir: null,                        // host init 传入；关键帧库 = runDir/frames
   fullW: 0, fullH: 0,                  // 控制器分辨率（默认短边 720p，pipeline roi/模板同空间）
   previewPath: null,                   // 面板实时预览帧落盘路径（host 传 runDir 初始化）
   stream: false, streamTimer: null,
   streamFps: 8, streamScale: 480, maxFrames: 120,
   seq: 0,
-  ring: [],                            // {seq,t,rgb,w,h,hash,diff}
+  ring: [],                            // {seq,t,rgb,w,h,fw,fh,hash,diff}——fw/fh 为该帧捕获时控制器尺寸
   events: [],                          // {type:'change'|'stable', seq, t, diff, dur?}
   framesMeta: [],                      // {seq,t,hash,diff,w,h}（元数据）
   quietNow: false, stableCount: 0,
   lastPng: null,
   runActive: false,
+  /* L0 原图有界缓存（关键帧留存契约 §1-2）：滚动区=最近 K 张原图（"刚看到就能留"）；
+   * 锚区=change/stable 事件锚点、动作边界、run 起止（各自 FIFO，容量有界可配）。 */
+  l0: {
+    roll: [],                          // {seq,t,png,w,h}
+    anchor: [],                        // {seq,t,png,w,h,source}
+    rollCap: 16, anchorCap: 32,
+  },
 }
 const STATUS = { pending: 1000, running: 2000, succeeded: 3000, failed: 4000 }
 
@@ -339,6 +350,7 @@ async function cmdConnect(args) {
   S.ctrl = ctrl
   await ctrl.post_connection().wait()
   S.session = session
+  S.connGen++
   /* 预热一次截图，取控制器分辨率（默认短边 720 的坐标系，pipeline 的 roi/模板即此空间） */
   let res = null
   try {
@@ -369,36 +381,51 @@ async function cmdScreencap(outFile) {
   if (!buf || buf.byteLength < 8) return { ok: false, error: '截图为空' }
   const b = Buffer.from(buf)
   const dec = pngDecode(b)
-  S.fullW = dec.w; S.fullH = dec.h
+  /* 截图也是一次观测：进环、进 L0（有捕获身份，可被 kf promote --seq 指定升格） */
+  pushFrame(dec, b)
   const file = outFile || path.join(process.cwd(), 'maa_screencap_' + Date.now() + '.png')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, b)
-  return { ok: true, path: file, bytes: b.length, w: dec.w, h: dec.h }
+  return { ok: true, path: file, bytes: b.length, w: dec.w, h: dec.h, seq: S.seq }
 }
 
 /* ────────────────────────── 帧流（自适应节奏 + 事件合并） ────────────────────────── */
-function pushFrame(dec) {
+/** L0 锚区入队（按 seq 去重：同一捕获可能既是滚动帧又是事件锚点，字节共用同一 Buffer）。 */
+function l0AnchorAdd(entry) {
+  if (S.l0.anchor.some((x) => x.seq === entry.seq)) return
+  S.l0.anchor.push(entry)
+  if (S.l0.anchor.length > S.l0.anchorCap) S.l0.anchor.splice(0, S.l0.anchor.length - S.l0.anchorCap)
+}
+
+/**
+ * 一次捕获的统一入口：原图字节先进 L0（先存后解，不解码即落袋），观测面再解码进环。
+ * png 是控制器交付的原始 PNG 字节（不解码、不重编码）；dec 是它解码后的观测数据。
+ */
+function pushFrame(dec, png) {
   const rgb = toRgb(dec)
   const small = downscale(rgb, dec.w, dec.h, S.streamScale)
   const hash = blockHash(small.data, small.w, small.h)
   const prev = S.ring.length ? S.ring[S.ring.length - 1] : null
   const diff = prev ? hashDist(prev.hash, hash) : 0
   S.seq++
-  const fr = { seq: S.seq, t: Date.now(), rgb: small.data, w: small.w, h: small.h, hash, diff }
+  const fr = { seq: S.seq, t: Date.now(), rgb: small.data, w: small.w, h: small.h, fw: dec.w, fh: dec.h, hash, diff }
   S.ring.push(fr)
   if (S.ring.length > S.maxFrames) S.ring.shift()
   S.fullW = dec.w; S.fullH = dec.h
+  const l0 = { seq: fr.seq, t: fr.t, png, w: dec.w, h: dec.h }
+  S.l0.roll.push(l0)
+  if (S.l0.roll.length > S.l0.rollCap) S.l0.roll.splice(0, S.l0.roll.length - S.l0.rollCap)
   const meta = { seq: fr.seq, t: fr.t, hash: hashStr(hash), diff: Math.round(diff * 1000) / 1000, w: fr.w, h: fr.h }
   S.framesMeta.push(meta)
   if (S.framesMeta.length > 2000) S.framesMeta.splice(0, S.framesMeta.length - 2000)
   /* 预览帧落盘（原子替换）：面板 HTTP 直读，避免二进制走 JSON 行协议 */
-  const png = pngEncodeRGB(small.data, small.w, small.h)
+  const preview = pngEncodeRGB(small.data, small.w, small.h)
   if (S.previewPath) {
     const tmp = S.previewPath + '.tmp'
-    try { fs.writeFileSync(tmp, png); fs.renameSync(tmp, S.previewPath) } catch (e) { /* 落盘失败不致命 */ }
+    try { fs.writeFileSync(tmp, preview); fs.renameSync(tmp, S.previewPath) } catch (e) { /* 落盘失败不致命 */ }
   }
   send({ kind: 'frame', meta, preview: S.previewPath })
-  // 变化 / 稳定事件（400ms 窗口合并）
+  // 变化 / 稳定事件（400ms 窗口合并）；锚区只收"新事件"的首帧，合并窗口内不重复入锚
   if (diff > 0.06) {
     S.quietNow = false
     const last = S.events.length ? S.events[S.events.length - 1] : null
@@ -406,12 +433,35 @@ function pushFrame(dec) {
       last.t = fr.t; last.seq = fr.seq; last.diff = Math.max(last.diff, diff)
     } else {
       pushEvent({ type: 'change', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
+      l0AnchorAdd({ ...l0, source: 'change' })
     }
   } else if (prev && diff <= 0.06) {
     if (!S.quietNow) {
       S.quietNow = true
       pushEvent({ type: 'stable', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
+      l0AnchorAdd({ ...l0, source: 'stable' })
     }
+  }
+}
+/**
+ * 主动抓一张原图并入观测流（seq 前进、进环、进 L0，可作动作/run 边界锚点）。
+ * 采集失败如实上报，绝不阻断调用方的动作——动作结果与留存失败分别报告（契约 §9）。
+ */
+async function captureNow(source) {
+  if (!S.ctrl) return { ok: false, error: '未连接设备' }
+  try {
+    const j = S.ctrl.post_screencap()
+    await j.wait()
+    const buf = j.get()
+    if (!buf || buf.byteLength < 8) return { ok: false, error: '空截图' }
+    const b = Buffer.from(buf)
+    const dec = pngDecode(b)
+    pushFrame(dec, b)
+    const ent = S.l0.roll[S.l0.roll.length - 1]
+    l0AnchorAdd({ ...ent, source })
+    return { ok: true, seq: ent.seq, t: ent.t, w: ent.w, h: ent.h }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) }
   }
 }
 /** 事件入环 + 推送 host（cap 1200） */
@@ -428,7 +478,7 @@ async function streamTick() {
     const j = S.ctrl.post_screencap()
     await j.wait()
     const buf = j.get()
-    if (buf && buf.byteLength > 8) pushFrame(pngDecode(Buffer.from(buf)))
+    if (buf && buf.byteLength > 8) pushFrame(pngDecode(Buffer.from(buf)), Buffer.from(buf))
   } catch (e) {
     send({ kind: 'stream_error', error: String(e && e.message || e) })
   }
@@ -445,12 +495,14 @@ async function cmdStreamStart(args) {
   if (args.fps) S.streamFps = Math.min(30, Math.max(1, Number(args.fps)))
   if (args.scale) S.streamScale = Math.min(1280, Math.max(160, Number(args.scale)))
   if (args.maxFrames) S.maxFrames = Math.min(600, Math.max(20, Number(args.maxFrames)))
+  if (args.l0Roll) S.l0.rollCap = Math.min(64, Math.max(1, Number(args.l0Roll)))
+  if (args.l0Anchor) S.l0.anchorCap = Math.min(128, Math.max(1, Number(args.l0Anchor)))
   if (!S.stream) {
     S.stream = true
     S.quietNow = false
     S.streamTimer = setTimeout(streamTick, 0)
   }
-  return { ok: true, fps: S.streamFps, scale: S.streamScale, maxFrames: S.maxFrames }
+  return { ok: true, fps: S.streamFps, scale: S.streamScale, maxFrames: S.maxFrames, l0Roll: S.l0.rollCap, l0Anchor: S.l0.anchorCap }
 }
 async function cmdStreamStop() {
   S.stream = false
@@ -474,16 +526,17 @@ function cmdFrameGet(args) {
   if (!fr) return { ok: false, error: '帧不在缓冲中（seq=' + args.seq + '，范围 ' + (S.ring[0] ? S.ring[0].seq : 0) + '..' + S.seq + '）' }
   const outFile = args.out || path.join(process.cwd(), 'maa_frame_' + fr.seq + '.png')
   if (args.roi && Array.isArray(args.roi) && args.roi.length === 4) {
-    /* ROI 为控制器分辨率坐标（默认短边 720p，与 pipeline 里写的 roi 同空间）→ 映射到降采样缓冲 */
+    /* ROI 为控制器分辨率坐标（默认短边 720p，与 pipeline 里写的 roi 同空间）→ 映射到降采样缓冲。
+     * 换算必须用该帧捕获时的尺寸（fr.fw/fr.fh），不能用当前全局尺寸——重连/改分辨率后旧帧会被错剪。 */
     const [x, y, w, h] = args.roi.map(Number)
-    const sx = S.fullW > 0 ? fr.w / S.fullW : 1
-    const sy = S.fullH > 0 ? fr.h / S.fullH : 1
+    const sx = fr.fw > 0 ? fr.w / fr.fw : 1
+    const sy = fr.fh > 0 ? fr.h / fr.fh : 1
     const rx = Math.max(0, Math.floor(x * sx))
     const ry = Math.max(0, Math.floor(y * sy))
     const rw = Math.min(fr.w - rx, Math.max(1, Math.round(w * sx)))
     const rh = Math.min(fr.h - ry, Math.max(1, Math.round(h * sy)))
     if (rx >= fr.w || ry >= fr.h || rw <= 0 || rh <= 0) {
-      return { ok: false, error: 'ROI 完全越界（' + JSON.stringify(args.roi) + ' vs ' + S.fullW + 'x' + S.fullH + '）' }
+      return { ok: false, error: 'ROI 完全越界（' + JSON.stringify(args.roi) + ' vs 捕获时 ' + fr.fw + 'x' + fr.fh + '）' }
     }
     const crop = Buffer.alloc(rw * rh * 3)
     for (let yy = 0; yy < rh; yy++) {
@@ -491,11 +544,11 @@ function cmdFrameGet(args) {
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true })
     fs.writeFileSync(outFile, pngEncodeRGB(crop, rw, rh))
-    return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh, seq: fr.seq, t: fr.t, diff: fr.diff }
+    return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh, seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh }
   }
   fs.mkdirSync(path.dirname(outFile), { recursive: true })
   fs.writeFileSync(outFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
-  return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: fr.w, h: fr.h, seq: fr.seq, t: fr.t, diff: fr.diff }
+  return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: fr.w, h: fr.h, seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh }
 }
 
 /* ────────────────────────── 资源 / 运行 / 识别 ────────────────────────── */
@@ -544,6 +597,7 @@ async function cmdRun(args) {
   tasker.controller = S.ctrl
   const timeoutMs = Math.min(300000, Math.max(500, Number(args.timeoutMs || 30000)))
   const t0 = Date.now()
+  const retention = { start: await captureNow('run-start') }
   const nodes = new Map()   // node_id → {name, start, end, msg, success, seq}
   const order = []
   const onMsg = (m) => {
@@ -599,6 +653,7 @@ async function cmdRun(args) {
   }
   let dump = null
   try { dump = S.ctrl.get_node_data_parsed('node') } catch (e) { /* ignore */ }
+  retention.end = await captureNow('run-end')
   const rec = {
     ok: status === STATUS.succeeded,
     entry: String(args.entry),
@@ -608,6 +663,7 @@ async function cmdRun(args) {
     startSeq: nodes.size ? order[0].seq : null,
     endSeq: S.seq,
     framesCaptured: S.seq,
+    retention,
     nodes: order.map((n) => ({
       id: n.id, name: n.name, status: n.status,
       ms: (n.end ?? Date.now()) - n.start, seq: n.seq, msgs: n.msgs.slice(-6),
@@ -625,11 +681,16 @@ async function cmdRunStop() {
   return { ok: true }
 }
 
-/* 输入注入：全部经 maafw 控制器（adb/win32 由 maafw 本体选择注入方法），不直接调 adb */
+/* 输入注入：全部经 maafw 控制器（adb/win32 由 maafw 本体选择注入方法），不直接调 adb。
+ * 动作边界（前/后）各抓一张原图进 L0 锚区（契约 §1"采得到"）：
+ * 采集失败不阻断动作——动作结果与留存失败分别报告（契约 §9）。 */
 async function cmdInput(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   const t0 = Date.now()
   const k = String(args.kind || 'click')
+  const retention = {}
+  const done = (job) => ({ ok: true, kind: k, ms: Date.now() - t0, retention })
+  retention.before = await captureNow('action-before')
   let job = null
   if (k === 'click') {
     job = S.ctrl.post_click(Number(args.x), Number(args.y), Number(args.contact ?? 0), Number(args.pressure ?? 1))
@@ -648,7 +709,8 @@ async function cmdInput(args) {
     return { ok: false, error: 'unknown input kind: ' + k + '（click|swipe|key|text|app）' }
   }
   await job.wait()
-  return { ok: true, kind: k, ms: Date.now() - t0 }
+  retention.after = await captureNow('action-after')
+  return done(job)
 }
 
 /* 识别单测：子进程隔离执行（beta 绑定的 post_recognition 在无效模板上会原生崩溃，
@@ -731,14 +793,126 @@ async function cmdRecoTest(args) {
   return { ok: false, error: (r && r.error) || 'reco 失败', meta }
 }
 
+/* ────────────────────────── 关键帧库（L0 升格 + 登记，契约 §4） ──────────────────────────
+ * 库根：runDir/frames（host init 传入 runDir，默认 ~/.maafw-live）。
+ * manifest.json = { schema, libraryId, next, frames[] }；kf ID = kf:<库UUID>:<零填充序号>。
+ * 写入次序是硬约束：先固定像素（tmp+rename 落 L0 文件），再发布 manifest 记录；
+ * manifest 失败即回收文件，绝不返回半成品引用。库副本 v0 按单写者管理，不自动合并。 */
+const KF_SCHEMA = 1
+function kfRoot() { return path.join(S.runDir || path.join(os.homedir(), '.maafw-live'), 'frames') }
+function kfAbsPath(fileRel) { return path.join(kfRoot(), String(fileRel).split('/').join(path.sep)) }
+function kfLoad() {
+  const file = path.join(kfRoot(), 'manifest.json')
+  if (!fs.existsSync(file)) return null
+  let m = null
+  try { m = JSON.parse(fs.readFileSync(file, 'utf8')) } catch (e) { throw new Error('manifest.json 损坏（非合法 JSON）') }
+  if (!m || typeof m !== 'object' || !Array.isArray(m.frames)) throw new Error('manifest.json 结构不符（缺 frames 数组）')
+  /* 未知 schema 明确报错，不默认为当前版（契约 §4） */
+  if (Number(m.schema) !== KF_SCHEMA) throw new Error('manifest schema=' + m.schema + ' 不被当前版本支持（认识：' + KF_SCHEMA + '）')
+  return m
+}
+function kfOpen() {
+  return kfLoad() ?? { schema: KF_SCHEMA, libraryId: randomUUID(), next: 1, frames: [] }
+}
+function kfSave(m) {
+  const file = path.join(kfRoot(), 'manifest.json')
+  fs.mkdirSync(kfRoot(), { recursive: true })
+  const tmp = file + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(m, null, 2))
+  fs.renameSync(tmp, file)
+}
+
+async function cmdKfPromote(args) {
+  /* 固定捕获身份：latest 在接受请求时解析成具体 seq；已淘汰则失败，绝不改取更新帧冒充 */
+  let seq = null
+  if (args.seq !== undefined && args.seq !== null) {
+    seq = Number(args.seq)
+    if (!Number.isFinite(seq)) return { ok: false, error: 'seq 必须是数字' }
+  } else if (args.latest === true) {
+    seq = S.seq
+  } else {
+    return { ok: false, error: '给 seq（数字）或 latest:true 指定要升格的捕获' }
+  }
+  if (seq <= 0) return { ok: false, error: '本会话尚无捕获（seq=0），无可升格' }
+  const ent = S.l0.anchor.find((x) => x.seq === seq) ?? S.l0.roll.find((x) => x.seq === seq)
+  if (!ent) {
+    const range = (l) => (l.length ? l[0].seq + '..' + l[l.length - 1].seq : '空')
+    return {
+      ok: false,
+      error: 'L0 已淘汰：seq=' + seq + '（滚动区 ' + range(S.l0.roll) + '，锚区 ' + range(S.l0.anchor) + '）。' +
+        'L1 参考帧可用 frame_get 导出，但按契约不作 state 证据本体',
+    }
+  }
+  let m
+  try { m = kfOpen() } catch (e) { return { ok: false, error: '关键帧库不可用：' + String(e && e.message || e) } }
+  const sess = S.session || {}
+  const sessionRef = { daemon: S.daemonId, gen: S.connGen, kind: sess.kind ?? null, target: sess.target ?? null }
+  const sha = createHash('sha256').update(ent.png).digest('hex')
+  /* 幂等：同一捕获（daemon + 代次 + seq）重试返回原对象；内容不符报冲突，不任选一份 */
+  const dup = m.frames.find((f) => f.session && f.session.daemon === sessionRef.daemon &&
+    Number(f.session.gen) === sessionRef.gen && Number(f.captureSeq) === seq)
+  if (dup) {
+    if (dup.sha256 === sha) return { ok: true, idempotent: true, record: dup, path: kfAbsPath(dup.file), sha256: sha }
+    return { ok: false, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
+  }
+  const num = Number(m.next) || m.frames.length + 1
+  const id = 'kf:' + m.libraryId + ':' + String(num).padStart(4, '0')
+  const fileRel = 'l0/' + String(num).padStart(4, '0') + '.png'
+  const abs = kfAbsPath(fileRel)
+  try {
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    const tmp = abs + '.tmp'
+    fs.writeFileSync(tmp, ent.png)
+    fs.renameSync(tmp, abs)
+  } catch (e) {
+    return { ok: false, error: 'L0 文件写入失败：' + String(e && e.message || e) }
+  }
+  /* 小图信息只取环内同 seq 帧；已淘汰则明确为空，不借用最新帧数据（契约 §4） */
+  const small = S.ring.find((r) => r.seq === seq)
+  const rec = {
+    id, file: fileRel, sha256: sha,
+    session: sessionRef,
+    capturedAt: new Date(ent.t).toISOString(),
+    captureSeq: seq,
+    ctrlW: ent.w, ctrlH: ent.h,
+    smallW: small ? small.w : null, smallH: small ? small.h : null,
+    scale: small && ent.w ? Math.round((small.w / ent.w) * 1000) / 1000 : null,
+    source: ent.source || 'explicit',
+    note: args.note != null ? String(args.note) : null,
+  }
+  m.frames.push(rec)
+  m.next = num + 1
+  try { kfSave(m) } catch (e) {
+    try { fs.rmSync(abs, { force: true }) } catch (e2) { /* ignore */ }
+    return { ok: false, error: 'manifest 写入失败（L0 文件已回收，未发布引用）：' + String(e && e.message || e) }
+  }
+  return { ok: true, id, path: abs, sha256: sha, retained: 'promoted', record: rec }
+}
+
+function cmdL0Status() {
+  const brief = (e) => ({ seq: e.seq, t: e.t, source: e.source ?? null, w: e.w, h: e.h, bytes: e.png ? e.png.length : 0 })
+  const sum = (list, cap) => ({
+    count: list.length, cap,
+    bytes: list.reduce((a, e) => a + (e.png ? e.png.length : 0), 0),
+    seqRange: list.length ? [list[0].seq, list[list.length - 1].seq] : null,
+  })
+  return {
+    ok: true, seq: S.seq,
+    roll: { ...sum(S.l0.roll, S.l0.rollCap), entries: S.l0.roll.map(brief) },
+    anchor: { ...sum(S.l0.anchor, S.l0.anchorCap), entries: S.l0.anchor.map(brief) },
+    framesDir: kfRoot(),
+  }
+}
+
 /* ────────────────────────── 消息分发 ────────────────────────── */
 const handlers = {
   init: (a) => {
     if (a.runDir) {
-      S.previewPath = path.join(String(a.runDir), 'preview.png')
-      try { fs.mkdirSync(String(a.runDir), { recursive: true }) } catch (e) { /* ignore */ }
+      S.runDir = String(a.runDir)
+      S.previewPath = path.join(S.runDir, 'preview.png')
+      try { fs.mkdirSync(S.runDir, { recursive: true }) } catch (e) { /* ignore */ }
     }
-    return { ok: true, previewPath: S.previewPath }
+    return { ok: true, previewPath: S.previewPath, daemonId: S.daemonId, framesDir: kfRoot() }
   },
   probe: cmdProbe,
   device_list: (a) => cmdDeviceList(a.kind),
@@ -749,6 +923,8 @@ const handlers = {
   stream_stop: cmdStreamStop,
   stream_status: cmdStreamStatus,
   frame_get: cmdFrameGet,
+  l0_status: cmdL0Status,
+  kf_promote: cmdKfPromote,
   run: cmdRun,
   run_stop: cmdRunStop,
   input: cmdInput,

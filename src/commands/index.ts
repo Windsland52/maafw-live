@@ -1,25 +1,27 @@
 /**
  * 命令注册表。
  *
- * 只注册**已经实现且能跑通**的命令。未实现的能力（timing、关键帧留存）列在 README 的
- * 路线图与 `--help` 里，不在这里挂空壳——挂空壳会让 `maa <cmd>` 的失败原因从
- * 「没这个命令」变成「没实现」，技能无法区分，也会让 help 撒谎。
+ * 只注册**已经实现且能跑通**的命令。未实现的能力列在 README 的路线图与 `--help` 里，
+ * 不在这里挂空壳——挂空壳会让 `maa <cmd>` 的失败原因从「没这个命令」变成「没实现」，
+ * 技能无法区分，也会让 help 撒谎。
  */
 import type { Command } from '../protocol.js'
 import { envCommand } from './env.js'
 import { INPUT_COMMANDS } from './input.js'
+import { KF_COMMANDS } from './kf.js'
 import { RECO_COMMANDS } from './reco.js'
 import { replCommand } from './repl.js'
 import { RUNTIME_COMMANDS } from './runtime.js'
 import { versionCommand } from './version.js'
 
-/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 会话。 */
+/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 关键帧 → 会话。 */
 export const COMMANDS: Command[] = [
   envCommand,
   versionCommand,
   ...RUNTIME_COMMANDS,
   ...INPUT_COMMANDS,
   ...RECO_COMMANDS,
+  ...KF_COMMANDS,
   replCommand,
 ]
 

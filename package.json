@@ -26,6 +26,10 @@
       "types": "./lib/types/runtime/actions.d.ts",
       "default": "./lib/runtime/actions.js"
     },
+    "./keyframes": {
+      "types": "./lib/types/runtime/keyframes.d.ts",
+      "default": "./lib/runtime/keyframes.js"
+    },
     "./image": {
       "types": "./lib/types/image.d.ts",
       "default": "./lib/image.js"

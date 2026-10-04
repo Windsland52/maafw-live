@@ -61,6 +61,9 @@ export const streamStatus = (c: DaemonClient) => c.call<Record<string, unknown>>
 export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; out?: string }) =>
   c.call<Record<string, unknown>>('frame_get', args, 30000)
 export const runStop = (c: DaemonClient) => c.call<{ ok: boolean }>('run_stop', {}, 10000)
+export const l0Status = (c: DaemonClient) => c.call<Record<string, unknown>>('l0_status', {}, 10000)
+export const kfPromote = (c: DaemonClient, args: { seq?: number; latest?: boolean; note?: string }) =>
+  c.call<Record<string, unknown>>('kf_promote', args, 30000)
 
 export function run(c: DaemonClient, args: Record<string, unknown>, timeoutMs = 30000) {
   const budget = Math.min(300000, Math.max(500, Number(timeoutMs || 30000)))
