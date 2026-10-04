@@ -25,6 +25,7 @@ const HELP = [
   '  screencap [out.png]            截一帧落盘（同时进 L0，可升格）',
   '  stream start [--fps n] [--scale n] | stream stop | stream status',
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
+  '  color [--roi x,y,w,h]        探色（均值/HSV/主色，最新缓冲帧）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
@@ -160,6 +161,13 @@ export const replCommand: Command = {
                 ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
               })))
+              break
+            }
+            case 'color': {
+              const roiRaw = readFlag(tokens, '--roi')
+              out(short(await act.colorProbe(client, {
+                ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
+              }), 400))
               break
             }
             case 'events': {

@@ -60,6 +60,8 @@ export const streamStop = (c: DaemonClient) => c.call<{ ok: boolean }>('stream_s
 export const streamStatus = (c: DaemonClient) => c.call<Record<string, unknown>>('stream_status', {}, 10000)
 export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; out?: string }) =>
   c.call<Record<string, unknown>>('frame_get', args, 30000)
+export const colorProbe = (c: DaemonClient, args: { seq?: number; roi?: number[] }) =>
+  c.call<Record<string, unknown>>('color_probe', args, 15000)
 export const runStop = (c: DaemonClient) => c.call<{ ok: boolean }>('run_stop', {}, 10000)
 export const l0Status = (c: DaemonClient) => c.call<Record<string, unknown>>('l0_status', {}, 10000)
 export const kfPromote = (c: DaemonClient, args: { seq?: number; latest?: boolean; note?: string }) =>

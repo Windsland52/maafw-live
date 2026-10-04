@@ -989,6 +989,69 @@ function cmdL0Status() {
   }
 }
 
+/* ────────────────────────── 探色（ROI 实测，模型只选色不报色值） ──────────────────────────
+ * 在缓冲帧（小图）上实测 ROI 的均值/HSV/主色；坐标用控制器空间（与 frame_get --roi 同语义，
+ * 按该帧捕获时尺寸换算）。选色后用 reco ColorMatch 出框（走已修好的参数透传链）。 */
+function rgbToHsv(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn
+  let h = 0
+  if (d !== 0) {
+    if (mx === r) h = ((g - b) / d + 6) % 6
+    else if (mx === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h *= 60
+  }
+  return { h: Math.round(h), s: Math.round(mx ? (d / mx) * 100 : 0), v: Math.round((mx / 255) * 100) }
+}
+
+function cmdColorProbe(args) {
+  const fr = args.seq !== undefined && args.seq !== null
+    ? S.ring.find((r) => r.seq === Number(args.seq))
+    : S.ring[S.ring.length - 1]
+  if (!fr) {
+    return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）：先 screencap 或 stream start 产生观测' }
+  }
+  let rx = 0, ry = 0, rw = fr.w, rh = fr.h
+  let ctrlRoi = null
+  if (args.roi && Array.isArray(args.roi) && args.roi.length === 4) {
+    const [x, y, w, h] = args.roi.map(Number)
+    const sx = fr.fw > 0 ? fr.w / fr.fw : 1
+    const sy = fr.fh > 0 ? fr.h / fr.fh : 1
+    rx = Math.max(0, Math.floor(x * sx))
+    ry = Math.max(0, Math.floor(y * sy))
+    rw = Math.min(fr.w - rx, Math.max(1, Math.round(w * sx)))
+    rh = Math.min(fr.h - ry, Math.max(1, Math.round(h * sy)))
+    if (rx >= fr.w || ry >= fr.h || rw <= 0 || rh <= 0) {
+      return { ok: false, error: 'ROI 完全越界（' + JSON.stringify(args.roi) + ' vs 捕获时 ' + fr.fw + 'x' + fr.fh + '）' }
+    }
+    ctrlRoi = [x, y, w, h]
+  }
+  let r = 0, g = 0, b = 0, n = 0
+  const buckets = new Map()
+  for (let y = ry; y < ry + rh; y++) {
+    for (let x = rx; x < rx + rw; x++) {
+      const i = (y * fr.w + x) * 3
+      const R = fr.rgb[i], G = fr.rgb[i + 1], B = fr.rgb[i + 2]
+      r += R; g += G; b += B; n++
+      const key = ((R >> 4) << 8) | ((G >> 4) << 4) | (B >> 4)
+      buckets.set(key, (buckets.get(key) || 0) + 1)
+    }
+  }
+  r = Math.round(r / n); g = Math.round(g / n); b = Math.round(b / n)
+  let dKey = 0, dCnt = 0
+  for (const [k, c] of buckets) if (c > dCnt) { dCnt = c; dKey = k }
+  const dom = [((dKey >> 8) & 15) * 17, ((dKey >> 4) & 15) * 17, (dKey & 15) * 17]
+  return {
+    ok: true, seq: fr.seq,
+    ...(ctrlRoi ? { roi: ctrlRoi } : {}),
+    pixelRoi: [rx, ry, rw, rh], count: n,
+    mean: { r, g, b, gray: Math.round(0.299 * r + 0.587 * g + 0.114 * b) },
+    hsv: rgbToHsv(r, g, b),
+    dominant: { rgb: dom, ratio: Math.round((dCnt / n) * 1000) / 1000 },
+    space: { small: [fr.w, fr.h], ctrl: [fr.fw, fr.fh] },
+  }
+}
+
 /* ────────────────────────── 消息分发 ────────────────────────── */
 const handlers = {
   init: (a) => {
@@ -1008,6 +1071,7 @@ const handlers = {
   stream_stop: cmdStreamStop,
   stream_status: cmdStreamStatus,
   frame_get: cmdFrameGet,
+  color_probe: cmdColorProbe,
   l0_status: cmdL0Status,
   kf_promote: cmdKfPromote,
   run: cmdRun,
