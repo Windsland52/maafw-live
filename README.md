@@ -46,7 +46,7 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → L0 原图裁剪 → 同帧自匹配逐边精修 + 跨帧验证 |
 | `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标） |
 | `maafw-live calibrate` | 变化检测阈值校准：静止画面定噪声地板，推荐 blockThresh / changeGlobal |
-| `maafw-live timing` | 跑一次任务反推 delay / timeout 建议：节点时长 + 动作后画面稳定时间 |
+| `maafw-live timing` | 跑任务反推 delay / timeout 建议：节点时长 + 动作后画面稳定时间；`--runs n`（1-10）多次采样取 P50/P95 分布 |
 | `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析 |
 | `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
 
@@ -206,7 +206,7 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 子进程并经 `maa.Client` 接入；注意 maa-node 与 agent 侧 maa 库须同版本，协议握手要求）、
 变化检测双阈值（分块亮度差 + 事件携带变化区域 bbox、阈值校准命令）、输入原语补齐、探色、
 节点级单测（reco `--act`）、模板裁剪（crop，位置优先判据 + 跨帧验证）、轻量 SoM（annotate）与
-timing 反推（节点时长 + 动作后稳定时间 → delay/timeout 建议）。
+timing 反推（节点时长 + 动作后稳定时间 → delay/timeout 建议，`--runs n` 取分布：P95 × 余量，失败 run 不计入建议）。
 
 不在本包范围（各有归属）：
 
