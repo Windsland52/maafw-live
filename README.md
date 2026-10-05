@@ -1,10 +1,16 @@
 # maafw-live
 
-MaaFramework 的**设备交互与实时观测底座**：常驻 daemon（连续帧流 + 变化/稳定检测 + 环形缓冲）+ 可复用客户端 + 确定性 CLI。
+给 AI agent 的 MaaFramework **实时观测与设备交互底座**：常驻 daemon 提供连续帧流、变化/稳定检测与
+环形缓冲；确定性 CLI 以稳定 JSON 输出观测与交互能力，节点和识别参数靠实际运行测量。
 
-面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON 信封；daemon 协议与客户端不绑定任何宿主，
-编辑器插件、自动化平台、CI 都能直接接。连续观测到的帧可选择性地留存为跨工作会话证据——契约见
-[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)（待实现，接口未冻结）。
+解决 AI agent 使用 MaaFramework 的两大痛点：
+
+- **看不到现场。** 此前没有面向模型的实时观测方案，agent 只能「截一帧、猜、再截一帧」。daemon 持续采样：帧流随时可取，画面变化/稳定有事件可订阅，历史帧有环形缓冲兜底。观测以事件与数字交付，像素默认不出 daemon——纯文本模型同样可用，要看画面时再按 seq / ROI 精确获取。
+- **写不准识别。** 模板、roi、阈值、wait_freezes/delay 靠猜多半不准，而它们都能实测：识别单测与阈值扫描（`reco`）、模板裁剪（`crop`）、探色（`color`）、实测节点时长与稳定时间（`timing`）；没有模板时，候选区域编号回画、选号即得坐标（`annotate`）。
+
+CLI 面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON 信封；daemon 协议与客户端不绑定任何
+宿主，编辑器插件、自动化平台、CI 都能直接接。连续观测到的帧可选择性地留存为跨工作会话证据——
+契约见 [`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)。
 
 ## 三件东西
 
@@ -46,7 +52,7 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → L0 原图裁剪 → 同帧自匹配逐边精修 + 跨帧验证 |
 | `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标） |
 | `maafw-live calibrate` | 变化检测阈值校准：静止画面定噪声地板，推荐 blockThresh / changeGlobal |
-| `maafw-live timing` | 跑任务反推 delay / timeout 建议：节点时长 + 动作后画面稳定时间；`--runs n`（1-10）多次采样取 P50/P95 分布 |
+| `maafw-live timing` | 跑任务反推 timeout / wait_freezes / delay 建议：节点时长 + 动作后画面稳定时间；`--runs n`（1-10）多次采样取 P50/P95 分布 |
 | `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析 |
 | `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
 
