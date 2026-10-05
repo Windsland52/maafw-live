@@ -117,7 +117,9 @@ async function main() {
       results.push({ param: entry, ms: Date.now() - started, ok: false, error: String(e && e.message || e), detail: null })
       return true
     }
-    results.push({ param: entry, ms: Date.now() - started, ok: !!detail, detail: strip(detail) })
+    /* ok 只认 hit===true：miss 时 run_recognition 仍返回 detail 对象（hit:false、box 全零），
+     * 旧判 !!detail 恒真——识别未中会标成命中，制造假观测证据。 */
+    results.push({ param: entry, ms: Date.now() - started, ok: !!detail && detail.hit === true, detail: strip(detail) })
     return true
   })
 

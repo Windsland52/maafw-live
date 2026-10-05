@@ -116,7 +116,7 @@ export function aggregateTiming(samples: RunSample[]): TimingAggregate {
 
 export const timingCommand: Command = {
   name: 'timing',
-  summary: '跑任务并反推 timing 建议：节点时长 → timeout，动作后稳定时间 → post-delay；--runs n 取 P50/P95 分布',
+  summary: '跑任务并反推 timing 建议：节点时长 → timeout，动作后稳定时间 → wait_freezes 兜底参考；--runs n 取 P50/P95 分布',
   usage: 'maafw-live timing --entry <task> --project <dir> [--timeout <ms>] [--runs <n>] [--preset <name>] [--override <json>]\n' +
     '       自动开流（帧流与节点事件对齐是分析前提）；单次采样是下界，--runs 3-5 取分布再定稿',
   options: {
@@ -239,11 +239,11 @@ export const timingCommand: Command = {
             (n.occurrences > n.runs ? '  （重复执行 ' + n.occurrences + ' 次 / ' + n.runs + ' run——重试或 Next 环）' : '') +
             (n.runs < agg.successful ? '  （' + n.runs + '/' + agg.successful + ' run 出现——分支或跳过）' : '') +
             (n.nextBeforeStable ? '  （下一节点先于画面稳定开始——识别窗口紧或连续动画）' : '')),
-          '建议（P95 × 余量，n=' + agg.successful + ' 成功采样）：',
+          '建议（P95 × 余量，n=' + agg.successful + ' 成功采样；界面切换优先用 next 等待节点表达，delay 尽量保持缺省）：',
           '  节点 timeout ≥ ' + agg.suggest.nodeTimeoutMs + 'ms（各 run 最长节点 P95 ' + agg.maxNodeP95 + 'ms × 1.5）',
           '  任务 timeout ≥ ' + agg.suggest.taskTimeoutMs + 'ms（任务时长 P95 ' + agg.durationP95 + 'ms × 2）',
           agg.suggest.postDelayMs !== null
-            ? '  动作后 post-delay / wait_freezes 参考 ' + agg.suggest.postDelayMs + 'ms（各 run 最长稳定 P95 ' + agg.maxSettleP95 + 'ms × 1.2）'
+            ? '  动作后稳定参考 ' + agg.suggest.postDelayMs + 'ms（各 run 最长稳定 P95 ' + agg.maxSettleP95 + 'ms × 1.2）——优先由 next 等待节点的 timeout 覆盖该时长；确需兜底用 post_wait_freezes，post_delay 是最后手段'
             : '  动作后稳定时间：无 stable 事件可参考（画面持续变化或流太短）',
         ]
         if (agg.failed) human.push('  注意：' + agg.failed + ' 个失败 run 未计入建议；失败原因与时长见 data.runs')

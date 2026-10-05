@@ -20,6 +20,35 @@ function parseJson<T>(raw: unknown, what: string): { value?: T; error?: string }
   }
 }
 
+/** threshold 起点建议（maafw-pipeline 技能口径）：实测最高置信度 − 0.1 留余量，换场景会掉。
+ * 得分在识别详情内层（detail.detail.best/all——miss 时 best 为 null，all 仍带各候选得分）；
+ * 无数值得分的类型（OCR 等）返回 null，不编造。低于 0.5 视为模板与画面不匹配：
+ * 未命中不是调低阈值的理由，建议不适用。 */
+export interface ThresholdSuggestion {
+  bestScore: number
+  suggest: number | null
+  lowMatch: boolean
+}
+
+export function suggestThreshold(
+  results: Array<{ ok: boolean; detail?: unknown }>,
+): ThresholdSuggestion | null {
+  let best = -1
+  for (const r of results) {
+    const inner = (r.detail as { detail?: { best?: { score?: unknown }; all?: Array<{ score?: unknown }> } } | null | undefined)?.detail
+    const candidates = [Number(inner?.best?.score), ...(inner?.all ?? []).map((x) => Number(x.score))]
+    for (const s of candidates) if (Number.isFinite(s) && s > best) best = s
+  }
+  if (best < 0) return null
+  const bestScore = Math.round(best * 1000) / 1000
+  const lowMatch = best < 0.5
+  return {
+    bestScore,
+    suggest: lowMatch ? null : Math.max(0, Math.round((best - 0.1) * 1000) / 1000),
+    lowMatch,
+  }
+}
+
 export const recoCommand: Command = {
   name: 'reco',
   summary: '识别单测（子进程隔离）：--param/--sweep 阈值扫描，或 --node 整节点 JSON 透传；--act 真机执行动作半',
@@ -116,8 +145,16 @@ export const recoCommand: Command = {
           '识别 ' + String(r.type ?? type) + '：' + results.length + ' 例' + (node ? '（整节点透传）' : ''),
           ...results.map((x) => '  ' + (x.ok ? '[命中]' : '[未中]') + ' ' + JSON.stringify(x.param) + '  ' + x.ms + 'ms'),
         ]
+        const th = suggestThreshold(r.results as Array<{ ok: boolean; detail?: unknown }> | undefined ?? [])
+        if (th && th.suggest !== null) {
+          human.push('  实测最高置信度 ' + th.bestScore + ' → threshold 起点建议 ' + th.suggest +
+            '（实测 − 0.1 留余量，换场景会掉；ROI 收紧可再提）')
+        } else if (th && th.lowMatch) {
+          human.push('  实测最高置信度 ' + th.bestScore + '：模板与该画面不匹配——threshold 建议不适用，' +
+            '先核对模板来源画面与当前画面（识别未命中不是调低阈值的理由）')
+        }
         if (r.ok === false) human.push('error: ' + String(r.error))
-        return { exitCode: r.ok === false ? EXIT.FINDINGS : EXIT.OK, human, data: r }
+        return { exitCode: r.ok === false ? EXIT.FINDINGS : EXIT.OK, human, data: { ...r, ...(th ? { thresholdSuggestion: th } : {}) } }
       })
     } catch (e) {
       return daemonFail(e)

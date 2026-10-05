@@ -1046,7 +1046,10 @@ async function recoActTest(args, node) {
       out = { ok: false, stage: 'recognition', error: String(e && e.message || e) }
       return true
     }
-    if (!detail || !detail.box) {
+    /* miss 判定不能只看 box 真值：miss 时 run_recognition 返回 hit:false + box 全零（数组恒真），
+     * 漏检会把 run_action 打到 (0,0)。hit 标志为主，box 零尺寸兜底（防个别识别类型缺 hit）。 */
+    const boxDead = !detail || !Array.isArray(detail.box) || Number(detail.box[2]) === 0 || Number(detail.box[3]) === 0
+    if (!detail || detail.hit === false || boxDead) {
       out = { ok: false, stage: 'recognition', miss: true, ...(detail ? { reco: stripDetail(detail) } : {}) }
       return true
     }
