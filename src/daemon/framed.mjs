@@ -194,12 +194,19 @@ function hashDist(a, b) {
 const hashStr = (h) => Array.from(h, (v) => (v ? '1' : '0')).join('')
 
 /* ────────────────────────── 状态 ────────────────────────── */
+/* 关键帧库磁盘配额（契约 §4.1 保留与清理）：满额拒绝新增留存并报告，不后台静默删除——
+ * 清理是用户的决定。init 可覆盖；env MAAFW_KF_QUOTA_BYTES 次之；≤0 视为不设限。 */
+const KF_QUOTA_DEFAULT = (() => {
+  const v = Number(process.env.MAAFW_KF_QUOTA_BYTES)
+  return Number.isFinite(v) && v > 0 ? v : 1024 * 1024 * 1024
+})()
 const S = {
   ctrl: null, res: null, tasker: null,
   session: null,                       // { kind, target, method }
   daemonId: randomUUID(),              // 本 daemon 实例身份（留存记录的 session.daemon）
   connGen: 0,                          // 连接代次：每次 connect 成功 +1（留存记录定位用）
   runDir: null,                        // host init 传入；关键帧库 = runDir/frames
+  kfQuota: KF_QUOTA_DEFAULT,           // 库目录字节配额（0=不设限）
   fullW: 0, fullH: 0,                  // 控制器分辨率（默认短边 720p，pipeline roi/模板同空间）
   previewPath: null,                   // 面板实时预览帧落盘路径（host 传 runDir 初始化）
   stream: false, streamTimer: null,
@@ -1167,6 +1174,15 @@ function kfSave(m) {
   fs.renameSync(tmp, file)
 }
 
+/** 库目录现有 L0 字节（按 manifest 记录的文件实测；丢失文件计 0——磁盘占用只算真实存在的） */
+function kfUsageBytes(m) {
+  let total = 0
+  for (const f of m.frames) {
+    try { total += fs.statSync(kfAbsPath(f.file)).size } catch (e) { /* 丢失不计 */ }
+  }
+  return total
+}
+
 async function cmdKfPromote(args) {
   /* 固定捕获身份：latest 在接受请求时解析成具体 seq；已淘汰则失败，绝不改取更新帧冒充 */
   let seq = null
@@ -1197,8 +1213,22 @@ async function cmdKfPromote(args) {
   const dup = m.frames.find((f) => f.session && f.session.daemon === sessionRef.daemon &&
     Number(f.session.gen) === sessionRef.gen && Number(f.captureSeq) === seq)
   if (dup) {
-    if (dup.sha256 === sha) return { ok: true, idempotent: true, record: dup, path: kfAbsPath(dup.file), sha256: sha }
+    if (dup.sha256 === sha) return { ok: true, idempotent: true, id: dup.id, record: dup, path: kfAbsPath(dup.file), sha256: sha }
     return { ok: false, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
+  }
+  /* 磁盘配额（契约 §4.1）：幂等重试在上面已返回，走到这里的都是新增字节。
+   * 满额拒绝并报告——已升格对象不后台清理，清理由用户决定。 */
+  if (S.kfQuota > 0) {
+    const used = kfUsageBytes(m)
+    const mb = (v) => (v / 1048576).toFixed(1) + 'MB'
+    if (used + ent.png.length > S.kfQuota) {
+      return {
+        ok: false,
+        error: '关键帧库配额不足：已用 ' + mb(used) + ' + 新增 ' + mb(ent.png.length) +
+          ' 超过配额 ' + mb(S.kfQuota) + '（' + m.frames.length + ' 帧留存于 ' + kfRoot() + '）。' +
+          '不会自动删除已升格帧——清理后重试，或调大配额（init kfQuotaBytes / MAAFW_KF_QUOTA_BYTES）',
+      }
+    }
   }
   const num = Number(m.next) || m.frames.length + 1
   const id = 'kf:' + m.libraryId + ':' + String(num).padStart(4, '0')
@@ -1246,12 +1276,18 @@ function cmdL0Status() {
     bytes: list.reduce((a, e) => a + (e.png ? e.png.length : 0), 0),
     seqRange: list.length ? [list[0].seq, list[list.length - 1].seq] : null,
   })
+  let m = null
+  try { m = kfLoad() } catch (e) { m = null } /* 状态上报不容因库坏而失败 */
+  const library = m
+    ? { frames: m.frames.length, bytes: kfUsageBytes(m), quota: S.kfQuota, dir: kfRoot() }
+    : { frames: 0, bytes: 0, quota: S.kfQuota, dir: kfRoot(), error: 'manifest 不可读' }
   return {
     ok: true, seq: S.seq,
     roll: { ...sum(S.l0.roll, S.l0.rollCap), entries: S.l0.roll.map(brief) },
     anchor: { ...sum(S.l0.anchor, S.l0.anchorCap), entries: S.l0.anchor.map(brief) },
     bytes: { unique: uniqueBytes, cap: S.l0.bytesCap, evicted: S.l0.evicted },
     framesDir: kfRoot(),
+    library,
   }
 }
 
@@ -1828,7 +1864,8 @@ const handlers = {
       S.previewPath = path.join(S.runDir, 'preview.png')
       try { fs.mkdirSync(S.runDir, { recursive: true }) } catch (e) { /* ignore */ }
     }
-    return { ok: true, previewPath: S.previewPath, daemonId: S.daemonId, framesDir: kfRoot() }
+    if (Number(a.kfQuotaBytes) > 0) S.kfQuota = Math.floor(Number(a.kfQuotaBytes))
+    return { ok: true, previewPath: S.previewPath, daemonId: S.daemonId, framesDir: kfRoot(), kfQuota: S.kfQuota }
   },
   probe: cmdProbe,
   device_list: (a) => cmdDeviceList(a.kind),
@@ -1871,5 +1908,10 @@ if (CHILD) {
   })
 }
 
-/* 纯函数导出（供 headless 验证直接断言，子进程运行中不使用） */
-export const __test = { pngDecode, pngEncodeRGB, downscale, blockHash, hashDist }
+/* 纯函数导出（供 headless 验证直接断言，子进程运行中不使用）。
+ * S 一并导出：l0EvictToBudget 等维护函数作用于模块态，单测需直改后还原。 */
+export const __test = {
+  pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
+  regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
+  l0EvictToBudget, cmdKfPromote, kfUsageBytes, S,
+}

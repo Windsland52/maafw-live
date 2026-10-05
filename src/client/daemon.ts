@@ -69,6 +69,8 @@ export interface SpawnOptions {
   daemonPath?: string
   /** 默认调用超时 */
   timeoutMs?: number
+  /** 关键帧库磁盘配额（字节，>0 生效；缺省 1GiB，daemon 侧 env MAAFW_KF_QUOTA_BYTES 亦可覆盖） */
+  kfQuotaBytes?: number
 }
 
 const CAP = { frames: 2000, events: 2000, logs: 400 }
@@ -96,6 +98,7 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
   const daemonPath = resolveDaemonPath(options.daemonPath)
   const runDir = options.runDir ?? defaultRunDir()
   const defaultTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT
+  const kfQuotaBytes = options.kfQuotaBytes
 
   const events: DaemonEvents = { frames: [], events: [], errors: [], logs: [], preview: null }
   const listeners = new Map<DaemonMessageKind, Set<(m: unknown) => void>>()
@@ -166,7 +169,7 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
     child = spawn(process.execPath, [daemonPath, '--child'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     exited = false
     wire(child)
-    child.stdin!.write(JSON.stringify({ id: -1, cmd: 'init', runDir }) + '\n')
+    child.stdin!.write(JSON.stringify({ id: -1, cmd: 'init', runDir, ...(kfQuotaBytes ? { kfQuotaBytes } : {}) }) + '\n')
     return child
   }
 

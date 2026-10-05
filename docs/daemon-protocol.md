@@ -40,7 +40,7 @@
 
 | cmd | 参数 | 返回要点 |
 |---|---|---|
-| `init` | `runDir` | 无返回；设定预览帧落盘路径 `runDir/preview.png`。应在 spawn 后立刻发一次 |
+| `init` | `runDir`、`kfQuotaBytes?`（字节，>0 生效；缺省 1GiB，env `MAAFW_KF_QUOTA_BYTES` 亦可覆盖） | `{ ok, previewPath, daemonId, framesDir, kfQuota }`；设定预览帧落盘路径与关键帧库磁盘配额。应在 spawn 后立刻发一次 |
 | `probe` | — | `{ version, adb, win32, errors[] }`：绑定版本与设备发现数 |
 | `device_list` | `kind: all\|adb\|win32` | 设备数组：`{ kind, id, name, cls?, adbPath? }` |
 | `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller** |
