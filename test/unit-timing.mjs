@@ -78,6 +78,23 @@ test('节点覆盖：成功 run 缺席的节点标注 runs<successful', () => {
   assert.equal(agg.successful, 2)
 })
 
+test('run 内重复执行（重试/Next 环）：全部出现进分布，慢样本不被丢弃', () => {
+  /* 实测形态（M9A StartUp 真机）：StartUp 每 run 执行两次，第二次才是等动画的慢样本 */
+  const agg = aggregateTiming([
+    run(1, true, 8000, [node('StartUp', 700, 60), node('Home', 900, 100), node('StartUp', 4218, 200)]),
+    run(2, true, 7900, [node('StartUp', 690, 55), node('Home', 910, 90), node('StartUp', 3921, 180)]),
+  ])
+  const su = agg.nodeStats.find((n) => n.name === 'StartUp')
+  assert.equal(su.occurrences, 4, '两次执行 × 两个 run 全进样本')
+  assert.equal(su.runs, 2, '覆盖计数仍是出现过的 run 数')
+  assert.equal(su.msP95, 4218, '慢的第二次执行不被 find-first 丢弃')
+  assert.equal(su.msP50, 700, 'P50 取 4 样本中位（最近邻秩下侧第 2）')
+  assert.equal(su.settleSamples, 4)
+  /* maxNodeP95 与节点表自此一致：都按全部出现算 */
+  assert.equal(agg.maxNodeP95, 4218)
+  assert.equal(Math.max(...agg.nodeStats.map((n) => n.msP95)), 4218)
+})
+
 test('稳定时间：无样本 → null 链路；nextBeforeStable 任一 run 出现即标', () => {
   const noSettle = aggregateTiming([run(1, true, 100, [node('A', 10, null)])])
   assert.equal(noSettle.suggest.postDelayMs, null)

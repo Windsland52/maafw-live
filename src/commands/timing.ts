@@ -35,8 +35,11 @@ export interface RunSample {
 export interface NodeStat {
   name: string
   status: string
-  /** 成功 run 中该节点出现的次数（少于成功总数 = 有分支/跳过） */
+  /** 成功 run 中该节点出现的 run 数（少于成功总数 = 有分支/跳过） */
   runs: number
+  /** 总执行次数——同名节点在同一 run 内可能重复（重试/JumpBack/Next 环），
+   * 分布统计按全部出现算，丢掉重复会漏掉真正的慢样本 */
+  occurrences: number
   msP50: number
   msP95: number
   settleP50: number | null
@@ -79,13 +82,15 @@ export function aggregateTiming(samples: RunSample[]): TimingAggregate {
   const settles = settleSamples.filter((v): v is number => v !== null)
   const names = [...new Set(ok.flatMap((s) => s.nodes.map((n) => n.name)))]
   const nodeStats: NodeStat[] = names.map((name) => {
-    const per = ok.map((s) => s.nodes.find((n) => n.name === name)).filter((n): n is TimedNode => !!n)
+    /* 全部出现都算：同名节点 run 内重复执行时，慢的往往是第二次（首跑等动画） */
+    const per = ok.flatMap((s) => s.nodes.filter((n) => n.name === name))
     const ms = per.map((n) => n.ms)
     const st = per.filter((n) => n.settle !== null).map((n) => n.settle as number)
     return {
       name,
       status: per.at(-1)?.status ?? 'unknown',
-      runs: per.length,
+      runs: ok.filter((s) => s.nodes.some((n) => n.name === name)).length,
+      occurrences: per.length,
       msP50: percentile(ms, 50),
       msP95: percentile(ms, 95),
       settleP50: st.length ? percentile(st, 50) : null,
@@ -231,6 +236,7 @@ export const timingCommand: Command = {
           ...agg.nodeStats.map((n) =>
             '  [' + n.status + '] ' + n.name + '  ' + n.msP50 + ' / ' + n.msP95 + 'ms' +
             (n.settleP50 !== null ? '  稳定 +' + n.settleP50 + ' / +' + n.settleP95 + 'ms' : '') +
+            (n.occurrences > n.runs ? '  （重复执行 ' + n.occurrences + ' 次 / ' + n.runs + ' run——重试或 Next 环）' : '') +
             (n.runs < agg.successful ? '  （' + n.runs + '/' + agg.successful + ' run 出现——分支或跳过）' : '') +
             (n.nextBeforeStable ? '  （下一节点先于画面稳定开始——识别窗口紧或连续动画）' : '')),
           '建议（P95 × 余量，n=' + agg.successful + ' 成功采样）：',
