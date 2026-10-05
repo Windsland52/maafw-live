@@ -5,7 +5,7 @@
 > 幂等、冲突拒绝）、manifest v1 与离线解析、库磁盘配额。验收记录见 §9；接口对已落地部分视为冻结，
 > 未落地项（跨库副本冲突的读侧检测等）仍标 v0 边界。缓存数值为实测环境（MuMu v5 + maa-node 5.14.2）结论。
 >
-> 主契约以本文为准。[源码核查与对齐备注](keyframe-evidence-contract-v0.md) 只记录实现基线和补充裁决，不定义第二套接口。技能侧文档在 MaaTutorial 仓 `skills/docs/`（`state-plan-artifact-v0.md`、`state-plan-review-brief.md`），同步消费本契约。
+> 主契约以本文为准。[源码核查与对齐备注](keyframe-evidence-contract-v0.md) 只记录实现基线和补充裁决，不定义第二套接口。技能侧文档在 MaaTutorial 仓（`skills/maafw-pipeline/references/state-plan.md`、`skills/docs/state-plan-review-brief.md`），同步消费本契约。
 >
 > 文中源码行号对应重构前基线 commit `85dae0e`（2026-10-03 核查），仅用于定位；结论不依赖行号，重构后需重定位。
 

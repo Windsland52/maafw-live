@@ -2,7 +2,7 @@
 
 > 2026-10-03，只读源码核查，无设备运行或实机复现；行号对应重构前基线 commit `85dae0e`，仅用于定位。
 >
-> **主契约唯一入口：[关键帧留存与引用契约](keyframe-retention-contract-v0.md)。** 本文件曾是并行草案，现收敛为核查记录，不定义第二套 schema 或命令。技能侧配套（MaaTutorial 仓 `skills/docs/`）：`state-plan-artifact-v0.md` · `state-plan-review-brief.md`。
+> **主契约唯一入口：[关键帧留存与引用契约](keyframe-retention-contract-v0.md)。** 本文件曾是并行草案，现收敛为核查记录，不定义第二套 schema 或命令。技能侧配套（MaaTutorial 仓）：`skills/maafw-pipeline/references/state-plan.md` · `skills/docs/state-plan-review-brief.md`。
 
 ## 1. 核查基线与结论
 
