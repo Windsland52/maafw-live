@@ -178,11 +178,16 @@ scripts/              回归与构建辅助
 ## 回归
 
 ```bash
-npm run verify      # 装配级回归：全部通过真实子进程断言外部契约
+npm test           # 纯函数单测：变化检测/L0 淘汰/snap 收紧/SoM 候选/interface 四级 override 链/库配额
+npm run verify     # 装配级回归：全部通过真实子进程断言外部契约
+node scripts/accept-kf-offline.mjs      # 契约验收（离线）：库读侧——同 ID 跨库、manifest 各类坏法、半写
+node scripts/accept-emulator.mjs --target 127.0.0.1:16384   # 契约验收（需模拟器在线）：改分辨率旧帧 ROI、升格路径、磁盘失败注入
 ```
 
 断言的是**外部契约**（stdout / stderr / 退出码），不是内部函数——消费方看到的正是前者，内部重构不该
-影响它。最要紧的两条：信封字段集与文档逐字一致；`--json` 时 stdout 必须是纯 JSON。
+影响它。最要紧的两条：信封字段集与文档逐字一致；`--json` 时 stdout 必须是纯 JSON。单测与验收脚本
+补的是另一层：信封级回归测不到的数值行为与契约语义（验收记录见
+[`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md) §9）。
 
 ## 依赖
 
