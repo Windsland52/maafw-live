@@ -43,7 +43,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-daemon.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "node scripts/verify-cli.mjs"
+    "verify": "node scripts/verify-cli.mjs",
+    "test": "npm run build && node --test 'test/*.mjs'"
   },
   "dependencies": {
     "@maaxyz/maa-node": "^5.14.2"
