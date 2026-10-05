@@ -44,7 +44,7 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-daemon.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify": "node scripts/verify-cli.mjs",
-    "test": "npm run build && node --test test/unit-framed.mjs test/unit-interface.mjs test/unit-kf-quota.mjs",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "accept:offline": "node scripts/accept-kf-offline.mjs",
     "accept": "node scripts/accept-emulator.mjs"
   },
