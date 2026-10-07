@@ -16,12 +16,6 @@ const GLOBAL_HELP: Array<[string, string]> = [
   ['-V, --version', '显示版本'],
 ]
 
-/** 尚未实现的能力。列出来是为了让使用者知道下一步，而不是让 help 撒谎。 */
-const ROADMAP = [
-  'timing（时序反推）',
-  '关键帧留存与引用（docs/keyframe-retention-contract-v0.md）',
-]
-
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
 }
@@ -41,9 +35,6 @@ export function topLevelUsage(): string[] {
     '',
     '全局选项：',
     ...GLOBAL_HELP.map(([f, d]) => `  ${pad(f, 20)}${d}`),
-    '',
-    '路线图（尚未实现）：',
-    ...ROADMAP.map((r) => '  ' + r),
   ]
 }
 

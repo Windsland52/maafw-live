@@ -72,8 +72,9 @@ process.stdout.write('maafw-live CLI 装配级回归\n')
 {
   const help = runCli(['--help'])
   check('[1] --help 退出 0', help.code === 0, `code=${help.code}`)
-  check('[1] --help 列出已实现命令', help.stdout.includes('env') && help.stdout.includes('version'))
-  check('[1] --help 标出未实现的路线图', help.stdout.includes('路线图'))
+  check('[1] --help 列出已实现命令', help.stdout.includes('env') && help.stdout.includes('version') &&
+    help.stdout.includes('timing') && help.stdout.includes('kf'))
+  check('[1] --help 不再声明路线图（只描述现状）', !help.stdout.includes('路线图'))
 
   const bare = runCli([])
   check('[2] 无参数退出 2（用法错误）', bare.code === 2, `code=${bare.code}`)
