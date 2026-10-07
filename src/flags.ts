@@ -1,8 +1,9 @@
 /**
  * 全局选项。
  *
- * 三条约定与 create-maa-project 对齐：
- *  - `--no-interactive` / `--yes`：交互式提问会让工具调用永久挂住，agent 场景必须能强制非交互；
+ * 三条为自动化调用（agent / 脚本 / CI）服务的约定：
+ *  - `--no-interactive` / `--yes`：当前版本没有交互式提问与确认步骤，标志照传即可——
+ *    保留解析是防后续版本引入交互时挂住 agent 的自动化调用；
  *  - `--no-color`：ANSI 转义会混进 JSON；
  *  - `--json`：稳定信封，供技能与 CI 解析。
  */
@@ -24,9 +25,9 @@ export const GLOBAL_OPTIONS = {
 export interface GlobalFlags {
   json: boolean
   dryRun: boolean
-  /** 已显式授权，命令可不经确认直接落盘 */
+  /** 预留授权位：当前版本没有确认步骤，值不被消费 */
   yes: boolean
-  /** false 表示禁止任何交互式提问 */
+  /** 预留门控位：当前版本没有交互式提问，值不被消费 */
   interactive: boolean
   color: boolean
   cwd: string

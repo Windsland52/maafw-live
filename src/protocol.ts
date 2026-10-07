@@ -18,7 +18,7 @@ export const SCHEMA_VERSION = 1
  * 退出码语义。
  *
  * 关键区分：`FAIL` 是「命令没跑成」，`FINDINGS` 是「跑成了，但发现了问题」。
- * 技能与 CI 必须能分开这两种情况——校验器发现 3 个悬空引用不是执行失败，
+ * 技能与 CI 必须能分开这两种情况——reco 识别未命中不是执行失败，
  * 但也不该返回 0 让调用方以为一切正常。
  */
 export const EXIT = {
@@ -28,12 +28,10 @@ export const EXIT = {
   FAIL: 1,
   /** 参数 / 用法错误 */
   USAGE: 2,
-  /** 命令正常跑完，但发现了问题（校验失败、存在待迁移字段等） */
+  /** 命令正常跑完，但发现了问题（reco 未命中、run 调用级失败、观测类命令的警告等） */
   FINDINGS: 3,
   /** 前置环境缺失（缺 maa-node / 缺 checkout / 缺设备） */
   ENV: 4,
-  /** 用户中断 */
-  INTERRUPT: 130,
 } as const
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT]

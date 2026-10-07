@@ -6,8 +6,8 @@ import type { Command } from './protocol.js'
 const GLOBAL_HELP: Array<[string, string]> = [
   ['--json', '输出统一 JSON 信封（stdout 保持纯 JSON）'],
   ['--dry-run', '只计算不落盘'],
-  ['--yes', '已获授权，跳过确认'],
-  ['--no-interactive', '禁止任何交互式提问'],
+  ['--yes', '授权标志（当前版本无确认步骤，照传）'],
+  ['--no-interactive', '防交互挂住自动化（当前版本无提问，照传）'],
   ['--no-color', '关闭颜色（管道下自动关闭）'],
   ['--cwd <dir>', '指定工作目录'],
   ['--limit <n>', '输出条数上限，默认 200'],

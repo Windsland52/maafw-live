@@ -140,9 +140,8 @@ try {
 | 0 | 正常完成，未发现问题（run 的任务级 `record.ok=true`） |
 | 1 | 命令自身失败（未预期异常、IO 错误）；**run 的任务失败**（`record.ok=false`，含超时被停止） |
 | 2 | 参数 / 用法错误 |
-| 3 | 跑完了，但发现了问题（校验不通过、存在待处理项；run 的**调用级**失败——未连接 / 资源缺失 / 已有任务在跑） |
+| 3 | 跑成了，但发现了问题：run 的**调用级**失败（未连接 / 资源缺失 / 已有任务在跑）、reco 识别未命中（含 `--act` 单测失败）、crop / color / annotate / calibrate 的失败或警告、kf manifest / promote 失败、device 未发现设备 |
 | 4 | 前置环境缺失 |
-| 130 | 用户中断 |
 
 关键是 **1 与 3 的区分**：1 是「没跑成」（含任务失败），3 是「跑成了但有问题」。任务级结果看
 JSON 信封的 `data.record.ok`，不是外层 `ok`——外层只代表调用完成。
@@ -150,8 +149,9 @@ JSON 信封的 `data.record.ok`，不是外层 `ok`——外层只代表调用�
 ### 全局选项
 
 `--json` / `--dry-run` / `--yes` / `--no-interactive` / `--no-color` / `--cwd <dir>` / `--limit <n>` /
-`--verbose` / `-h` / `-V`。其中 `--no-interactive` 与 `--no-color` 是自动化场景的硬要求：交互式提问
-会让工具调用永久挂住，ANSI 转义会混进 JSON。
+`--verbose` / `-h` / `-V`。`--no-color` 是自动化场景的硬要求：ANSI 转义会混进 JSON（非 TTY 下自动
+无色）。`--no-interactive` 与 `--yes` 当前无门控——本工具没有交互式提问与确认步骤，照传即可，防
+后续版本引入交互提问挂住自动化调用。
 
 ## 代码结构
 

@@ -34,7 +34,7 @@ const ENVELOPE_KEYS = [
 ].sort()
 
 /** 文档化的退出码集合 */
-const KNOWN_EXIT_CODES = new Set([0, 1, 2, 3, 4, 130])
+const KNOWN_EXIT_CODES = new Set([0, 1, 2, 3, 4])
 
 const MISSING_DIR = process.platform === 'win32'
   ? 'C:/__maafw_run_definitely_missing__'
