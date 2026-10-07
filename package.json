@@ -39,7 +39,7 @@
   "engines": {
     "node": ">=22.13"
   },
-  "license": "BSD-3-Clause",
+  "license": "MIT",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-daemon.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
