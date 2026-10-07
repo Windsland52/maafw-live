@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # 发布产物在声明的最低支持版本上构建，发布的文件由包声称支持的运行时产出
+          node-version: 22.13
+          cache: npm
+      - name: 校验发布 ref 与版本一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 发布必须钉死在 tag ref 上：碰巧叫 v<version> 的分支、或手动 dispatch 选了分支，
+          # 都不许当成发布
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "发布要求 tag ref；当前 ${GITHUB_REF}（手动 dispatch 必须选 v<version> tag）。" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_NAME}" != v* ]]; then
+            echo "发布要求 v<version> tag；当前 ${GITHUB_REF_NAME}。" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "${tag_version}" != "${package_version}" ]]; then
+            echo "tag 版本 ${tag_version} 与 package.json 版本 ${package_version} 不一致。" >&2
+            exit 1
+          fi
+      - name: CHANGELOG 必须有该版本段落（空 Release notes 不许发）
+        run: node scripts/release-notes.mjs "${GITHUB_REF_NAME#v}" > /dev/null
+      - run: npm ci
+      - run: npm test
+      - run: npm run verify
+      - run: npm run accept:offline
+      - name: 打 npm 包
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_root="${RUNNER_TEMP}/maafw-live-package"
+          rm -rf "${pack_root}"
+          mkdir -p "${pack_root}"
+          npm pack --pack-destination "${pack_root}"
+          mapfile -t tarballs < <(find "${pack_root}" -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ "${#tarballs[@]}" -ne 1 ]]; then
+            echo "应恰好产出一个 tarball，实际 ${#tarballs[@]}。" >&2
+            exit 1
+          fi
+          printf 'pack_dir=%s\n' "${pack_root}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v8
+        with:
+          name: npm-package
+          path: ${{ steps.pack.outputs.pack_dir }}/*.tgz
+          if-no-files-found: error
+
+  release:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: dist/npm
+      - name: 创建 GitHub Release（notes 取自 tag 树的 CHANGELOG 段落，附 npm tarball）
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} 已存在；跳过创建。"
+            exit 0
+          fi
+          notes="${RUNNER_TEMP}/release-notes.md"
+          node scripts/release-notes.mjs "${GITHUB_REF_NAME#v}" > "${notes}"
+          # tag 已存在（是它的推送触发了本 workflow）——--verify-tag 让 gh 校验而不是
+          # 静默在检出的 commit 上建 Release
+          gh release create "${GITHUB_REF_NAME}" --verify-tag \
+            --title "${GITHUB_REF_NAME}" --notes-file "${notes}" dist/npm/*.tgz
