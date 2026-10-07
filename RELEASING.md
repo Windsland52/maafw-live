@@ -6,7 +6,7 @@
 
 ## 版本模型
 
-- 语义化版本，`v*` 形式的附注 tag（如 `v0.1.1`）。
+- 语义化版本，`v*` 形式的附注 tag（如 `v0.1.0`）。
 - 版本号手写在 `package.json`（不同于 create-maa-project 的 tag 派生），`release.yml` 会校验
   tag 与 `package.json` 一致，不一致直接失败。
 - **已推送的 tag 不移动、不重建**：发布出问题发新版本前向修复，不把旧 tag 指到别处。

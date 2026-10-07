@@ -6,7 +6,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 
 /**
  * 从 CHANGELOG.md 提取一个已发布版本的段落，作为 GitHub Release notes。
- * 段落标题必须带日期（如 `## [0.1.1] - 2026-10-07`）——裸的 `## [Unreleased]`
+ * 段落标题必须带日期（如 `## [0.1.0] - 2026-10-07`）——裸的 `## [Unreleased]`
  * 永远不会被误认成已发布版本。缺失或空段落以非零退出，空 notes 不许发。
  */
 export function extractReleaseNotes(changelog, version) {
