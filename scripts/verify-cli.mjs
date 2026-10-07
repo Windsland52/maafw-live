@@ -181,5 +181,21 @@ process.stdout.write('maafw-live CLI 装配级回归\n')
   check('[10] help <未知> 退出 2', bad.code === 2, `code=${bad.code}`)
 }
 
+/* [11] skill 自检与漂移比对（随包 skill 的装配面） */
+{
+  const self = runCli(['skill', '--json'])
+  const e = parseEnvelope(self.stdout)
+  check('[11] skill 列出包内副本', self.code === 0 && typeof e?.data?.payload === 'string', `code=${self.code}`)
+  check('[11] skill 报告文件指纹', Array.isArray(e?.data?.files) && e.data.files.every((f) => f.path && f.sha256))
+
+  const same = runCli(['skill', '--check', join(ROOT, 'skills')])
+  check('[11] --check 自身副本逐字节一致（退出 0）', same.code === 0 && same.stdout.includes('一致'), `code=${same.code} ${same.stdout.slice(0, 120)}`)
+
+  const missing = runCli(['skill', '--check', join(MISSING_DIR, 'nope'), '--json'])
+  const em = parseEnvelope(missing.stdout)
+  check('[11] --check 目标不存在 → 退出 4 / SKILL_DIR_NOT_FOUND',
+    missing.code === 4 && em?.error?.code === 'SKILL_DIR_NOT_FOUND', `code=${missing.code} code=${em?.error?.code}`)
+}
+
 process.stdout.write(`\n${pass} 通过 / ${fail} 失败\n`)
 process.exitCode = fail === 0 ? 0 : 1
