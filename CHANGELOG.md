@@ -5,6 +5,80 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### 新增
+
+- **自带 Agent Skill**（`skills/`，随 npm 包发布）：把**使用动线、纪律、判据与反模式**写成可装载的 skill
+  ——四条动线（实时观测 / 识别实测 / 模板资产 / 状态证据留存）、硬护栏、退出码与判定分级、反模式清单、
+  真机样例（一次性状态留档后离线裁模板、分辨率空间守卫）。命令面与字段仍以 `docs/` 为唯一出处，skill 不复述协议，
+  避免出现第二份。安装：`npx skills add https://github.com/Windsland52/maafw-live --skill maafw-live --global`
+  （skill 与 CLI 分开安装，版本关系见 `skills/README.md`）。
+- **`skill` 命令：skill 与 CLI 的字节对齐**——`maafw-live skill`（包内副本与逐文件指纹）、
+  `--check <安装根目录>`（逐文件 same / different / missing / extra，有漂移退出 `FINDINGS(3)`）、
+  `--install <目录>`（离线逐字节写出）、`--print [--format json]`（harness 自取）。
+  `extra`（skills CLI 放进来的 agent 元数据）不计漂移；仅行尾不同仍算不同但标注成因。
+- **从关键帧库留存帧裁剪 L2 派生图**（`crop --from-kf <完整 ID>`）：库内 L0 直接作裁剪源，**不需要设备、
+  也不需要捕获它的那次会话还活着**——这正是「不可复现状态」要模板时的用法。裁剪只读库帧，跨帧验证缺省关
+  （留存帧对应的状态通常已不在画面上，`--cross` 显式开）。
+- **L2 出处记录**：裁剪产物旁写 `<out>.prov.json`（回执里同时给 `provenance`），记来源帧身份（完整 `kf:` ID
+  或热缓存 seq + sha256 + **捕获时**尺寸）、裁剪变换（宽松框 → 裁剪框，无缩放）、自匹配结论；字段是白名单，
+  设备地址 / 目标 / daemon 身份不落进 L2（L2 要提交进仓库，契约 §4.1）。
+- **模板空间守卫**：源帧捕获时尺寸 ≠ 当前控制器尺寸时警告并退出 `FINDINGS(3)`（改过 `shortSide` / 换过设备
+  就会出现），不静默产出可被误用的模板（契约 §5）。
+- **任务记录补分支可见性**：`record.nextCandidates` 记下框架本轮**宣布过的候选序列**
+  （`{seq, name, polls, jumpBack?, anchor?}`，连续重复折叠成 `polls`；上限 50 条，`nextCandidateCount` 给总次数）。
+  名字为准了之后再看轮询序列，"轮询了哪些出口、最后走了哪个"就能从记录里读出来，不必靠屏幕猜。
+  实测：两节点流程读作 `EnterGallery×1 → GalleryOpened×3`（页面切换期间被轮询三次）。
+- **`annotate --from-kf <完整 ID>`：SoM 候选也能在留存帧上离线跑**（不需要设备）。库帧本就是控制器分辨率，
+  换算系数为 1（`box` 与 `ctrl` 相同）；候选路径复用与裁剪同一套三层校验（不符即拒）。**库帧路径没有会话事件，
+  diff 源如实报在 `sourcesUnavailable`**，不拿别的区域顶替。
+
+### 修复
+
+- **`record.nodes[].name` 报任务入口名**：节点记录原先直接取框架 `PipelineNode.*` 通知的顶层 `name`，
+  而该字段填的是**任务入口名**——真实两节点流程（`EnterGallery` → `GalleryOpened`）两条记录同名，
+  可判别探针（下一节点识别设为永假）也证实第二条跑的是 `ProbeB` 却仍叫 `ProbeA`。
+  改为优先取框架内嵌的 `node_details.name`（其次 `action_details` / `reco_details`），并新增
+  `nameSource`（`node_details` = 权威 / `entry` = 顶层兜底、未确认）。修完同一流程读作
+  `EnterGallery` → `GalleryOpened`，探针读作 `ProbeA` → `ProbeB`。
+  诊断入口：env `MAAFW_NOTIFY_DUMP=<file>` 把框架原始通知落盘（默认关）。
+- **SoM 候选表的位置偏置**：候选先按源优先级、再按扫描顺序（自上而下）排，原先直接截前 30 个 →
+  候选表系统性偏顶部。实测（6 帧 1280×720）：去重后真实规模中位 54、最大 135，默认上限只放出 41%，
+  大厅帧 63 个底部候选**一个都没进表**，看上去像"底部没有可点区域"。改为**按横向分带轮转**截断
+  （带内保持源优先级），打满的帧分带从 22/6/2、20/10/0 变成 **10/10/10**，覆盖率同步上升
+  （大厅 20% → 26.7%）。回执新增 `limit` / `mergedTotal`，不等即表示有截断。
+- `tpl_crop` 解码后统一归一化为 RGB：`cropRgb` 按 3 通道步进，控制器交付 RGBA 帧时原先会静默错剪。
+- 裁剪警告不再互相覆盖（原先跨帧警告会盖掉自匹配警告）：回执新增 `warns[]`，`warn` 保留为首条。
+
+### 测试
+
+- **分辨率鲁棒性（第三批定标）**：同一画面在 `shortSide 1080`（控制器交付 1920×1080）下复测——
+  **裁剪侧与分辨率无关**（同元素 1.5× 坐标，4/4 位置正确、得分 1.0、9 次评估，仅慢 13%：成本由起子进程主导）；
+  **SoM 侧上限与分辨率相乘**：候选供给变多（96 vs 720p 中位 54），但固定上限 30 让画面覆盖率从
+  中位 19% 掉到 **6.2%**——高分辨率场景候选表是"取样"不是"覆盖"，使用侧要按分辨率调预期。
+  采集侧同空间的做法已验：`repl --kind adb --target <addr> --short-side 1080` 一次会话里
+  `screencap` + `kf promote latest`。详见 roadmap.local.md 第十六轮。
+- **节点名取值回归**（`pickNodeName`，3 条单测）：形状照抄真机抓到的原始通知——`PipelineNode.Starting`
+  只有顶层入口名（`nameSource=entry`，如实标未确认）、`PipelineNode.Succeeded` 的内嵌 `node_details.name`
+  是真名并压过顶层名、缺字段时退化到 `action_details`/`reco_details` 或可辨认兜底。
+- **SoM 候选测量仪器** `npm run survey:som`（`scripts/survey-som.mjs`，离线）：报各源候选数、保留/合并总数、
+  是否打满上限、横向分带分布、画面覆盖率与候选面积分布；`--limit` 可放开上限看被截掉的部分，
+  `--edge-z` / `--edge-min` / `--iou` 可对边缘门槛与合并 IoU 做 A/B。配套 `annotate` 新增
+  `somLimit` / `somEdgeZ` / `somEdgeMin` / `somIoU` **测量用覆盖**（默认仍是生产常数，行为不变）。
+  首批 6 帧数据（roadmap.local.md 第九/十/十三轮）：4/6 帧打满、去重后真实规模中位 54、默认上限只放出 41%，
+  并据此修掉了候选表的位置偏置（见「修复」）；edge 门槛与合并 IoU 经 A/B **确认保持不动**。
+- **裁剪参数测量仪器** `npm run survey:crop`（`scripts/survey-crop.mjs`，离线，不需要设备）：以关键帧库留存帧为  数据集、网格 ROI 批量跑 `tpl_crop`，输出 snap 触发率、**snap 真起作用率**（最终框≠原宽松框）、**塌陷率**、
+  自匹配位置正确率、得分/评估次数/耗时分布，按帧分组汇总，可 `--json` / `--out` 落盘；
+  `--cases <json>` 可换成**用例文件模式**（真实 UI 目标 + 同一元素的多档余量）。
+  配套 `tpl_crop` 新增 `snapTol?` / `snapFrac?` **测量用覆盖**（默认仍是生产常数，行为不变）——定标靠 A/B。
+  第一批数据（36 例网格）结论：默认常数在位置正确率上优于"更敏感"档（91.7% vs 83.3%），
+  **塌陷是症状不是失败**；第二批（15 例真实 UI 目标）结论：位置正确 14/15、**框每边留 6–10px 最稳**，
+  余量给到元素尺寸 60–80% 时 snap 会偏而 `positionOk` 不报警。详见 roadmap.local.md 第八/十五轮。
+- 新单测 `test/unit-crop-kf.mjs`（7 条）：库帧三重校验（文件在 / sha256 对 / 像素尺寸与库记录一致）、
+  L2 出处字段与白名单（整条库记录递进来也不带设备来源）。
+- 新验收 `npm run accept:crop`（`scripts/accept-crop-fromkf.mjs`，26 条，**离线不需要设备**）：
+  库帧裁剪、出处落盘、L0 不可变、空间比对如实为 null、替换与尺寸不符各自拒绝、CLI 一行命令走通。
+  该脚本需 maa-node 加载资源，不进 CI（与 `accept` 同属需要原生绑定的验收）。
+
 ## [0.1.0] - 2026-10-07
 
 首个发布版本。此前仓库以工作快照推进（下游 MaaTutorial `maafw-debug` 技能的评审核出于快照

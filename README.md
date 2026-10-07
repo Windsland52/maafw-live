@@ -49,12 +49,13 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
 | `maafw-live reco` | 识别单测（子进程隔离）：`--param`/`--sweep` 阈值扫描，`--node` 整节点透传（V1/V2），`--act` 识别拿框 → 真机执行动作半 |
 | `maafw-live color` | 探色：ROI 实测均值 / HSV / 主色，选色后用 reco ColorMatch 出框 |
-| `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → L0 原图裁剪 → 同帧自匹配逐边精修 + 跨帧验证 |
-| `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标） |
+| `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → 原图裁剪（L0 热缓存 / `--from-kf` 库内留存帧）→ 同帧自匹配逐边精修 + 跨帧验证；产出 L2 派生图与 `<out>.prov.json` 出处 |
+| `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标）；`--from-kf` 可在关键帧库留存帧上离线跑 |
 | `maafw-live calibrate` | 变化检测阈值校准：静止画面定噪声地板，推荐 blockThresh / changeGlobal |
 | `maafw-live timing` | 跑任务反推 timeout / wait_freezes / delay 建议：节点时长 + 动作后画面稳定时间；`--runs n`（1-10）多次采样取 P50/P95 分布 |
-| `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析 |
+| `maafw-live kf` | 关键帧：status 看 L0 缓存，promote 升格原图进本地库，list / resolve 离线解析（库帧可直接作 crop 的源） |
 | `maafw-live repl` | 交互 / 管道会话：连接一次，命令复用 |
+| `maafw-live skill` | 随包 agent skill：看包内副本与指纹、`--check` 比对已装副本（有漂移退出 3）、`--install` 逐字节写出 |
 
 `env` 是前置命令：动手前先问它「现在有什么」，而不是各自写一遍环境检测。它有一条硬要求——
 **自身永远不能因为环境残缺而失败**，缺依赖都是探测结果，不是错误。
@@ -90,6 +91,33 @@ printf "probe\nquit\n" | maafw-live repl      # 脚本 / agent 用法
 识别与输入共用**控制器分辨率空间**：默认按项目的 `display_short_side` 缩放（缺省短边 720）。
 `roi`、模板图与 `click` 坐标都在这一空间。只有显式传 `--short-side` / `--long-side` / `--raw`
 才会改变它——那意味着项目里所有 roi 与模板都要按新尺寸重算。
+
+## 从留存帧裁模板（不需要设备）
+
+观测到不可复现状态时**当场升格**——L0 热缓存会淘汰，攒到最后就没有像素了（契约 §3）：
+
+```bash
+maafw-live repl --project ./my-maa-project
+maa> stream start --fps 10
+maa> kf promote latest --note "活动弹窗"
+```
+
+事后（可以换一天、设备早已不在那个画面、甚至**根本没连设备**）再从库帧裁模板：
+
+```bash
+maafw-live crop --from-kf kf:<库UUID>:0142 --roi 640,300,220,80 \
+  --project ./my-maa-project --out assets/tpl_popup.png
+# → assets/tpl_popup.png            L2 派生图（提交进仓库的那个）
+# → assets/tpl_popup.png.prov.json  出处：来源帧身份 + 裁剪变换 + 自匹配结论
+```
+
+几条边界，都是有意为之：
+
+- 库帧是 **L0 原图本体**（契约 §2）：控制器分辨率、捕获时刻的整帧，与当时在 `repl` 里看到的是同一份字节。
+- 裁剪前校 **sha256 与像素尺寸**：解析之后被替换的字节、库记录与文件不同源的条目，一律拒绝，不拿"另一个字节"当依据。
+- **模板空间 = 该帧捕获时尺寸**。它不等于"当前控制器尺寸"——改过 `shortSide` / 换过设备时会警告（契约 §5）。
+- **跨帧验证缺省关**：留存帧对应的状态通常已不在画面上，拿当前帧比只会得到假警告；状态可复现时给 `--cross` 才做。
+- 裁剪**只读**库帧：L2 与出处落在 `--out` 指定处，L0 与库目录不被改动。
 
 ## 复用 daemon
 
@@ -206,7 +234,8 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 ## 路线图
 
 已落地的大件：**关键帧留存与引用**（L0 原图缓存
-滚动区 + 锚区、输入 / run 边界帧、升格与本地关键帧库、离线帧解析；契约与验收用例在
+滚动区 + 锚区、输入 / run 边界帧、升格与本地关键帧库、离线帧解析、**从库帧裁出带出处的 L2 派生图**——
+离线可用、不需要设备；契约与验收用例在
 [`docs/keyframe-retention-contract-v0.md`](docs/keyframe-retention-contract-v0.md)）、PI v2 解析补齐
 （import 合并、pipeline_override 四级链、preset 默认值）、**agent 完整桥接**（run 时 spawn agent
 子进程并经 `maa.Client` 接入；注意 maa-node 与 agent 侧 maa 库须同版本，协议握手要求）、
@@ -222,3 +251,17 @@ timing 反推（节点时长 + 动作后稳定时间 → delay/timeout 建议，
 | pipeline 改写（node / migrate / interface） | maafw-pipeline 技能 + agent 对文件的直接编辑 |
 | 模板资产（template audit / crop） | pipeline 编写动线；裁剪派生物（L2）在留存契约内 |
 | 日志与诊断证据（log / evidence） | MaaEvidenceKit + maa-evidence 技能 |
+
+## Agent Skill（随包发布）
+
+给 agent 用的使用动线在本仓 `skills/`：**纪律、判据与反模式**（怎么观测、怎么实测识别、怎么裁模板、
+怎么在状态消失前留档），字段与协议仍以 `docs/` 为唯一出处——skill 不复述协议，避免出现第二份。
+
+```bash
+npx skills add https://github.com/Windsland52/maafw-live --skill maafw-live --global
+```
+
+- [`skills/maafw-live/SKILL.md`](skills/maafw-live/SKILL.md)：硬护栏、四条动线、判定与退出码、反模式。
+- [`skills/maafw-live/references/workflows.md`](skills/maafw-live/references/workflows.md)：命令级选择与实测经验值。
+- [`skills/maafw-live/references/pitfalls.md`](skills/maafw-live/references/pitfalls.md)：真实教训（判定、会话、坐标、原生坑）。
+- [`skills/maafw-live/references/examples.md`](skills/maafw-live/references/examples.md)：真机样例（一次性状态留档 → 离线裁模板；分辨率空间守卫）。
