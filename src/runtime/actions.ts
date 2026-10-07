@@ -62,9 +62,28 @@ export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; 
   c.call<Record<string, unknown>>('frame_get', args, 30000)
 export const colorProbe = (c: DaemonClient, args: { seq?: number; roi?: number[] }) =>
   c.call<Record<string, unknown>>('color_probe', args, 15000)
-export const tplCrop = (c: DaemonClient, args: { seq?: number; roi?: number[]; point?: number[]; pad?: number; out?: string; resourceDir?: string; cross?: boolean }) =>
-  c.call<Record<string, unknown>>('tpl_crop', args, 240000)
-export const annotate = (c: DaemonClient, args: { seq?: number; out?: string; resourceDir?: string }) =>
+/** 裁剪源 = 关键帧库留存帧（离线解析出来的身份 + 路径；daemon 会复核 sha256 与像素尺寸）。 */
+export interface CropKfSource {
+  id: string
+  path: string
+  sha256: string
+  ctrlW: number
+  ctrlH: number
+  captureSeq: number | null
+  capturedAt: string | null
+}
+export const tplCrop = (c: DaemonClient, args: {
+  seq?: number
+  roi?: number[]
+  point?: number[]
+  pad?: number
+  out?: string
+  resourceDir?: string
+  cross?: boolean
+  kfSource?: CropKfSource
+  prov?: boolean
+}) => c.call<Record<string, unknown>>('tpl_crop', args, 240000)
+export const annotate = (c: DaemonClient, args: { seq?: number; out?: string; resourceDir?: string; kfSource?: CropKfSource }) =>
   c.call<Record<string, unknown>>('annotate', args, 120000)
 export const calibrate = (c: DaemonClient, args: { frames?: number; interval?: number } = {}) =>
   c.call<Record<string, unknown>>('calibrate', args, 120000)

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, downscale, blockAnalyze, hashDist,
-  regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
+  regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
   l0EvictToBudget, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
@@ -143,6 +143,100 @@ test('tightenBounds 均匀图无内容 → null（交回调用方）', () => {
   assert.equal(tightenBounds(solid(120, 90, [50, 50, 50]), 120, 90), null)
 })
 
+test('tightenBounds 测量覆盖：tol 放宽到看不见弱纹理、收紧到看不见强纹理', () => {
+  /* 背景 20，弱纹理块 20+40（通道差合计 120）——默认 TOL=90 视为内容，TOL=150 视为背景 */
+  const w = 120, h = 90
+  const mk = () => {
+    const rgb = solid(w, h, [20, 20, 20])
+    fillRect(rgb, w, 30, 25, 60, 40, [60, 60, 60])
+    return rgb
+  }
+  const dflt = tightenBounds(mk(), w, h)
+  assert.ok(dflt, '默认 TOL 下弱纹理算内容：' + JSON.stringify(dflt))
+  assert.equal(tightenBounds(mk(), w, h, { tol: 150 }), null, '抬高 TOL 后同一张图应判为无内容')
+  /* frac 覆盖：把"整行算命中"的门槛抬到不可能达到，收紧同样退化为 null */
+  assert.equal(tightenBounds(mk(), w, h, { frac: 0.99 }), null, 'frac 拉高后不构成命中行')
+})
+
+test('tightenBounds 不传覆盖时行为与默认常数一致（旧调用点零影响）', () => {
+  const w = 120, h = 90
+  const rgb = solid(w, h, [20, 20, 20])
+  fillRect(rgb, w, 30, 25, 60, 40, [230, 230, 230])
+  assert.deepEqual(tightenBounds(rgb, w, h, {}), tightenBounds(rgb, w, h))
+  assert.deepEqual(tightenBounds(rgb, w, h, { tol: 0, frac: 0 }), tightenBounds(rgb, w, h),
+    '非法覆盖（0/负）回落到生产常数')
+})
+
+/* ────────────────────────── pickBalancedCandidates（SoM 上限截断） ────────────────────────── */
+test('候选不超上限：原样返回（不打乱源优先级顺序）', () => {
+  const list = [
+    { source: 'ocr', box: [10, 10, 40, 40] },       // top
+    { source: 'conn', box: [10, 400, 40, 40] },     // mid
+    { source: 'edge', box: [10, 700, 40, 40] },     // bottom
+  ]
+  assert.deepEqual(pickBalancedCandidates(list, 30, 720), list)
+})
+
+test('候选超上限：按横向分带轮转，底部候选不再被整体截掉', () => {
+  /* 供给偏顶部（模拟扫描顺序）：顶部 20 个、中部 2 个、底部 3 个，上限 6 */
+  const list = []
+  for (let i = 0; i < 20; i++) list.push({ source: 'conn', box: [i, 10, 40, 40] })      // top
+  for (let i = 0; i < 2; i++) list.push({ source: 'conn', box: [i, 400, 40, 40] })       // mid
+  for (let i = 0; i < 3; i++) list.push({ source: 'conn', box: [i, 700, 40, 40] })       // bottom
+  const picked = pickBalancedCandidates(list, 6, 720)
+  assert.equal(picked.length, 6)
+  const band = (b) => (b[1] + b[3] / 2 < 240 ? 'top' : (b[1] + b[3] / 2 < 480 ? 'mid' : 'bottom'))
+  const counts = picked.reduce((a, c) => (a[band(c.box)] = (a[band(c.box)] ?? 0) + 1, a), {})
+  /* 轮转一轮各带取一个：上限 6 = 两轮 → 2/2/2；旧策略（截前 6 个）会是 6/0/0 */
+  assert.deepEqual(counts, { top: 2, mid: 2, bottom: 2 }, JSON.stringify(counts))
+})
+
+test('某一带无供给：其余带补满上限', () => {
+  const list = []
+  for (let i = 0; i < 10; i++) list.push({ source: 'conn', box: [i, 10, 40, 40] })   // 只有顶部
+  const picked = pickBalancedCandidates(list, 4, 720)
+  assert.equal(picked.length, 4)
+  assert.ok(picked.every((c) => c.box[1] === 10))
+})
+
+test('带内保持原顺序（源优先级在带内不被轮转打乱）', () => {
+  const list = [
+    { source: 'ocr', box: [0, 10, 40, 40] },
+    { source: 'conn', box: [0, 20, 40, 40] },
+    { source: 'ocr', box: [0, 700, 40, 40] },
+    { source: 'conn', box: [0, 710, 40, 40] },
+  ]
+  const picked = pickBalancedCandidates(list, 3, 720)
+  assert.deepEqual(picked.map((c) => c.source), ['ocr', 'ocr', 'conn'],
+    '每带先取更高优先级的源：' + JSON.stringify(picked))
+})
+
+/* ────────────────────────── pickNodeName（节点记录取哪个名字字段） ──────────────────────────
+ * 形状照抄真机抓到的原始通知（MAAFW_NOTIFY_DUMP）：顶层 name 是任务入口名，真名在内嵌 details 里。
+ * 这个 bug 曾让 record.nodes[].name 两条记录同名、看不出走了哪条分支，所以按原始形状钉住。 */
+test('PipelineNode.Starting：只有顶层名（入口名）→ nameSource=entry，如实标未确认', () => {
+  const m = { msg: 'PipelineNode.Starting', node_id: 300000002, name: 'ProbeA' }
+  assert.deepEqual(pickNodeName(m), { name: 'ProbeA', source: 'entry' })
+})
+
+test('PipelineNode.Succeeded：内嵌 node_details.name 是真节点名，压过顶层入口名', () => {
+  const m = {
+    msg: 'PipelineNode.Succeeded', node_id: 300000002, name: 'ProbeA',
+    node_details: { name: 'ProbeB', node_id: 300000002, reco_id: 400000002, action_id: 500000002, completed: true },
+    action_details: { name: 'ProbeB', action: 'DoNothing', success: true },
+  }
+  assert.deepEqual(pickNodeName(m), { name: 'ProbeB', source: 'node_details' })
+})
+
+test('只有 action_details / reco_details 时同样取到真名（字段缺失的版本也能退化工作）', () => {
+  assert.deepEqual(pickNodeName({ msg: 'PipelineNode.Succeeded', node_id: 1, name: 'Entry', action_details: { name: 'Real' } }),
+    { name: 'Real', source: 'node_details' })
+  assert.deepEqual(pickNodeName({ msg: 'PipelineNode.Succeeded', node_id: 1, name: 'Entry', reco_details: { name: 'Real2' } }),
+    { name: 'Real2', source: 'node_details' })
+  assert.deepEqual(pickNodeName({ msg: 'PipelineNode.Starting', node_id: 7 }), { name: 'node#7', source: 'entry' },
+    '连顶层名都没有时给出可辨认的兜底，不返回 undefined')
+})
+
 /* ────────────────────────── connComponents（SoM 连通域候选） ────────────────────────── */
 test('connComponents 找出孤立亮块（面积/边长过滤内）', () => {
   const w = 160, h = 120
@@ -182,6 +276,23 @@ test('edgeDensityBoxes 棋盘格高频区成框、平坦区无框', () => {
   const b = boxes[0]
   assert.ok(b[0] <= 16 && b[1] <= 16, '框从棋盘格左上开始: ' + JSON.stringify(b))
   assert.ok(b[0] + b[2] >= 72 && b[1] + b[3] >= 72, '覆盖到棋盘格右下: ' + JSON.stringify(b))
+})
+
+test('edgeDensityBoxes 测量覆盖：抬高 z 门槛与绝对地板都能让同一张图不再出框', () => {
+  /* 弱纹理区：块边缘密度高于均值但不极端——默认门槛能出框，抬高后两类门槛各自都能滤掉它。
+   * 这两个旋钮用于量"edge 不出力到底是阈值太严，还是这类内容本来就没边缘"。 */
+  const w = 128, h = 128
+  const rgb = solid(w, h, [100, 100, 100])
+  for (let y = 16; y < 80; y++) for (let x = 16; x < 80; x++) {
+    const v = (((x >> 3) + (y >> 3)) & 1) ? 190 : 100   // 对比度 90：弱于上面那块的 255/0
+    const i = (y * w + x) * 3; rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+  }
+  const dflt = edgeDensityBoxes(rgb, w, h)
+  assert.ok(dflt.length >= 1, '默认门槛下弱纹理仍成框: ' + JSON.stringify(dflt))
+  assert.deepEqual(edgeDensityBoxes(rgb, w, h, { z: 50 }), [], 'z 门槛高到 50σ → 无框')
+  assert.deepEqual(edgeDensityBoxes(rgb, w, h, { min: 1e9 }), [], '绝对地板抬到不可能 → 无框')
+  assert.deepEqual(edgeDensityBoxes(rgb, w, h, {}), dflt, '空覆盖 = 生产常数，逐字段一致')
+  assert.deepEqual(edgeDensityBoxes(rgb, w, h, { z: 0, min: 0 }), dflt, '非法覆盖（0）回落到生产常数')
 })
 
 /* ────────────────────────── l0EvictToBudget（L0 字节预算淘汰） ────────────────────────── */

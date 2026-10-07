@@ -26,8 +26,8 @@ const HELP = [
   '  stream start [--fps n] [--scale n] | stream stop | stream status',
   '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
   '  color [--roi x,y,w,h]        探色（均值/HSV/主色，最新缓冲帧）',
-  '  crop --roi x,y,w,h | --point x,y [--pad n] [--out f.png]   模板裁剪（L0 原图 + 自匹配）',
-  '  annotate [--out f.png]        SoM 候选与编号回画（OCR/diff/连通域/边缘）',
+  '  crop --roi x,y,w,h | --point x,y [--pad n] [--out f.png] [--from-kf kf:...]   模板裁剪（原图 + 自匹配；--from-kf 走库内留存帧，离线）',
+  '  annotate [--out f.png] [--from-kf kf:...]   SoM 候选与编号回画（OCR/diff/连通域/边缘；库帧路径离线、diff 不可用）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
@@ -182,22 +182,62 @@ export const replCommand: Command = {
               const roiRaw = readFlag(tokens, '--roi')
               const pointRaw = readFlag(tokens, '--point')
               const padRaw = readFlag(tokens, '--pad')
-              out(short(await act.tplCrop(client, {
+              /* --from-kf：源换成库内留存帧（跨会话可用）。解析走与一次性 CLI 同一份离线读侧。 */
+              const kfId = readFlag(tokens, '--from-kf')
+              let kfSource: act.CropKfSource | undefined
+              if (kfId) {
+                const dir = readFlag(tokens, '--frames-dir') ?? defaultFramesDir()
+                const rr = resolveFrame(dir, kfId)
+                if (rr.status !== 'available' || !rr.path || !rr.record) {
+                  out('库帧不可用（' + rr.status + '）：' + String(rr.reason ?? '') + '（库 ' + dir + '）')
+                  break
+                }
+                kfSource = {
+                  id: rr.record.id, path: rr.path, sha256: rr.record.sha256,
+                  ctrlW: rr.record.ctrlW, ctrlH: rr.record.ctrlH,
+                  captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
+                }
+              }
+              const ck = await act.tplCrop(client, {
                 ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
                 ...(pointRaw ? { point: pointRaw.split(',').map((x) => Number(x)) } : {}),
                 ...(padRaw ? { pad: Number(padRaw) } : {}),
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
-                ...(state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {}),
-              }), 600))
+                ...(kfSource ? { kfSource, cross: false } : {}),
+                ...(readFlag(tokens, '--resource-dir')
+                  ? { resourceDir: readFlag(tokens, '--resource-dir') }
+                  : (state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {})),
+              })
+              out(short(ck, 600))
+              if (ck.ok !== false && ck.provPath) out('L2 出处：' + String(ck.provPath))
               break
             }
             case 'annotate': {
+              /* --from-kf：源换成库内留存帧（离线；diff 源不可用，工具会如实报） */
+              const kfSom = readFlag(tokens, '--from-kf')
+              let somKf: act.CropKfSource | undefined
+              if (kfSom) {
+                const dir = readFlag(tokens, '--frames-dir') ?? defaultFramesDir()
+                const rr = resolveFrame(dir, kfSom)
+                if (rr.status !== 'available' || !rr.path || !rr.record) {
+                  out('库帧不可用（' + rr.status + '）：' + String(rr.reason ?? '') + '（库 ' + dir + '）')
+                  break
+                }
+                somKf = {
+                  id: rr.record.id, path: rr.path, sha256: rr.record.sha256,
+                  ctrlW: rr.record.ctrlW, ctrlH: rr.record.ctrlH,
+                  captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
+                }
+              }
               const r = await act.annotate(client, {
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
-                ...(state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {}),
+                ...(somKf ? { kfSource: somKf } : {}),
+                ...(readFlag(tokens, '--resource-dir')
+                  ? { resourceDir: readFlag(tokens, '--resource-dir') }
+                  : (state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {})),
               })
               if (r.ok === false) { out('annotate 失败：' + String(r.error)); break }
-              out('SoM ' + String(r.count) + ' 候选 → ' + String(r.out))
+              out('SoM ' + String(r.count) + ' 候选 → ' + String(r.out) + (somKf ? '（源：留存帧）' : ''))
               for (const c of (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string }>) ?? []) {
                 out('  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',') + (c.text ? '  "' + c.text + '"' : ''))
               }

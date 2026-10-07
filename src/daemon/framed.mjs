@@ -810,6 +810,20 @@ async function setupAgents(res, decls, cwd) {
 }
 
 const sab = new Int32Array(new SharedArrayBuffer(4))
+/**
+ * 节点名取哪个字段：框架在 `PipelineNode.*` 的**顶层 `name` 上填的是任务入口名**，
+ * 真节点名在内嵌的 `node_details.name` / `action_details.name` / `reco_details.name` 里。
+ * 顶层名只作创建时的兜底，来源用 `source` 如实标出（`entry` = 未确认）。
+ * 形状来自真机抓取的原始通知（`MAAFW_NOTIFY_DUMP`），单测按同一形状钉住。
+ */
+function pickNodeName(m) {
+  const authoritative = (m.node_details && m.node_details.name) ||
+    (m.action_details && m.action_details.name) ||
+    (m.reco_details && m.reco_details.name) || null
+  if (authoritative) return { name: String(authoritative), source: 'node_details' }
+  return { name: String(m.name || ('node#' + m.node_id)), source: 'entry' }
+}
+
 async function cmdRun(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   if (S.runActive) return { ok: false, error: '已有任务在运行（先 maa_run_stop）' }
@@ -841,16 +855,39 @@ async function cmdRun(args) {
   const retention = { start: await captureNow('run-start') }
   const nodes = new Map()   // node_id → {name, start, end, msg, success, seq}
   const order = []
+  const nextCandidates = []   // 框架本轮宣布过的候选（NextList 通知），按顺序
+  let nextCandidateCount = 0  // 全部公告次数（含超出上限未记入数组的）
   const onMsg = (m) => {
     const t = Date.now()
     const seq = S.seq
     if (!m || !m.msg) return
+    /* 原始通知转储（默认关，MAAFW_NOTIFY_DUMP=<file> 打开）：节点记录是"两条流按到达顺序归并"的产物，
+     * 归属存疑时（如 record.nodes[].name 重复为入口名）只有原始消息能回答"框架到底发了什么"。 */
+    if (process.env.MAAFW_NOTIFY_DUMP) {
+      try { fs.appendFileSync(process.env.MAAFW_NOTIFY_DUMP, JSON.stringify(m) + '\n') } catch (e) { /* 诊断失败不影响运行 */ }
+    }
     if (m.node_id !== undefined && m.node_id !== null) {
+      /* 节点名的权威来源：框架在 `PipelineNode.*` 的**顶层 name 上填的是任务入口名**
+       * （实测：`ProbeA --next--> ProbeB` 两条记录顶层都叫 ProbeA），而内嵌
+       * `node_details.name` / `action_details.name` / `reco_details.name` 与同轮的
+       * `Recognition.*` / `Action.*` 通知里是**真节点名**。
+       * 所以：创建时先用顶层名兜底（`PipelineNode.Starting` 只有顶层名），拿到权威名就改写，
+       * 并把来源记进 `nameSource`——消费方据此判断这个名字能不能当"哪个节点跑过"的依据。 */
+      const named = pickNodeName(m)
       let n = nodes.get(String(m.node_id))
       if (!n) {
-        n = { id: String(m.node_id), name: m.name || ('node#' + m.node_id), start: t, end: null, status: 'running', msgs: [], seq }
+        n = {
+          id: String(m.node_id),
+          name: named.name,
+          nameSource: named.source,
+          start: t, end: null, status: 'running', msgs: [], seq,
+        }
         nodes.set(String(m.node_id), n)
         order.push(n)
+      } else if (named.source === 'node_details') {
+        /* 权威名到了就采纳（哪怕与顶层名相同）——来源要如实升格，否则 nameSource 会一直挂着 entry */
+        n.name = named.name
+        n.nameSource = 'node_details'
       }
       /* node-ok/fail 锚点：读控制器缓存图（不发新截图任务，规避并发崩溃，见 anchorFromCache） */
       if (/Starting$/.test(m.msg)) { n.status = 'running'; n.start = t }
@@ -864,6 +901,33 @@ async function cmdRun(args) {
       const ev = { type: 'run', seq, t, diff: 0, node: m.name ?? null, msg: m.msg, id: m.reco_id ?? m.action_id ?? null }
       pushEvent(ev)
       if (order.length) order[order.length - 1].msgs.push(ev.msg + (ev.id ? '#' + ev.id : ''))
+      /* NextList.* 通知带**候选数组** `list: [{name, jump_back, anchor}]`（实测：每次公告一个候选，
+       * Starting 与 Succeeded 各一次）。只取 Starting，免得同一候选记两遍；记在**任务级**按顺序，
+       * 不做"挂给哪个节点"的归属猜测——公告的到达时机在新节点记录创建之后，挂给最近记录会把
+       * "上一个节点的出口"算到下个节点头上。任务级序列 + 权威节点名，足以还原"轮询了哪些出口、最后走了哪个"。
+       * 上限 50 条（JumpBack 长列表会刷很多次），超出只累加计数，避免记录被候选公告撑爆。 */
+      if (!/Succeeded$/.test(m.msg) && Array.isArray(m.list)) {
+        for (const c of m.list) {
+          if (!c || !c.name) continue
+          nextCandidateCount++
+          const name = String(c.name)
+          const last = nextCandidates[nextCandidates.length - 1]
+          /* 同一候选会被反复轮询（例如目标页正在切换动画，识别还没命中）——连续重复折叠成 polls 计数，
+           * 序列读起来才是"轮询过哪些出口"，而不是同一行刷屏。 */
+          if (last && last.name === name && !c.jump_back && !last.jumpBack && !c.anchor && !last.anchor) {
+            last.polls++
+            last.seq = seq
+            continue
+          }
+          if (nextCandidates.length < 50) {
+            nextCandidates.push({
+              seq, t, name, polls: 1,
+              ...(c.jump_back ? { jumpBack: true } : {}),
+              ...(c.anchor ? { anchor: true } : {}),
+            })
+          }
+        }
+      }
     }
   }
   const s1 = tasker.add_sink((_, m) => onMsg(m))
@@ -911,8 +975,9 @@ async function cmdRun(args) {
     framesCaptured: S.seq,
     retention,
     ...(agentInfo ? { agent: agentInfo } : {}),
+    ...(nextCandidateCount ? { nextCandidates, nextCandidateCount } : {}),
     nodes: order.map((n) => ({
-      id: n.id, name: n.name, status: n.status,
+      id: n.id, name: n.name, nameSource: n.nameSource, status: n.status,
       ms: (n.end ?? Date.now()) - n.start, seq: n.seq, msgs: n.msgs.slice(-6),
     })),
     dump: dump ? { taskCount: dump.tasks ? dump.tasks.length : 0, nodes: Object.keys(dump.nodes || {}).length } : null,
@@ -1298,7 +1363,9 @@ function cmdL0Status() {
  * 输入：宽松框（或点+外扩）；源 = L0 原图（控制器分辨率——模板尺寸必须与识别空间一致，
  * 不能从降采样小图裁）。收紧 = 与边框背景差的行列占比；精修 = 逐边 ±2px 贪心重试，
  * 以"裁出的模板在同帧上的 TemplateMatch 得分"为目标函数（自匹配验证闭环）。 */
-function tightenBounds(rgb, w, h) {
+/* opts.tol / opts.frac 是**测量用覆盖**（默认即生产常数）：定标要能 A/B 才有数据，
+ * 不给就用 90 / 0.12，行为与加参数前逐字节一致。 */
+function tightenBounds(rgb, w, h, opts = {}) {
   const ring = Math.max(2, Math.round(Math.min(w, h) / 12))
   let br = 0, bg = 0, bb = 0, bn = 0
   for (let y = 0; y < h; y++) {
@@ -1310,7 +1377,7 @@ function tightenBounds(rgb, w, h) {
     }
   }
   br /= bn; bg /= bn; bb /= bn
-  const TOL = 90   // 通道差之和超过此值视为"非背景"
+  const TOL = Number(opts.tol) > 0 ? Number(opts.tol) : 90   // 通道差之和超过此值视为"非背景"
   const rowHit = new Array(h).fill(0)
   const colHit = new Array(w).fill(0)
   for (let y = 0; y < h; y++) {
@@ -1321,7 +1388,7 @@ function tightenBounds(rgb, w, h) {
       }
     }
   }
-  const FRAC = 0.12
+  const FRAC = Number(opts.frac) > 0 ? Number(opts.frac) : 0.12
   let y0 = 0, y1 = h - 1
   while (y0 < y1 && rowHit[y0] / w < FRAC) y0++
   while (y1 > y0 && rowHit[y1] / w < FRAC) y1--
@@ -1341,15 +1408,102 @@ function cropRgb(rgb, sw, sh, box) {
   return { w, h, data: out }
 }
 
-async function cmdTplCrop(args) {
-  /* 源帧：L0 原图（控制器分辨率），seq 或最新 */
-  const ent = args.seq !== undefined && args.seq !== null
-    ? (S.l0.anchor.find((x) => x.seq === Number(args.seq)) ?? S.l0.roll.find((x) => x.seq === Number(args.seq)))
-    : (S.l0.anchor[S.l0.anchor.length - 1] ?? S.l0.roll[S.l0.roll.length - 1] ?? null)
-  if (!ent) {
-    return { ok: false, error: 'L0 无可用原图：先 screencap / stream / 输入产生观测（seq=' + args.seq + '）' }
+/**
+ * 库帧裁剪源：读关键帧库内的 L0 文件并校验身份。纯文件操作，不碰 daemon 状态——
+ * 这正是"不可复现状态"的场景：捕获它的那次会话早已结束，设备也不在那个画面上。
+ *
+ * 校验三层，任一不符即拒绝（不许把"另一个字节"当成本次裁剪的依据）：
+ *  1. 文件在（调用方已按契约 §4.1 解析过完整 ID，这里是同一份字节的第二次确认）；
+ *  2. sha256 与库记录一致——防解析与读取之间文件被替换；
+ *  3. 像素尺寸与库记录 ctrlW/ctrlH 一致——记录与像素不同源即库本身不一致。
+ */
+function readKfCropSource(src) {
+  if (!src || typeof src !== 'object') return { error: 'kfSource 必须是对象' }
+  const id = String(src.id ?? '')
+  const file = String(src.path ?? '')
+  if (!id.startsWith('kf:') || !file) return { error: 'kfSource 需要 id（kf:<库UUID>:<序号>）与 path' }
+  let png = null
+  try { png = fs.readFileSync(file) } catch (e) { return { error: '库帧读取失败：' + String(e && e.message || e) } }
+  const sha = createHash('sha256').update(png).digest('hex')
+  if (src.sha256 && String(src.sha256) !== sha) {
+    return { error: '库帧内容与库记录不符（sha256 不匹配）：解析后文件被改动，拒绝裁剪' }
   }
-  const dec = pngDecode(ent.png)
+  let dec = null
+  try { dec = pngDecode(png) } catch (e) { return { error: '库帧不是可解码的 PNG：' + String(e && e.message || e) } }
+  const recW = Number(src.ctrlW), recH = Number(src.ctrlH)
+  if (recW > 0 && recH > 0 && (recW !== dec.w || recH !== dec.h)) {
+    return {
+      error: '库记录尺寸 ' + recW + 'x' + recH + ' 与像素实际 ' + dec.w + 'x' + dec.h +
+        ' 不一致：库记录与文件不同源，拒绝裁剪',
+    }
+  }
+  return {
+    png, dec, sha, path: file,
+    source: {
+      kind: 'kf', id, sha256: sha, ctrlW: dec.w, ctrlH: dec.h,
+      captureSeq: Number.isFinite(Number(src.captureSeq)) ? Number(src.captureSeq) : null,
+      capturedAt: src.capturedAt ? String(src.capturedAt) : null,
+    },
+  }
+}
+
+/**
+ * L2 派生图的出处记录（契约 §5：L2 记录来源及裁剪 / 缩放变换）。
+ *
+ * 只记来源身份与变换，不记设备地址 / 目标 / daemon 身份 / 本地绝对路径——L2 是提交进仓库的
+ * 交付物，库帧本身（含设备来源）留在本地（契约 §4.1 隐私）。纯函数：时间由调用方传入，可断言。
+ */
+function buildL2Provenance(o) {
+  /* 来源字段白名单：即便调用方把整条库记录（含 session/target）递进来，也不落进 L2 出处。
+   * 库记录里的设备来源留在本地 manifest，是这两份文件的边界（契约 §4.1）。 */
+  const s = o.source || {}
+  const derivedFrom = s.kind === 'kf'
+    ? {
+        kind: 'kf', id: s.id, sha256: s.sha256, ctrlW: s.ctrlW, ctrlH: s.ctrlH,
+        captureSeq: s.captureSeq ?? null, capturedAt: s.capturedAt ?? null,
+      }
+    : {
+        kind: 'l0-cache', seq: s.seq ?? null, sha256: s.sha256,
+        ctrlW: s.ctrlW, ctrlH: s.ctrlH, capturedAt: s.capturedAt ?? null,
+      }
+  return {
+    schema: 1,
+    level: 'L2',
+    derivedFrom,
+    transform: { op: 'crop', resize: false, scale: 1, loose: o.loose, crop: o.box, snapped: o.snapped },
+    selfMatch: { score: o.score, positionOk: o.positionOk, box: o.selfMatchBox ?? null, tries: o.tries },
+    cross: o.cross ?? null,
+    output: { w: o.w, h: o.h },
+    createdAt: o.createdAt,
+    tool: 'maafw-live crop',
+  }
+}
+
+async function cmdTplCrop(args) {
+  /* 源帧两条路，都必须是控制器分辨率的完整原图（模板尺寸要与识别空间一致，绝不从降采样小图裁）：
+   *  - L0 热缓存：seq 或最新（同一会话内，有设备）；
+   *  - 关键帧库留存帧：kfSource（跨会话、可无设备——契约 §2 库内 L0 即原图本体）。 */
+  let ent = null
+  let kf = null
+  if (args.kfSource) {
+    kf = readKfCropSource(args.kfSource)
+    if (kf.error) return { ok: false, error: kf.error }
+  } else {
+    ent = args.seq !== undefined && args.seq !== null
+      ? (S.l0.anchor.find((x) => x.seq === Number(args.seq)) ?? S.l0.roll.find((x) => x.seq === Number(args.seq)))
+      : (S.l0.anchor[S.l0.anchor.length - 1] ?? S.l0.roll[S.l0.roll.length - 1] ?? null)
+    if (!ent) {
+      return { ok: false, error: 'L0 无可用原图：先 screencap / stream / 输入产生观测（seq=' + args.seq + '）' }
+    }
+  }
+  const png = kf ? kf.png : ent.png
+  const dec = pngDecode(png)
+  /* 统一成 RGB：cropRgb 按 3 通道步进，RGBA 帧不归一化会静默错剪 */
+  const rgb = toRgb(dec)
+  const source = kf ? kf.source : {
+    kind: 'l0-cache', seq: ent.seq, sha256: createHash('sha256').update(png).digest('hex'),
+    ctrlW: dec.w, ctrlH: dec.h, capturedAt: new Date(ent.t).toISOString(),
+  }
   /* 宽松框：显式 roi，或点 + 外扩（点→ROI 派生与裁剪共享同一条 snap 链） */
   let loose = null
   if (Array.isArray(args.roi) && args.roi.length === 4) {
@@ -1370,8 +1524,8 @@ async function cmdTplCrop(args) {
   box0.w = cl(loose[2], 8, dec.w - box0.x)
   box0.h = cl(loose[3], 8, dec.h - box0.y)
 
-  const region = cropRgb(dec.data, dec.w, dec.h, box0)
-  const tight = tightenBounds(region.data, region.w, region.h)
+  const region = cropRgb(rgb, dec.w, dec.h, box0)
+  const tight = tightenBounds(region.data, region.w, region.h, { tol: args.snapTol, frac: args.snapFrac })
   const snapped = !!tight
 
   /* 自匹配闭环：裁出的模板在同帧上匹配，逐边 ±2px 贪心取得分最高边界。
@@ -1379,11 +1533,12 @@ async function cmdTplCrop(args) {
    * CCOEFF_NORMED 下得分为噪声（实测同帧自匹配 best 落到别处、0.736 高于真实位置），
    * "找不到自己"比"分数低"更能说明模板不独特。 */
   const resourceDir = String(args.resourceDir || '')
-  const frameFile = path.join(os.tmpdir(), 'maa_tpl_frame_' + Date.now() + '.png')
+  /* 自匹配的输入帧：库帧直接用库内文件（只读，不复制、不改写 L0）；热缓存帧落一份临时副本 */
+  const frameFile = kf ? kf.path : path.join(os.tmpdir(), 'maa_tpl_frame_' + Date.now() + '.png')
   const candFile = path.join(os.tmpdir(), 'maa_tpl_cand_' + Date.now() + '.png')
-  fs.writeFileSync(frameFile, ent.png)
+  if (!kf) fs.writeFileSync(frameFile, ent.png)
   const writeCand = (b) => {
-    const c = cropRgb(dec.data, dec.w, dec.h, b)
+    const c = cropRgb(rgb, dec.w, dec.h, b)
     fs.writeFileSync(candFile, pngEncodeRGB(c.data, c.w, c.h))
     return c
   }
@@ -1461,9 +1616,12 @@ async function cmdTplCrop(args) {
     if (!improved) break
   }
   /* 跨帧验证：同帧自匹配 1.0 只证明模板与源帧一致；真正要的是在新帧上仍稳定。
-   * 连接着真机就再抓一帧验证，得分大幅衰减或位置漂移 → 模板跨帧不稳，如实警告。 */
+   * 连接着真机就再抓一帧验证，得分大幅衰减或位置漂移 → 模板跨帧不稳，如实警告。
+   * 库帧路径默认不做：留存帧对应的状态通常已不在画面上，拿当前帧比会得到假警告；
+   * 状态可复现时显式给 cross:true 才做。 */
   let cross = null
-  if (S.ctrl && args.cross !== false) {
+  const wantCross = kf ? args.cross === true : args.cross !== false
+  if (S.ctrl && wantCross) {
     const fresh = await captureNow('tpl-verify')
     if (fresh.ok) {
       writeCand(cand)
@@ -1486,9 +1644,9 @@ async function cmdTplCrop(args) {
       }
     }
   }
-  try { fs.rmSync(frameFile, { force: true }); fs.rmSync(candFile, { force: true }) } catch (e) { /* ignore */ }
+  try { if (!kf) fs.rmSync(frameFile, { force: true }); fs.rmSync(candFile, { force: true }) } catch (e) { /* ignore */ }
 
-  const final = cropRgb(dec.data, dec.w, dec.h, cand)
+  const final = cropRgb(rgb, dec.w, dec.h, cand)
   const out = args.out || path.join(process.cwd(), 'maa_tpl_' + Date.now() + '.png')
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
@@ -1496,23 +1654,57 @@ async function cmdTplCrop(args) {
     ? '低纹理/不独特：模板在同帧上都定位不到自己（best 落在 ' + JSON.stringify(best.at) + '，得分 ' +
       best.score.toFixed(3) + '）——换更纹理化的框，或走点选路径'
     : (best.score < 0.7 ? '得分偏低（' + best.score.toFixed(3) + '）但位置正确：可用，注意跨帧稳定性' : null)
+  /* 模板空间 = 源帧捕获时的控制器尺寸。与当前控制器不一致时模板不能被当前识别空间直接使用
+   * （契约 §5：坐标 / ROI 必须声明所属图像空间；改过 shortSide 或换过设备就会出现）。 */
+  const spaceCheck = S.ctrl && S.fullW && S.fullH
+    ? { current: { w: S.fullW, h: S.fullH }, match: S.fullW === dec.w && S.fullH === dec.h }
+    : { current: null, match: null }
+  const spaceWarn = spaceCheck.match === false
+    ? '源帧空间 ' + dec.w + 'x' + dec.h + ' ≠ 当前控制器 ' + S.fullW + 'x' + S.fullH +
+      '：模板按源帧空间裁出，与当前识别空间不一致（改过 shortSide / 换过设备？）'
+    : null
   const crossWarn = cross && best.posOk && (cross.score < best.score - 0.15 || !cross.posOk)
     ? '跨帧不稳：新帧（seq=' + cross.seq + '）上得分 ' + cross.score + (cross.posOk ? '' : '且位置漂移') +
-      '，源帧 ' + best.score.toFixed(3) + '——模板对动态区域敏感，慎用于识别'
+      '，源帧 ' + best.score.toFixed(3) + '——' +
+      (spaceCheck.match === false
+        /* 空间不同源时跨帧匹配本就不可比：别把它归因成"动态区域" */
+        ? '源帧空间与当前控制器不一致（见下条），该比对不成立，先在当前空间重采一帧再验'
+        : '模板对动态区域敏感，慎用于识别')
     : null
+  const box = [cand.x, cand.y, cand.w, cand.h]
+  const looseBox = [box0.x, box0.y, box0.w, box0.h]
+  const selfScore = Math.round(best.score * 1000) / 1000
+  /* L2 出处：写到模板旁边（<out>.prov.json），与模板同生共死——复制 / 提交进仓库时出处跟着走 */
+  const provenance = buildL2Provenance({
+    source, loose: looseBox, box, snapped, score: selfScore, positionOk: best.posOk,
+    ...(best.at ? { selfMatchBox: best.at } : {}), tries: tries.n, cross,
+    w: final.w, h: final.h, createdAt: new Date().toISOString(),
+  })
+  let provPath = null
+  let provWarn = null
+  if (args.prov !== false) {
+    provPath = out + '.prov.json'
+    try {
+      fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2) + '\n')
+    } catch (e) {
+      provPath = null
+      provWarn = 'L2 出处记录写入失败：' + String(e && e.message || e) + '（模板已裁出，但其出处未落盘）'
+    }
+  }
+  const warns = [warn, crossWarn, spaceWarn, provWarn].filter(Boolean)
   return {
-    ok: true, path: out, seq: ent.seq,
-    box: [cand.x, cand.y, cand.w, cand.h],
-    loose: [box0.x, box0.y, box0.w, box0.h],
-    snapped, score: Math.round(best.score * 1000) / 1000,
+    ok: true, path: out, seq: kf ? null : ent.seq, source,
+    provPath, provenance,
+    box, loose: looseBox,
+    snapped, score: selfScore,
     positionOk: best.posOk,
     ...(best.at ? { selfMatchBox: best.at } : {}),
     ...(cross ? { cross } : {}),
     tries: tries.n,
     w: final.w, h: final.h,
     ctrlW: dec.w, ctrlH: dec.h,
-    ...(warn ? { warn } : {}),
-    ...(crossWarn ? { warn: crossWarn } : {}),
+    spaceCheck,
+    ...(warns.length ? { warn: warns[0], warns } : {}),
   }
 }
 
@@ -1676,8 +1868,10 @@ function connComponents(rgb, w, h) {
   return boxes
 }
 
-/** Sobel 边缘密度的块级聚类（16px 块，z 值超限块 BFS 成框） */
-function edgeDensityBoxes(rgb, w, h) {
+/** Sobel 边缘密度的块级聚类（16px 块，z 值超限块 BFS 成框）。
+ * opts.z / opts.min 是**测量用覆盖**（默认即生产常数 1.2 / 2000）：edge 源长期只出个位数候选，
+ * 要判断"是阈值太严还是这类内容真没边缘"，就得能调着量。 */
+function edgeDensityBoxes(rgb, w, h, opts = {}) {
   const BS = 16
   const bw = Math.ceil(w / BS), bh = Math.ceil(h / BS)
   const mag = new Float64Array(w * h)
@@ -1698,7 +1892,9 @@ function edgeDensityBoxes(rgb, w, h) {
   for (const v of blk) sd += (v - mean) * (v - mean)
   sd = Math.sqrt(sd / blk.length)
   const hot = new Uint8Array(bw * bh)
-  for (let k = 0; k < blk.length; k++) if (blk[k] > mean + 1.2 * sd && blk[k] > 2000) hot[k] = 1
+  const Z = Number(opts.z) > 0 ? Number(opts.z) : 1.2
+  const MIN = Number(opts.min) > 0 ? Number(opts.min) : 2000
+  for (let k = 0; k < blk.length; k++) if (blk[k] > mean + Z * sd && blk[k] > MIN) hot[k] = 1
   const seen = new Uint8Array(bw * bh)
   const boxes = []
   const stack = []
@@ -1732,13 +1928,57 @@ function edgeDensityBoxes(rgb, w, h) {
 const SOM_COLORS = { ocr: [0, 190, 255], conn: [60, 220, 60], edge: [255, 160, 0], diff: [255, 70, 70] }
 const SOM_PRIORITY = { ocr: 0, diff: 1, conn: 2, edge: 3 }
 
+/**
+ * 上限截断：按**横向分带轮转**取样，而不是直接截前 N 个。
+ *
+ * 为什么：候选是先按源优先级、再按扫描顺序（自上而下）排的，直接截前 N 个会让候选表系统性偏顶部。
+ * 实测（6 帧 1280×720，上限 30）：合并总数中位数 54、最大 135，默认上限只放出 41%；
+ * 大厅帧 63 个底部候选**一个都没进表**，看上去像"底部没有可点区域"——那是策略造成的假象，
+ * 不是画面事实。轮转后各带按供给比例进表，源优先级在带内仍然保持。
+ */
+function pickBalancedCandidates(list, limit, h) {
+  const bands = [[], [], []]
+  for (const c of list) {
+    const cy = c.box[1] + c.box[3] / 2
+    bands[cy < h / 3 ? 0 : (cy < (2 * h) / 3 ? 1 : 2)].push(c)
+  }
+  const out = []
+  for (let i = 0; out.length < limit; i++) {
+    let taken = false
+    for (const b of bands) {
+      if (!b[i]) continue
+      out.push(b[i])
+      taken = true
+      if (out.length >= limit) break
+    }
+    if (!taken) break
+  }
+  return out
+}
+
 async function cmdAnnotate(args) {
-  const fr = args.seq !== undefined && args.seq !== null
-    ? S.ring.find((r) => r.seq === Number(args.seq))
-    : S.ring[S.ring.length - 1]
-  if (!fr) return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）：先 screencap / stream 产生观测' }
-  const sx = fr.fw > 0 ? fr.fw / fr.w : 1
-  const sy = fr.fh > 0 ? fr.fh / fr.h : 1
+  /* 工作图两条路：会话内 L1 小图（缺省）或关键帧库留存帧（kfSource，控制器分辨率、**可无设备**）。
+   * 小图路径的候选要按该帧捕获时尺寸换算回控制器空间；库帧本身就是控制器空间，换算系数为 1。
+   * diff 源依赖会话内 change 事件——库帧路径没有，如实报不可用，不拿别的区域顶替（不冒称）。 */
+  let work = null
+  let seq = null
+  let source = null
+  if (args.kfSource) {
+    const kf = readKfCropSource(args.kfSource)
+    if (kf.error) return { ok: false, error: kf.error }
+    work = { rgb: toRgb(kf.dec), w: kf.dec.w, h: kf.dec.h, fw: 0, fh: 0 }
+    source = kf.source
+  } else {
+    const fr = args.seq !== undefined && args.seq !== null
+      ? S.ring.find((r) => r.seq === Number(args.seq))
+      : S.ring[S.ring.length - 1]
+    if (!fr) return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）：先 screencap / stream 产生观测' }
+    work = { rgb: fr.rgb, w: fr.w, h: fr.h, fw: fr.fw, fh: fr.fh }
+    seq = fr.seq
+    source = { kind: 'l1-ring', seq: fr.seq, ctrlW: fr.fw, ctrlH: fr.fh }
+  }
+  const sx = work.fw > 0 ? work.fw / work.w : 1
+  const sy = work.fh > 0 ? work.fh / work.h : 1
   const toCtrl = (b) => [Math.round(b[0] * sx), Math.round(b[1] * sy), Math.round(b[2] * sx), Math.round(b[3] * sy)]
   const raw = []
 
@@ -1746,7 +1986,7 @@ async function cmdAnnotate(args) {
   if (args.resourceDir) {
     const imgFile = path.join(os.tmpdir(), 'maa_som_' + Date.now() + '.png')
     try {
-      fs.writeFileSync(imgFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
+      fs.writeFileSync(imgFile, pngEncodeRGB(work.rgb, work.w, work.h))
       const r = await spawnRecoChild({ resourceDir: String(args.resourceDir), type: 'OCR', image: imgFile, cases: [{}] }, 60000)
       if (r && r.ok) {
         const det = r.results && r.results[0] && r.results[0].detail
@@ -1761,19 +2001,25 @@ async function cmdAnnotate(args) {
     }
   }
   /* 源 2/3：连通域与边缘密度（纯 CPU，小图上毫秒级） */
-  for (const b of connComponents(fr.rgb, fr.w, fr.h)) raw.push({ source: 'conn', box: b })
-  for (const b of edgeDensityBoxes(fr.rgb, fr.w, fr.h)) raw.push({ source: 'edge', box: b })
-  /* 源 4：最近 change 事件的 diff 区域（ctrl → 小图坐标） */
+  for (const b of connComponents(work.rgb, work.w, work.h)) raw.push({ source: 'conn', box: b })
+  for (const b of edgeDensityBoxes(work.rgb, work.w, work.h, { z: args.somEdgeZ, min: args.somEdgeMin })) {
+    raw.push({ source: 'edge', box: b })
+  }
+  /* 源 4：最近 change 事件的 diff 区域（ctrl → 小图坐标）；库帧路径没有会话事件 */
   const diffs = []
-  for (let i = S.events.length - 1; i >= 0 && diffs.length < 3; i--) {
-    const ev = S.events[i]
-    if (ev.type === 'change' && ev.region && ev.region.ctrl) diffs.push(ev.region.ctrl)
+  if (!args.kfSource) {
+    for (let i = S.events.length - 1; i >= 0 && diffs.length < 3; i--) {
+      const ev = S.events[i]
+      if (ev.type === 'change' && ev.region && ev.region.ctrl) diffs.push(ev.region.ctrl)
+    }
   }
   for (const c of diffs) {
     raw.push({ source: 'diff', box: [Math.round(c[0] / sx), Math.round(c[1] / sy), Math.round(c[2] / sx), Math.round(c[3] / sy)] })
   }
 
-  /* 去重合并：IoU>0.6 保留优先级高的源（ocr > diff > conn > edge）；上限 30 */
+  /* 去重合并：IoU>0.6 保留优先级高的源（ocr > diff > conn > edge）；上限缺省 30。
+   * somLimit 是**测量用覆盖**：不放开上限就量不到"被截断前有多少候选"，也就无法判断 30 该不该动。 */
+  const LIMIT = Number(args.somLimit) > 0 ? Math.floor(Number(args.somLimit)) : 30
   raw.sort((a, b) => (SOM_PRIORITY[a.source] ?? 9) - (SOM_PRIORITY[b.source] ?? 9))
   const iou = (a, b) => {
     const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]))
@@ -1782,28 +2028,34 @@ async function cmdAnnotate(args) {
     const uni = a[2] * a[3] + b[2] * b[3] - inter
     return uni > 0 ? inter / uni : 0
   }
-  const cands = []
+  /* 去重合并（IoU>0.6 对**全部**候选做，与上限无关），再按上限截断——
+   * 这样 mergedTotal 才是"截断前"的真实规模；上限 30 是绑定约束时，它才是候选规模。 */
+  const merged = []
+  const IOU = Number(args.somIoU) > 0 ? Math.min(0.99, Number(args.somIoU)) : 0.6
   for (const c of raw) {
     if (c.box[2] < 8 || c.box[3] < 8) continue
-    if (cands.some((x) => iou(x.box, c.box) > 0.6)) continue
-    cands.push(c)
-    if (cands.length >= 30) break
+    if (merged.some((x) => iou(x.box, c.box) > IOU)) continue
+    merged.push(c)
   }
+  const cands = pickBalancedCandidates(merged, LIMIT, work.h)
   /* 回画：源配色边框 + 编号标签 */
-  const buf = Buffer.from(fr.rgb)
+  const buf = Buffer.from(work.rgb)
   cands.forEach((c, i) => {
     const color = SOM_COLORS[c.source] ?? [200, 200, 200]
-    drawRect(buf, fr.w, fr.h, c.box, color)
-    drawLabel(buf, fr.w, fr.h, c.box[0], c.box[1] - 8, i + 1, [20, 20, 20])
+    drawRect(buf, work.w, work.h, c.box, color)
+    drawLabel(buf, work.w, work.h, c.box[0], c.box[1] - 8, i + 1, [20, 20, 20])
   })
   const out = args.out || path.join(process.cwd(), 'maa_som_' + Date.now() + '.png')
   fs.mkdirSync(path.dirname(out), { recursive: true })
-  fs.writeFileSync(out, pngEncodeRGB(buf, fr.w, fr.h))
+  fs.writeFileSync(out, pngEncodeRGB(buf, work.w, work.h))
   return {
-    ok: true, out, seq: fr.seq,
-    small: [fr.w, fr.h], ctrl: [fr.fw, fr.fh],
+    ok: true, out, seq, source,
+    small: [work.w, work.h], ctrl: [work.fw > 0 ? work.fw : work.w, work.fh > 0 ? work.fh : work.h],
     count: cands.length,
+    limit: LIMIT,
+    mergedTotal: merged.length,
     sources: { ocr: cands.filter((c) => c.source === 'ocr').length, conn: cands.filter((c) => c.source === 'conn').length, edge: cands.filter((c) => c.source === 'edge').length, diff: cands.filter((c) => c.source === 'diff').length },
+    ...(args.kfSource ? { sourcesUnavailable: { diff: '库帧路径无会话事件：diff 源不可用（不拿别的区域顶替）' } } : {}),
     candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...(c.extra ?? {}) })),
     ...(cands.length === 0 ? { warn: '无候选：画面可能静止且低对比；换帧或走点选路径' } : {}),
   }
@@ -1916,5 +2168,6 @@ if (CHILD) {
 export const __test = {
   pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
+  readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName,
   l0EvictToBudget, cmdKfPromote, kfUsageBytes, S,
 }

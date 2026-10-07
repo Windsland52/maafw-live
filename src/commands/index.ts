@@ -16,10 +16,11 @@ import { KF_COMMANDS } from './kf.js'
 import { RECO_COMMANDS } from './reco.js'
 import { replCommand } from './repl.js'
 import { RUNTIME_COMMANDS } from './runtime.js'
+import { skillCommand } from './skill.js'
 import { TIMING_COMMANDS } from './timing.js'
 import { versionCommand } from './version.js'
 
-/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 校准 → 关键帧 → timing → 会话。 */
+/** 展示顺序：探针 → 运行时/设备 → 输入 → 识别 → 探色 → 裁剪 → SoM → 校准 → 关键帧 → timing → 会话 → skill 自检。 */
 export const COMMANDS: Command[] = [
   envCommand,
   versionCommand,
@@ -33,6 +34,7 @@ export const COMMANDS: Command[] = [
   ...KF_COMMANDS,
   ...TIMING_COMMANDS,
   replCommand,
+  skillCommand,
 ]
 
 export function findCommand(name: string): Command | undefined {

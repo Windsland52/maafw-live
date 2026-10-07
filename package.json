@@ -11,7 +11,8 @@
   "files": [
     "bin",
     "lib",
-    "docs"
+    "docs",
+    "skills"
   ],
   "exports": {
     ".": {
@@ -46,6 +47,8 @@
     "verify": "node scripts/verify-cli.mjs",
     "test": "npm run build && node scripts/run-tests.mjs",
     "accept:offline": "node scripts/accept-kf-offline.mjs",
+    "accept:crop": "node scripts/accept-crop-fromkf.mjs",
+    "survey:crop": "node scripts/survey-crop.mjs",
     "accept": "node scripts/accept-emulator.mjs"
   },
   "dependencies": {

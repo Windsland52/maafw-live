@@ -7,6 +7,7 @@
  * 即可；两者都不给时交给命令自己处理。
  */
 import type { DaemonClient } from '../client/daemon.js'
+import { loadInterface, resolveResourcePaths } from '../interface/index.js'
 import { planProject, connect, type ProjectPlan } from './actions.js'
 
 export interface SessionOptions {
@@ -76,8 +77,28 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
   return { connected: true, session: conn.session ?? null }
 }
 
-/** 连接结果的行渲染（human 输出与 --json 共用一份事实）。 */
-export function describeSession(s: SessionState): string[] {
+/**
+ * 离线资源解析：只读 interface.json 拿资源目录，不扫设备、不连接。
+ *
+ * 为什么需要它：从关键帧库留存帧裁模板这条动线**不需要设备**（这正是"不可复现状态"的意义——
+ * 设备早已不在那个画面上）。但自匹配要加载资源，而资源声明在项目里。项目此刻只是资源的
+ * 来源，不是连接的对象，所以走 interface 的规划函数而不走 planProject（后者要扫设备）。
+ */
+export function offlineResource(
+  project: string,
+  controller?: string,
+  resource?: string,
+): { paths: string[]; controllerName: string | null; error?: string } {
+  const loaded = loadInterface(project)
+  if (!loaded.file) {
+    return { paths: [], controllerName: null, error: loaded.problems[0]?.message ?? '未找到 interface.json' }
+  }
+  const controllerName = controller ?? loaded.controllers[0]?.name ?? null
+  const plan = resolveResourcePaths(loaded, controllerName ?? undefined, resource)
+  return { paths: plan.paths, controllerName }
+}
+
+/** 连接结果的行渲染（human 输出与 --json 共用一份事实）。 */export function describeSession(s: SessionState): string[] {
   const lines: string[] = []
   if (!s.connected) return lines
   const sess = s.session ?? {}
