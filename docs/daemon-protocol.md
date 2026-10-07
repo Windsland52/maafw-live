@@ -46,17 +46,25 @@
 | `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller** |
 | `disconnect` | — | `{ ok }`；停流、销毁 Tasker/Controller。adb 的 destroy 偶发阻塞 → 客户端超时后硬杀自愈 |
 | `screencap` | `out` | `{ ok, path, bytes }` 或 `{ error }` |
-| `stream_start` | `fps`(1-30)、`scale`(160-1280)、`maxFrames`(20-600) | `{ ok, fps, scale, maxFrames }` |
-| `stream_stop` / `stream_status` | — | 状态含 `running, fps, scale, seq, ring, events, full, session` |
-| `frame_get` | `seq?`（缺省最新）、`roi?: [x,y,w,h]`、`out?` | `{ ok, path, bytes, w, h, seq, t, diff }`。`roi` 是**控制器分辨率坐标**，与 pipeline 里的 roi 同空间 |
-| `run` | `entry`、`resourceDir` 或 `resourceDirs[]`、`override?`、`timeoutMs?`（≤300000） | `{ ok, record }`；`record.nodes[]` 含每节点 `status/ms/seq/msgs`，`startSeq/endSeq` 用于把节点事件对回帧序。内置超时 `post_stop`，防 JumpBack 死循环 |
+| `stream_start` | `fps`(1-30)、`scale`(160-1280)、`maxFrames`(20-600)；可选 `l0Roll`/`l0Anchor`/`l0Bytes`/`blockThresh`/`changeGlobal`（L0 与变化检测调优） | `{ ok, fps, scale, maxFrames }` |
+| `stream_stop` / `stream_status` | — | 状态含 `running, fps, scale, maxFrames, seq, ring, events, full, session` |
+| `frame_get` | `seq?`（缺省最新）、`roi?: [x,y,w,h]`、`out?` | `{ ok, path, bytes, w, h, seq, t, diff, ctrlW, ctrlH }`。`roi` 是**控制器分辨率坐标**，与 pipeline 里的 roi 同空间；`w/h` 是缓冲小图尺寸，`ctrlW/ctrlH` 是控制器分辨率 |
+| `l0_status` | — | `{ ok, seq, roll, anchor, bytes, framesDir, library }`：L0 滚动区/锚区条目与字节用量（两区共享帧只计一次）、关键帧库用量与配额 |
+| `kf_promote` | `seq`（数字）或 `latest:true` | `{ ok, id, record, path, sha256, idempotent? }`；捕获身份在接受请求时固定，L0 已淘汰则失败（不改取新帧冒充）；同一捕获重试幂等返回原对象。契约见 [keyframe-retention-contract-v0.md](keyframe-retention-contract-v0.md) |
+| `tpl_crop` | `roi:[x,y,w,h]` 或 `point:[x,y]` + `pad?`、`resourceDir`（自匹配要加载资源）、`seq?`（缺省最新 L0 原图）、`out?`、`cross?`（false 关闭跨帧验证） | `{ ok, path, seq, box, loose, snapped, score, positionOk, selfMatchBox?, cross?, tries, w, h, ctrlW, ctrlH, warn? }`；snap 收紧 + 同帧自匹配逐边精修，判据**位置正确优先于得分**（纯色模板的 CCOEFF_NORMED 得分是噪声） |
+| `color_probe` | `roi?: [x,y,w,h]`（控制器分辨率，缺省全帧）、`seq?` | `{ ok, seq, roi?, pixelRoi, count, mean, hsv, dominant, space }` |
+| `annotate` | `resourceDir?`（OCR 候选源需要）、`seq?`、`out?` | `{ ok, out, seq, count, sources, candidates[] }`；候选 = OCR / 连通域 / 边缘密度 / diff 区域（IoU>0.6 去重合并，上限 30），`candidates[].ctrl` 是控制器坐标 |
+| `calibrate` | `frames?`（6-60，默认 24）、`interval?`（ms，默认 300） | `{ ok, frames, block, global, recommended{blockThresh,changeGlobal}, apply, warn? }`；静止画面定噪声地板 |
+| `run` | `entry`、`resourceDir` 或 `resourceDirs[]`、`override?`、`agents?`（PI 声明的 agent 桥接）、`timeoutMs?`（缺省 30000，下限 500；`0` 不自动停，停止权交调用方） | `{ ok, record }`；`record.nodes[]` 含每节点 `id/name/status/ms/seq/msgs`，`startSeq/endSeq` 用于把节点事件对回帧序，`record.retention` 是任务边界帧。超时内置 `post_stop`，防 JumpBack 死循环 |
 | `run_stop` | — | `{ ok }` |
-| `input` | `kind: click\|swipe\|key\|text\|app` + 对应参数（见下） | `{ ok, kind, ms }` |
-| `reco_test` | `resourceDir`、`type`、`image` 或 `seq`、`param?`、`sweep?{key,min,max,step}` | `{ ok, type, meta, results[] }`。在**一次性子进程**里执行：beta 绑定遇到无效模板会原生崩溃，子进程炸掉只损失一次测试 |
+| `input` | `kind: click\|dbclick\|press\|swipe\|key\|keys\|scroll\|move\|text\|app` + 对应参数（见下） | `{ ok, kind, ms, retention }`；`retention.before/.after` 是动作边界帧，自动入 L0 锚区 |
+| `reco_test` | `resourceDir`、`type`、`image` 或 `seq`、`param?`、`sweep?{key,min,max,step}`、`node?`（整节点 JSON 透传，V1/V2 由框架解析）、`act?`（配 `node`：识别拿框 → 真机执行动作半）、`templateImage?`（调用方裁好的模板，不写资源目录） | `{ ok, type, meta, results[] }`；`act` 时含 `reco/action/stage/retention`。除 `act` 外在**一次性子进程**里执行：beta 绑定遇到无效模板会原生崩溃，子进程炸掉只损失一次测试 |
 | `shutdown` | — | 停流 + 断开 + 退出进程 |
 
-`input` 的参数：`click{x,y,contact?,pressure?}`、`swipe{x1,y1,x2,y2,duration?,contact?,pressure?}`、
-`key{code}`（Android KeyEvent 码）、`text{text}`、`app{action:start\|stop,intent}`。
+`input` 的参数：`click{x,y,contact?,pressure?}`、`dbclick{x,y,gap?}`、`press{x,y,duration?,contact?,pressure?}`、
+`swipe{x1,y1,x2,y2,duration?,contact?,pressure?}`、`key{code}`（Android KeyEvent 码）、
+`keys{codes,hold?}`（数组或逗号/加号分隔）、`scroll{dx,dy}`（格数，建议 120 的倍数）、
+`move{dx,dy}`（相对移动，Win32/MacOS）、`text{text}`、`app{action:start\|stop,intent}`。
 全部经 maafw 控制器本体注入，不直接调 adb。
 
 ## 坐标系（最容易出错的一条）
