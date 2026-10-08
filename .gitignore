@@ -4,3 +4,5 @@ lib/
 *.tsbuildinfo
 .DS_Store
 roadmap.local.md
+# 发布流程会产出 tarball（npm pack / publish），别误提交
+*.tgz

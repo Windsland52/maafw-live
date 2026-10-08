@@ -55,6 +55,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 修复
 
+- **发布前干跑抓到 `bin` 会被 npm 静默删除**：`bin` 写成 `./bin/maafw-live.mjs`（带 `./`）时，
+  `npm publish` 报 `bin[maafw-live] script name ... was invalid and removed` 并**删掉这条**——
+  照那样发出去，用户装完没有 `maafw-live` 命令。改为相对路径 `bin/maafw-live.mjs`，并从**真正要上传的
+  tarball** 里解包复核 `bin` 与文件都在。注意 `npm pack` **不报**这条、只有 `npm publish` 报：
+  发布前必须干跑一次 `npm publish --dry-run`（本次就是这么发现的）。
 - **`record.nodes[].name` 报任务入口名**：节点记录原先直接取框架 `PipelineNode.*` 通知的顶层 `name`，
   而该字段填的是**任务入口名**——真实两节点流程（`EnterGallery` → `GalleryOpened`）两条记录同名，
   可判别探针（下一节点识别设为永假）也证实第二条跑的是 `ProbeB` 却仍叫 `ProbeA`。

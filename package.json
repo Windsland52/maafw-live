@@ -4,7 +4,7 @@
   "description": "MaaFramework 设备交互与实时观测底座：常驻 daemon + 可复用客户端 + 确定性 CLI。不绑定宿主。",
   "type": "module",
   "bin": {
-    "maafw-live": "./bin/maafw-live.mjs"
+    "maafw-live": "bin/maafw-live.mjs"
   },
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
