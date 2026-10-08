@@ -15,6 +15,9 @@
  *    这样"框裁得太大"这类情形会在报告里显形（严口径丢分、松口径满分），而不是被口径本身吞掉。
  *  - 多对多：一个真值可被多个最终框命中（recall 只记一次），一个最终框只认 IoU 最大的那个真值。
  *  - **帧内没有真值的最终框不参与判定**（记 `unscored`），不冒充误报——没有标注不等于那里没有元素。
+ *  - **没有被任何用例输入问到的真值也不进 recall 分母**（记 `uncovered`）：调 `--cases` 只跑了一半元素时，
+ *    "没问"不是"没找到"，把它算成漏报就是把仪器的缺口记到工具头上（精度侧它照常参与——框压在它上面
+ *    仍然算找对了地方）。真值条目的 `asked` 字段由调用方按输入框是否与它相交给出，缺省视为问到了。
  */
 
 /** 矩形 IoU。边长为 0 或负、或不相交 → 0。 */
@@ -32,6 +35,15 @@ export function iou(a, b) {
 
 const area = (b) => (Array.isArray(b) && b.length >= 4 ? Math.max(0, b[2]) * Math.max(0, b[3]) : 0)
 const nameOf = (t) => (t.label != null ? String(t.label) : String(t.id))
+const askedOf = (t) => t.asked !== false
+
+/** 两个矩形是否有正面积交集。用来判断"某个用例的输入框问到了这个真值没有"（贴边不算）。 */
+export function overlaps(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) return false
+  const iw = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])
+  const ih = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1])
+  return iw > 0 && ih > 0
+}
 
 /**
  * 单帧判定：`finals` / `truths` 都是 `[{label?, box:[x,y,w,h]}]`。
@@ -70,6 +82,7 @@ export function matchFrame(finals, truths, thr = 0.5) {
       id: t.id,
       label: nameOf(t),
       box: t.box,
+      asked: askedOf(t),
       bestIou: Math.round(best * 1000) / 1000,
       matched: best >= thr,
       overlapped: best > 0,
@@ -81,10 +94,12 @@ export function matchFrame(finals, truths, thr = 0.5) {
     counts: {
       finals: fs.length,
       truths: ts.length,
+      /** recall 的分母：只数被输入框问到的真值（"没问"不算"没找到"） */
+      truthsAsked: truthsOut.filter((x) => x.asked).length,
       finalMatched: finalsOut.filter((x) => x.matched).length,
       finalOverlapped: finalsOut.filter((x) => x.overlapped).length,
-      truthMatched: truthsOut.filter((x) => x.matched).length,
-      truthOverlapped: truthsOut.filter((x) => x.overlapped).length,
+      truthMatched: truthsOut.filter((x) => x.asked && x.matched).length,
+      truthOverlapped: truthsOut.filter((x) => x.asked && x.overlapped).length,
       unscored: finalsOut.filter((x) => !x.scored).length,
     },
   }
@@ -109,12 +124,14 @@ export function aggregate(frames, thr = 0.5) {
   /* 去质疑松口径的百分比（第一版就这么错过：打印 100% precision 同时说"1 个没沾到"）。 */
   const missed = []              // 严口径漏报：IoU 没到门槛（含"沾边但框不贴合"）
   const missedLoose = []         // 松口径漏报：连沾边都没有
+  const uncovered = []           // 没有被任何用例输入问到：不进 recall 分母，单列
   const falsePositives = []      // 严口径误报
   const falsePositivesLoose = [] // 松口径误报：完全落空
   const looseHits = []           // 压住了但框不贴合——两个口径的差额全在这
   for (const f of list) {
     for (const t of f.match.truths) {
       const hit = { frame: f.id, id: t.id, label: t.label, box: t.box, bestIou: t.bestIou }
+      if (!t.asked) { uncovered.push(hit); continue }
       if (!t.matched) missed.push(hit)
       if (!t.overlapped) missedLoose.push(hit)
     }
@@ -138,15 +155,18 @@ export function aggregate(frames, thr = 0.5) {
     finals: sum('finals'),
     scoredFinals,
     unscoredFinals: sum('unscored'),
+    /** truths = 全部标注；truthsAsked = recall 的分母（没被输入框问到的单列 uncovered） */
     truths: sum('truths'),
+    truthsAsked: sum('truthsAsked'),
     /** 需求口径：recall 严（IoU 门槛），precision 松（重叠即可） */
-    recall: pct(sum('truthMatched'), sum('truths')),
+    recall: pct(sum('truthMatched'), sum('truthsAsked')),
     precision: pct(overlappedFinals, scoredFinals),
     /** 另一口径，成对读才知道"丢在哪一侧" */
-    recallLoose: pct(sum('truthOverlapped'), sum('truths')),
+    recallLoose: pct(sum('truthOverlapped'), sum('truthsAsked')),
     precisionStrict: pct(matchedFinals, scoredFinals),
     missed,
     missedLoose,
+    uncovered,
     falsePositives,
     falsePositivesLoose,
     looseHits,

@@ -28,7 +28,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnDaemon } from '../lib/client/daemon.js'
 import { defaultFramesDir, loadManifest } from '../lib/runtime/keyframes.js'
-import { parseTruth, matchFrame, aggregate, padspecsToRois } from './survey-truth.mjs'
+import { parseTruth, matchFrame, aggregate, padspecsToRois, overlaps } from './survey-truth.mjs'
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(name)
@@ -138,6 +138,19 @@ async function main() {
               .map(({ entry, label, roi }) => ({ rec: byId.get(entry.id), label, roi, why: entry.why }))
           })()
         : picks.flatMap((rec) => gridRois(rec.ctrlW, rec.ctrlH, COLS, ROWS).map((g) => ({ rec, label: g.label, roi: g.roi, why: null })))
+    /* 哪些真值真的被"问到"了：看有没有哪个用例的输入框与它相交。没被问到的真值不进 recall 分母——
+     * `--cases` 只跑一半元素、或网格恰好漏掉某个元素时，"没问"不是"没找到"，算成漏报就是把仪器的缺口
+     * 记到工具头上。精度侧它照常参与（框压在它上面仍然算找对了地方）。 */
+    const roisByFrame = new Map()
+    for (const { rec, roi } of plan) {
+      const id = rec.id.slice(-4)
+      if (!roisByFrame.has(id)) roisByFrame.set(id, [])
+      roisByFrame.get(id).push(roi)
+    }
+    for (const [id, list] of truthByFrame) {
+      const rois = roisByFrame.get(id) ?? []
+      for (const t of list) t.asked = rois.some((r) => overlaps(r, t.box))
+    }
     for (const { rec, label, roi, why } of plan) {
       const abs = path.join(FRAMES_DIR, ...rec.file.split('/'))
       if (!fs.existsSync(abs)) { cases.push({ id: rec.id.slice(-4), label, error: 'L0 文件丢失' }); continue }
@@ -257,7 +270,7 @@ async function main() {
     if (truthSummary) {
       const t = truthSummary
       console.log('\n真值对账（' + TRUTH + '，命中门槛 IoU>=' + t.iouThr + '）：')
-      console.log(`  漏报 recall     ${t.recall}%   （${t.truths - t.missed.length}/${t.truths} 个真值被某个最终框覆盖；连沾边都没有的 ${t.missedLoose.length} 个 → 宽松口径 ${t.recallLoose}%）`)
+      console.log(`  漏报 recall     ${t.recall}%   （${t.truthsAsked - t.missed.length}/${t.truthsAsked} 个真值被某个最终框覆盖；连沾边都没有的 ${t.missedLoose.length} 个 → 宽松口径 ${t.recallLoose}%）`)
       console.log(`  误报 precision  ${t.precision}%   （${t.scoredFinals - t.falsePositivesLoose.length}/${t.scoredFinals} 个最终框沾到了真值；严口径 ${t.precisionStrict}%，差额 ${t.looseHits.length} 个是"压住了但框不贴合"）`)
       console.log(`  命中框贴合度    面积比中位 ${t.areaRatio.median}（最大 ${t.areaRatio.max}）——>1 就是把背景裁进来了`)
       if (t.missed.length) {
@@ -271,6 +284,10 @@ async function main() {
       if (t.looseHits.length) {
         console.log('  压住了但框不贴合（严口径记误报、松口径记命中——差额全在这）：')
         for (const m of t.looseHits) console.log(`    ${m.frame} ${m.label} 框 ${JSON.stringify(m.box)} 最佳 IoU ${m.bestIou}`)
+      }
+      if (t.uncovered.length) {
+        console.log(`  另有 ${t.uncovered.length} 个真值没有任何用例输入问到，未计入 recall（"没问"不是"没找到"）：`)
+        for (const m of t.uncovered) console.log(`    ${m.frame} ${m.label} 真值 ${JSON.stringify(m.box)}`)
       }
       if (t.unscoredFinals) console.log(`  另有 ${t.unscoredFinals} 个最终框落在没有标注的帧上，未参与判定（没标注 ≠ 那里没有元素）`)
       console.log('  口径与加标注流程见 scripts/truth/README.md；"位置正确率"是本表上方的自洽指标，两者不要互相替代。')

@@ -50,6 +50,13 @@ node scripts/survey-crop.mjs --truth scripts/truth/1999-720p.json --cases cases.
 「框落在没标注的空处」这三种不同的失分。口径定义在 `scripts/survey-truth.mjs` 头部，单测钉在
 `test/unit-survey-truth.mjs`。
 
+两条分母规则（不加区分就会把仪器的缺口记到工具头上）：
+
+- **没有标注的帧不判分**：那里的最终框记 `unscored`，不进 precision 分母——没标注 ≠ 那里没有元素。
+- **没有被任何输入框问到的真值不算漏报**：`--cases` 只跑一半元素、或网格恰好漏掉某个元素时，
+  该元素记 `uncovered`、不进 recall 分母（精度侧照常参与：框压在它上面仍算找对了地方）。
+  所以**读 recall 前先看 `truthsAsked`**：它才是分母。
+
 ## 加标注的流程
 
 1. 选帧：`maafw-live kf list` 看库内留存帧，挑**真机验证过**的元素（位置已由屏幕状态或独立复核确认）

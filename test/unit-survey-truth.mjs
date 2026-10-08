@@ -10,7 +10,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { iou, matchFrame, aggregate, parseTruth, padspecsToRois } from '../scripts/survey-truth.mjs'
+import { iou, matchFrame, aggregate, parseTruth, padspecsToRois, overlaps } from '../scripts/survey-truth.mjs'
 
 test('IoU：恒等为 1，零面积/贴边/不相交为 0，半覆盖为 1/3', () => {
   assert.equal(iou([0, 0, 10, 10], [0, 0, 10, 10]), 1)
@@ -87,6 +87,32 @@ test('aggregate：没有真值时所有比率是 null（不是 0——0 会被�
   const s = aggregate([{ id: '0001', match: matchFrame([{ label: 'x', box: [1, 1, 5, 5] }], [], 0.5) }], 0.5)
   assert.deepEqual([s.recall, s.precision, s.recallLoose, s.precisionStrict], [null, null, null, null])
   assert.equal(s.unscoredFinals, 1)
+})
+
+test('matchFrame：没有被任何输入框问到的真值不进 recall 分母（"没问"不是"没找到"）', () => {
+  const truth = [{ id: '0001', label: '问了', box: [0, 0, 40, 40] }, { id: '0002', label: '没问', box: [300, 300, 40, 40], asked: false }]
+  const m = matchFrame([{ label: 'a', box: [0, 0, 40, 40] }], truth, 0.5)
+  assert.equal(m.counts.truths, 2)
+  assert.equal(m.counts.truthsAsked, 1, 'recall 分母只数被问到的')
+  assert.equal(m.counts.truthMatched, 1)
+  assert.deepEqual(m.truths.map((x) => x.asked), [true, false])
+  /* 精度侧它照常参与：框压在"没问"的那个真值上，仍然算找对了地方（不因为没人问就被当成误报） */
+  const onUnasked = matchFrame([{ label: 'b', box: [300, 300, 40, 40] }], truth, 0.5)
+  assert.equal(onUnasked.counts.finalMatched, 1)
+  assert.equal(onUnasked.finals[0].truth, '没问')
+  const s = aggregate([{ id: '0002', match: onUnasked }], 0.5)
+  assert.equal(s.truths, 2)
+  assert.equal(s.truthsAsked, 1)
+  assert.deepEqual(s.uncovered.map((x) => x.label), ['没问'], '单列 uncovered，不混进漏报')
+  assert.deepEqual(s.missed.map((x) => x.label), ['问了'], '只有被问到又没命中的才是漏报')
+  assert.equal(s.recall, 0, '分母是 1（问到的那个没命中），不是 2')
+})
+
+test('overlaps：正面积相交才算"问到"（贴边不算）', () => {
+  assert.equal(overlaps([0, 0, 10, 10], [5, 5, 10, 10]), true)
+  assert.equal(overlaps([0, 0, 10, 10], [10, 0, 10, 10]), false, '贴边不算问到')
+  assert.equal(overlaps([0, 0, 10, 10], [20, 20, 5, 5]), false)
+  assert.equal(overlaps([0, 0, 0, 10], [0, 0, 10, 10]), false, '零面积不算')
 })
 
 test('parseTruth：格式校验 + 空间不符拒绝打分', () => {
