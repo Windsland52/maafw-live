@@ -169,6 +169,19 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **客户端写 stdin 的同步抛（EPIPE）没兜住**：daemon 在 spawn 与写入之间就死掉时，`write` 会同步抛
   `ERR_STREAM_DESTROYED`——`init` 的契约是"失败如实回报、不抛"，却会因此 reject；`call` 也会甩出
   一条看不懂的原生错误。两处都改成可读的失败（`init 发送失败` / `daemon 请求发送失败`）。
+- **`reco` 没有离线库帧入口**（`crop` / `annotate` 都有 `--from-kf`）：以 `--image kf:…:0011` 喂库帧 ID
+  （SKILL 与 roadmap 里都这么记过）会被当**文件路径** → `ENOENT`。现在 `--from-kf <kf:…>`（配
+  `--frames-dir`）是一等入口，`--image kf:…` 作为等价写法一并认；daemon 的 `reco_test` 新增 `kfSource`
+  分支（与 `crop`/`annotate` 共用同一套三层校验），并与 `--seq` / `--act` 明确互斥。
+- **"识别跑了但拿不到分数"以前和"普通未命中"长得一模一样**：两者都打 `[未中]`，只是前者没有阈值建议行
+  ——而这两件事的处置方向相反（前者是模板/资源**当时读不到**，后者才是画面不匹配）。现在人类输出直说
+  "识别未返回任何置信度…别当成画面不匹配去调阈值"，JSON 信封加 `noConfidence: true`。
+  **这正是 roadmap 那条"未解释的间歇"的签名**（当年现场：8 连未中、~222ms、无置信度行），
+  并已用"模板文件不存在"确定性地复现该签名（`detail.best` 空、`all` 空、~226ms）——那一批不是
+  "画面变了"，是输入当时读不到。
+- **`reco_test` 写出的工作图从不回收**：会话缓冲帧路径（`--seq`）与新的库帧路径都会把工作图写到
+  `%TEMP%/maa_reco_*.png` 却不管了。现在用完即删（A/B：关掉清理时真机实测 `0 → 1`，开着时 `0 → 0`）。
+  与 CLI 侧截帧泄漏同一类，只是位置在 daemon。
 - **`--resource <名|路径>` 会丢掉 `controller.attach_resource_path`**：不传 `--resource` 时附加路径
   会追加（v2.2.0："在 `resource.path` 加载完成后，额外加载"），可传了就走进两条**提前 return** 的分支，
   附加路径直接消失。它是**控制器的属性**、与选中哪个资源条目无关，所以三条分支都该追加。真实项目实测
@@ -213,6 +226,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `interface_version: 2`（`version` 是项目版本号，字符串）——于是每个夹具都白挂一条
   "缺少 interface_version" 的 problem，跟用例要验的东西混在一起。改对之后补了一条守卫断言：
   夹具自身必须是合法 PI 文件（断言里明写"字段名是 interface_version，不是 version"）。
+- **`accept:crop` 新增 R 组 5 条**（离线、不需要设备、进 CI）：`reco --from-kf` 跑通且源身份是库帧、
+  第三形态标记（`noConfidence`）、人类输出把第三形态说清楚、`--image kf:…` 等价入口、
+  与 `--seq` 互斥 → **43 → 48 条**（汇总标签同步为 K/C/R/S）。顺带把这个脚本里同一处
+  `version: 2` 夹具字段名改对。
+- **对 roadmap 待办 1（reco 成批翻面）的复现尝试与形态签名**（离线、两条路线各 10 连跑）：
+  旧路线（`kf resolve` 出文件）与新路线（`--from-kf`，daemon 每次新写一张临时 PNG——正是它怀疑的
+  杀软场景）共 **20 次全部命中**（box 恒为 `58,162,40,61`、score 1、222–241ms），**未复现**。
+  同时把四种形态的签名钉死：命中 / 分数低的未命中（都打分数行）→ 资源没加载（**0 例**、无 `[命中]`
+  行）→ **拿不到分数**（`[未中]` + **无分数行** + `detail.best` 空 + `all` 空 + ~226ms，当年那次就是
+  这一种）；后者现在自报家门。
 - **`unit-client-protocol` 的一条断言是时序竞态**（CI 在 Node 24 · ubuntu 上第一次抓到）：桩 daemon 在
   init 回执之后紧接着会推 `stream_stopped`，那条**按设计**会进错误环，于是"握手成功时错误环必须为空"
   这条断言本身不成立——本机（Node 22 / Windows）恰好每次都排在它后面。改成只钉"握手没被记成失败"

@@ -90,7 +90,7 @@ function makeProject(root) {
     Dummy: { recognition: 'ColorMatch', lower: [0, 0, 0], upper: [255, 255, 255], action: 'DoNothing' },
   }, null, 2))
   fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
-    version: 2,
+    interface_version: 2,
     name: 'accept-crop-fromkf',
     controller: [{ name: 'C1', type: 'Adb' }],
     resource: [{ name: 'R1', path: 'res' }],
@@ -264,6 +264,49 @@ async function main() {
     check('C3 库内无此 ID → 退出 3 / KF_MISSING（本机不可复核，不代表从未观测）',
       missing.status === 3 && missEnv?.error?.code === 'KF_MISSING', `status=${missing.status} code=${missEnv?.error?.code}`)
 
+    console.log('R 组：reco 的离线库帧入口（--from-kf / --image kf:，同样不需要设备）')
+    /* 模板故意不存在：这正是 roadmap 那条"未解释的间歇"的签名——识别跑了但拿不到任何置信度 */
+    const recoNode = JSON.stringify({
+      recognition: { type: 'TemplateMatch', param: { template: 'NoSuchTemplate.png', roi: [0, 0, 40, 40], threshold: 0.85 } },
+    })
+    const r1 = spawnSync(process.execPath, [
+      BIN, 'reco', '--node', recoNode, '--from-kf', lib.rec.id, '--frames-dir', lib.dir,
+      '--resource-dir', path.join(project, 'res'), '--json',
+    ], { encoding: 'utf8' })
+    let r1env = null
+    try { r1env = JSON.parse(r1.stdout) } catch { /* 下面断言会报出来 */ }
+    check('R1a --from-kf 离线跑通：退出 0、1 例、源身份是库帧（无设备）',
+      r1.status === 0 && r1env?.data?.results?.length === 1 && r1env?.data?.meta?.source === lib.rec.id,
+      `status=${r1.status} meta=${JSON.stringify(r1env?.data?.meta)}`)
+    check('R1b 拿不到分数 → 第三形态标记（与"分数低的未命中"分开）',
+      r1env?.data?.noConfidence === true && r1env?.data?.results?.[0]?.ok === false,
+      JSON.stringify({ noConfidence: r1env?.data?.noConfidence, ok: r1env?.data?.results?.[0]?.ok }))
+    const r1plain = spawnSync(process.execPath, [
+      BIN, 'reco', '--node', recoNode, '--from-kf', lib.rec.id, '--frames-dir', lib.dir,
+      '--resource-dir', path.join(project, 'res'),
+    ], { encoding: 'utf8' })
+    check('R1c 人类输出把第三形态说清楚（别让人当成"画面不匹配"去调阈值）',
+      /未返回任何置信度/.test(r1plain.stdout) && !/模板与该画面不匹配/.test(r1plain.stdout),
+      String(r1plain.stdout).slice(-240))
+
+    const r2 = spawnSync(process.execPath, [
+      BIN, 'reco', '--node', recoNode, '--image', lib.rec.id, '--frames-dir', lib.dir,
+      '--resource-dir', path.join(project, 'res'), '--json',
+    ], { encoding: 'utf8' })
+    let r2env = null
+    try { r2env = JSON.parse(r2.stdout) } catch { /* ignore */ }
+    check('R2 --image kf:… 是等价入口（SKILL / roadmap 记过的写法）',
+      r2.status === 0 && r2env?.data?.meta?.source === lib.rec.id, `status=${r2.status}`)
+
+    const r3 = spawnSync(process.execPath, [
+      BIN, 'reco', '--node', recoNode, '--from-kf', lib.rec.id, '--frames-dir', lib.dir, '--seq', '3',
+      '--resource-dir', path.join(project, 'res'), '--json',
+    ], { encoding: 'utf8' })
+    let r3env = null
+    try { r3env = JSON.parse(r3.stdout) } catch { /* ignore */ }
+    check('R3 --from-kf 与 --seq 互斥 → 退出 2 / BAD_ARGUMENTS',
+      r3.status === 2 && r3env?.error?.code === 'BAD_ARGUMENTS', `status=${r3.status}`)
+
     console.log('S 组：库帧离线候选（annotate --from-kf，同样不需要设备）')
     const somOut = path.join(outDir, 'som.png')
     const s1 = await c.call('annotate', { kfSource: lib.kfSource, out: somOut }, 120000)
@@ -312,5 +355,5 @@ async function main() {
 }
 
 await main()
-console.log(`\nK/C 组：${pass} 过 / ${fail} 败`)
+console.log(`\nK/C/R/S 组：${pass} 过 / ${fail} 败`)
 process.exit(fail ? 1 : 0)

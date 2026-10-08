@@ -1191,10 +1191,20 @@ async function cmdRecoTest(args) {
     return await recoActTest(args, actNode)
   }
   await ensureResource(args.resourceDir)   // 校验资源可加载（子进程会重新加载）
-  // 图像来源：缓冲帧 seq（降采样 PNG 重编码）或文件
+  /* 图像来源三条：库内留存帧（kfSource：控制器分辨率原图、**可无设备**）/ 显式文件 / 会话缓冲帧。
+   * daemon 自己写的那份临时 PNG **用完即删**——不删就是每跑一次漏一个（CLI 侧的截帧泄漏是同一类，
+   * 现场实测攒过 42 张；这条 `--seq` 路径同理，只是本机还没被触发过）。 */
   let imageFile = null
+  let tempImage = null
   let meta = {}
-  if (args.image) {
+  if (args.kfSource) {
+    const kf = readKfCropSource(args.kfSource)
+    if (kf.error) return { ok: false, error: kf.error }
+    imageFile = path.join(os.tmpdir(), 'maa_reco_kf_' + Date.now() + '.png')
+    fs.writeFileSync(imageFile, kf.png)     // 库帧原样字节，不重编码（裁剪无关，reco 只读这一张）
+    tempImage = imageFile
+    meta = { source: kf.source.id, sha256: kf.source.sha256, w: kf.dec.w, h: kf.dec.h, ctrlW: kf.dec.w, ctrlH: kf.dec.h }
+  } else if (args.image) {
     imageFile = String(args.image)
     meta = { source: args.image }
   } else {
@@ -1204,6 +1214,7 @@ async function cmdRecoTest(args) {
     if (!fr) return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）' }
     imageFile = path.join(os.tmpdir(), 'maa_reco_img_' + Date.now() + '.png')
     fs.writeFileSync(imageFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
+    tempImage = imageFile
     meta = { seq: fr.seq, w: fr.w, h: fr.h, t: fr.t }
   }
   /* --node：整节点 JSON 原样透传给子进程（V1 扁平 / V2 嵌套由框架解析，daemon 不转换） */
@@ -1226,14 +1237,20 @@ async function cmdRecoTest(args) {
       cases.push({ ...baseParam, [String(sweep.key || 'threshold')]: Math.round(v * 1000) / 1000 })
     }
   } else cases.push(baseParam)
-  const r = await spawnRecoChild({
-    resourceDir: String(args.resourceDir),
-    type: String(args.type || 'TemplateMatch'),
-    image: imageFile,
-    /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
-    ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
-    ...(node ? { node } : { cases }),
-  }, 90000)
+  let r = null
+  try {
+    r = await spawnRecoChild({
+      resourceDir: String(args.resourceDir),
+      type: String(args.type || 'TemplateMatch'),
+      image: imageFile,
+      /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
+      ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
+      ...(node ? { node } : { cases }),
+    }, 90000)
+  } finally {
+    /* 子进程已经读完这张图（spawnRecoChild 会等到它退出），此时删除是安全的 */
+    if (tempImage) { try { fs.rmSync(tempImage, { force: true }) } catch (e) { /* ignore */ } }
+  }
   if (r && r.ok) {
     const rec = node && node.recognition
     const shownType = node
