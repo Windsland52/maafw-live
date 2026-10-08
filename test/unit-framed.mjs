@@ -261,6 +261,46 @@ test('connComponents 平坦图无候选；小噪声块被面积过滤', () => {
   assert.deepEqual(connComponents(rgb2, 160, 120), [])
 })
 
+test('connComponents 被拒计数：面积窗两侧分开记，passed 与返回框数一致', () => {
+  const w = 200, h = 200
+  /* 构造依据（实测，别改成"想当然"的形状）：
+   *  - dev 掩码是「偏离局部均值（R=12）」，同色大块的内部并不偏离 → 大块只留一圈边缘环、面积不会超窗；
+   *    所以 tooLarge 必须用**大面积细纹理**来构造。
+   *  - tooNarrow 在本算法下几乎不可达：环形效应会把细条原地加宽（实测 4×100 与 180×2 都判成通过），
+   *    而细密纹理又会碎成逐像素小块落进 tooSmall。此处只断言该计数存在且为 0，并在 roadmap 记下这个发现。 */
+  const small = solid(w, h, [90, 90, 90])
+  fillRect(small, w, 20, 20, 8, 8, [255, 255, 255])
+  const smallStats = { passed: 0, tooSmall: 0, tooLarge: 0, tooNarrow: 0 }
+  assert.deepEqual(connComponents(small, w, h, smallStats), [])
+  assert.ok(smallStats.tooSmall >= 1, '小块要记进 tooSmall：' + JSON.stringify(smallStats))
+
+  const huge = solid(w, h, [90, 90, 90])
+  for (let y = 10; y < 190; y++) for (let x = 10; x < 190; x++) {
+    const v = (((x >> 2) + (y >> 2)) & 1) ? 200 : 90
+    const i = (y * w + x) * 3
+    huge[i] = v; huge[i + 1] = v; huge[i + 2] = v
+  }
+  const hugeStats = { passed: 0, tooSmall: 0, tooLarge: 0, tooNarrow: 0 }
+  connComponents(huge, w, h, hugeStats)
+  assert.ok(hugeStats.tooLarge >= 1, '大面积纹理要记进 tooLarge：' + JSON.stringify(hugeStats))
+
+  const kept = solid(w, h, [90, 90, 90])
+  fillRect(kept, w, 20, 20, 40, 40, [255, 255, 255])
+  const keptStats = { passed: 0, tooSmall: 0, tooLarge: 0, tooNarrow: 0 }
+  const boxes = connComponents(kept, w, h, keptStats)
+  assert.ok(boxes.length >= 1, '正常块应保留：' + JSON.stringify(boxes))
+  assert.equal(keptStats.passed, boxes.length, 'passed 必须等于实际返回的框数：' + JSON.stringify(keptStats))
+  assert.equal(keptStats.tooNarrow, 0, '该形状不触发 tooNarrow')
+})
+
+test('connComponents 不传 stats 时行为不变（只记账，不改判定）', () => {
+  const w = 160, h = 120
+  const rgb = solid(w, h, [90, 90, 90])
+  fillRect(rgb, w, 10, 10, 12, 12, [255, 255, 255])
+  fillRect(rgb, w, 60, 60, 40, 40, [0, 0, 0])
+  assert.deepEqual(connComponents(rgb, w, h), connComponents(rgb, w, h, { passed: 0, tooSmall: 0, tooLarge: 0, tooNarrow: 0 }))
+})
+
 /* ────────────────────────── edgeDensityBoxes（SoM 边缘密度候选） ────────────────────────── */
 test('edgeDensityBoxes 棋盘格高频区成框、平坦区无框', () => {
   const w = 128, h = 128
@@ -293,6 +333,28 @@ test('edgeDensityBoxes 测量覆盖：抬高 z 门槛与绝对地板都能让同
   assert.deepEqual(edgeDensityBoxes(rgb, w, h, { min: 1e9 }), [], '绝对地板抬到不可能 → 无框')
   assert.deepEqual(edgeDensityBoxes(rgb, w, h, {}), dflt, '空覆盖 = 生产常数，逐字段一致')
   assert.deepEqual(edgeDensityBoxes(rgb, w, h, { z: 0, min: 0 }), dflt, '非法覆盖（0）回落到生产常数')
+})
+
+test('edgeDensityBoxes 被拒计数：平坦图全记 belowZ，passed 与返回框数一致', () => {
+  const w = 128, h = 128
+  const BS = 16
+  const blocks = Math.ceil(w / BS) * Math.ceil(h / BS)
+  const flatStats = { passed: 0, belowZ: 0, belowMin: 0, singleBlock: 0 }
+  const flat = edgeDensityBoxes(solid(w, h, [100, 100, 100]), w, h, {}, flatStats)
+  assert.deepEqual(flat, [], '平坦图无框')
+  assert.equal(flatStats.passed, 0)
+  assert.equal(flatStats.belowZ, blocks, '平坦图每块都不超均值 → 全部记 belowZ：' + JSON.stringify(flatStats))
+
+  /* 棋盘格：有块超门槛 → 记账要与实际出框数一致 */
+  const rgb = solid(w, h, [100, 100, 100])
+  for (let y = 16; y < 80; y++) for (let x = 16; x < 80; x++) {
+    const v = (((x >> 3) + (y >> 3)) & 1) ? 255 : 0
+    const i = (y * w + x) * 3; rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+  }
+  const stats = { passed: 0, belowZ: 0, belowMin: 0, singleBlock: 0 }
+  const boxes = edgeDensityBoxes(rgb, w, h, {}, stats)
+  assert.equal(stats.passed, boxes.length, 'passed 等于出框数：' + JSON.stringify(stats))
+  assert.ok(stats.belowZ >= 1 && stats.belowMin >= 0, JSON.stringify(stats))
 })
 
 /* ────────────────────────── l0EvictToBudget（L0 字节预算淘汰） ────────────────────────── */

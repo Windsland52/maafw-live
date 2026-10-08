@@ -117,6 +117,8 @@ async function main() {
         areas: boxes.map((b) => b[2] * b[3]),
         bands,
         edgeBands,
+        /** 被门槛拒掉的计数（daemon 回执里的 filtered）：判断"候选少"是内容如此还是被过滤掉 */
+        filtered: r.filtered ?? null,
         coveragePct: coverage(boxes, rec.ctrlW, rec.ctrlH),
         texts: cands.filter((c) => c.text).length,
         ...(beyond.length
@@ -160,6 +162,15 @@ async function main() {
     coveragePctMedian: median(ok.map((r) => r.coveragePct)),
     ocrCandidates: ok.reduce((a, r) => a + (r.sources?.ocr ?? 0), 0),
     edgeCandidates: ok.reduce((a, r) => a + (r.sources?.edge ?? 0), 0),
+    /* 被门槛拒掉的总数：与 keptTotal 对照着读，才知道候选表是被上限截断的还是被过滤掉的 */
+    filtered: {
+      connTooSmall: ok.reduce((a, r) => a + (r.filtered?.conn?.tooSmall ?? 0), 0),
+      connTooLarge: ok.reduce((a, r) => a + (r.filtered?.conn?.tooLarge ?? 0), 0),
+      connTooNarrow: ok.reduce((a, r) => a + (r.filtered?.conn?.tooNarrow ?? 0), 0),
+      edgeBelowZ: ok.reduce((a, r) => a + (r.filtered?.edge?.belowZ ?? 0), 0),
+      edgeBelowMin: ok.reduce((a, r) => a + (r.filtered?.edge?.belowMin ?? 0), 0),
+      edgeSingleBlock: ok.reduce((a, r) => a + (r.filtered?.edge?.singleBlock ?? 0), 0),
+    },
     edgeBands: {
       top: ok.reduce((a, r) => a + (r.edgeBands?.top ?? 0), 0),
       mid: ok.reduce((a, r) => a + (r.edgeBands?.mid ?? 0), 0),
@@ -184,6 +195,9 @@ async function main() {
       if (r.beyondCount) {
         console.log('       被默认上限 30 截掉：' + r.beyondCount + ' 个  源构成 ' + JSON.stringify(r.beyondSources) +
           '  面积中位 ' + r.beyondAreaMedian + '  分带 ' + JSON.stringify(r.beyondBands))
+      }
+      if (r.filtered) {
+        console.log('       被门槛拒掉：conn ' + JSON.stringify(r.filtered.conn) + '  edge ' + JSON.stringify(r.filtered.edge))
       }
     }
     console.log('\n汇总：' + JSON.stringify(summary, null, 2))

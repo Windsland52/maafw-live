@@ -1817,7 +1817,8 @@ function drawRect(buf, w, h, box, color) {
 }
 
 /** 灰度图积分图 → 均值背景 → 背景差二值 → BFS 连通域（面积过滤） */
-function connComponents(rgb, w, h) {
+/** 连通域候选（形态学偏离块 + BFS 成框）。stats 回填被面积窗与"太扁"拒掉的数量。 */
+function connComponents(rgb, w, h, stats = null) {
   const gray = new Float64Array(w * h)
   for (let i = 0, p = 0; i < w * h; i++, p += 3) {
     gray[i] = (rgb[p] * 3 + rgb[p + 1] * 6 + rgb[p + 2]) * 0.1
@@ -1863,6 +1864,13 @@ function connComponents(rgb, w, h) {
     }
     if (area >= 120 && area <= 24000 && maxX - minX >= 10 && maxY - minY >= 10) {
       boxes.push([minX, minY, maxX - minX + 1, maxY - minY + 1])
+      if (stats) stats.passed++
+    } else if (stats) {
+      /* 三类拒绝分开记：面积窗（120–24000）与"太扁"是分辨率/内容相关的两道不同门槛，
+       * 混成一个数字就看不出"换分辨率会不会漂"。 */
+      if (area < 120) stats.tooSmall++
+      else if (area > 24000) stats.tooLarge++
+      else stats.tooNarrow++
     }
   }
   return boxes
@@ -1870,8 +1878,8 @@ function connComponents(rgb, w, h) {
 
 /** Sobel 边缘密度的块级聚类（16px 块，z 值超限块 BFS 成框）。
  * opts.z / opts.min 是**测量用覆盖**（默认即生产常数 1.2 / 2000）：edge 源长期只出个位数候选，
- * 要判断"是阈值太严还是这类内容真没边缘"，就得能调着量。 */
-function edgeDensityBoxes(rgb, w, h, opts = {}) {
+ * 要判断"是阈值太严还是这类内容真没边缘"，就得能调着量。stats 回填被两道门槛与簇大小拒掉的数量。 */
+function edgeDensityBoxes(rgb, w, h, opts = {}, stats = null) {
   const BS = 16
   const bw = Math.ceil(w / BS), bh = Math.ceil(h / BS)
   const mag = new Float64Array(w * h)
@@ -1894,7 +1902,12 @@ function edgeDensityBoxes(rgb, w, h, opts = {}) {
   const hot = new Uint8Array(bw * bh)
   const Z = Number(opts.z) > 0 ? Number(opts.z) : 1.2
   const MIN = Number(opts.min) > 0 ? Number(opts.min) : 2000
-  for (let k = 0; k < blk.length; k++) if (blk[k] > mean + Z * sd && blk[k] > MIN) hot[k] = 1
+  /* stats 只记账不改行为：被两道门槛拒掉多少块，是"edge 为什么不出力"唯一能看的证据。 */
+  for (let k = 0; k < blk.length; k++) {
+    if (blk[k] <= mean + Z * sd) { if (stats) stats.belowZ++; continue }
+    if (blk[k] <= MIN) { if (stats) stats.belowMin++; continue }
+    hot[k] = 1
+  }
   const seen = new Uint8Array(bw * bh)
   const boxes = []
   const stack = []
@@ -1920,7 +1933,8 @@ function edgeDensityBoxes(rgb, w, h, opts = {}) {
     if (n >= 2) {
       const x = minX * BS, y = minY * BS
       boxes.push([x, y, Math.min(w - x, (maxX - minX + 1) * BS), Math.min(h - y, (maxY - minY + 1) * BS)])
-    }
+      if (stats) stats.passed++
+    } else if (stats) stats.singleBlock++
   }
   return boxes
 }
@@ -2000,9 +2014,12 @@ async function cmdAnnotate(args) {
       try { fs.rmSync(imgFile, { force: true }) } catch (e) { /* ignore */ }
     }
   }
-  /* 源 2/3：连通域与边缘密度（纯 CPU，小图上毫秒级） */
-  for (const b of connComponents(work.rgb, work.w, work.h)) raw.push({ source: 'conn', box: b })
-  for (const b of edgeDensityBoxes(work.rgb, work.w, work.h, { z: args.somEdgeZ, min: args.somEdgeMin })) {
+  /* 源 2/3：连通域与边缘密度（纯 CPU，小图上毫秒级）；stats 记下被门槛拒掉的数量——
+   * "某段没有候选"到底是看不见还是被过滤掉，只有这个计数能回答（分辨率变化时尤其要紧）。 */
+  const connStats = { passed: 0, tooSmall: 0, tooLarge: 0, tooNarrow: 0 }
+  const edgeStats = { passed: 0, belowZ: 0, belowMin: 0, singleBlock: 0 }
+  for (const b of connComponents(work.rgb, work.w, work.h, connStats)) raw.push({ source: 'conn', box: b })
+  for (const b of edgeDensityBoxes(work.rgb, work.w, work.h, { z: args.somEdgeZ, min: args.somEdgeMin }, edgeStats)) {
     raw.push({ source: 'edge', box: b })
   }
   /* 源 4：最近 change 事件的 diff 区域（ctrl → 小图坐标）；库帧路径没有会话事件 */
@@ -2055,6 +2072,9 @@ async function cmdAnnotate(args) {
     limit: LIMIT,
     mergedTotal: merged.length,
     sources: { ocr: cands.filter((c) => c.source === 'ocr').length, conn: cands.filter((c) => c.source === 'conn').length, edge: cands.filter((c) => c.source === 'edge').length, diff: cands.filter((c) => c.source === 'diff').length },
+    /* 被门槛拒掉的候选：conn 的面积窗/太扁、edge 的两道门槛/单块簇。
+     * 与 sources 一起读，才知道"候选少"是内容如此还是被过滤掉了。 */
+    filtered: { conn: connStats, edge: edgeStats },
     ...(args.kfSource ? { sourcesUnavailable: { diff: '库帧路径无会话事件：diff 源不可用（不拿别的区域顶替）' } } : {}),
     candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...(c.extra ?? {}) })),
     ...(cands.length === 0 ? { warn: '无候选：画面可能静止且低对比；换帧或走点选路径' } : {}),

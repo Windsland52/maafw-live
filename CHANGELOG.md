@@ -3,6 +3,37 @@
 maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **`version --check`：更新检查（只报不换）**——对 registry 查 latest，报出"该升级了"并给出升级命令。
+  刻意的取舍：**不自动切换运行时**（agent 长任务跑到一半换版本，比晚一天升级风险大）；**只在交互终端自动查**
+  （管道与 agent 调用不付代价）；**限频 24h**（结果缓存到 `~/.maafw-live/version-check.json`）；
+  **可关**（`MAAFW_LIVE_NO_UPDATE_CHECK=1`）；**失败一律静默**（离线不影响 `version` 本身）。
+  显式 `--check` 不受 TTY/限频约束：查到新版退出 `FINDINGS(3)`，查不到退出 `ENV(4)`（离线要说出来，
+  不能假装"已是最新"）。
+
+### 变更
+
+- **`annotate` 回执新增 `filtered`**：分别记下被门槛拒掉的候选——`conn: {passed, tooSmall, tooLarge, tooNarrow}`、
+  `edge: {passed, belowZ, belowMin, singleBlock}`。"某一段没有候选"是内容如此还是被过滤掉，以前只能从结果侧猜。
+  首批实测（3 帧）：面积窗下界拒掉约 **97%** 的连通域（通过 27–53、`tooSmall` 1460–1698），
+  而 edge 的绝对地板**从不触发**（`belowMin` 全 0）、门槛全在 z 上。
+
+### 测试
+
+- 更新检查 6 条单测：数值段比较（`0.9.10 > 0.9.9`）、预发布低于同号正式版、24h 限频与坏缓存回落、
+  scoped 名的 packument URL 编码、环境开关。
+- 过滤器计数 2 条单测 + 一条实测记录：`passed` 必须等于实际返回框数；并钉住"`dev` 掩码是偏离局部均值，
+  同色大块只留边缘环"与"`tooNarrow` 在合成形状上几乎不可达"这两个**实现语义**，免得后人当成 bug 去改。
+
+### 文档
+
+- `RELEASING.md` 补三条实测坑：registry 传播延迟（实测 2–3 分钟，期间 `npm view`/安装全是 404，
+  **不是发布失败**）、本机 npm 缓存会掩盖新版本（`ETARGET`，要 `--prefer-online`）、
+  发布前必须本地干跑 `npm publish --dry-run`（`bin` 路径那类问题只有 publish 报）。
+
 ## [0.1.1] - 2026-10-08
 
 > **首个经 CI + OIDC 发布的版本**：npm registry 走 trusted publishing（带 provenance），

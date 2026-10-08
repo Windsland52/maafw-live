@@ -71,6 +71,16 @@ tag 推送触发 `.github/workflows/release.yml`，任务链（`needs` 决定顺
 - GitHub 用 **tag 指向的那份 workflow 文件**执行：修好 `release.yml` 后重跑旧 tag 仍会执行旧版，
   正确做法是发新版本 tag。
 - 部分失败后重跑是安全的：`release` 任务跳过已存在的 Release，不会重复建。
+- **发布后 registry 有传播延迟，别据此判定失败**：新包/新版本在 npm 侧要过一遍处理流水线
+  （`npm publish` 输出里的 "Your package is being processed and may take a few minutes to become available"
+  就是这个状态）。实测 0.1.0 与 0.1.1 各等 **2–3 分钟**才在 packument 里可见，期间
+  `npm view`、`npm i <该版本>`、直接 GET packument 全是 404/ETARGET。
+- **本机 npm 缓存会掩盖新版本**：registry 已经有了，本机 `npm view` / `npm i <版本>` 仍可能报
+  `ETARGET: No matching version found`（缓存的旧 packument）。加 `--prefer-online` 或等几分钟再试——
+  这不是发布失败。
+- **发布前本地干跑一次 `npm publish --dry-run`**：`bin` 路径这类问题**只有 publish 报**
+  （`npm pack` 不报）——0.1.0 前就撞过 `bin[...] script name ... was invalid and removed`，
+  照那样发出去用户装完没有命令。
 
 ## 相关文件
 
