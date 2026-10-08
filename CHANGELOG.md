@@ -140,6 +140,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   这类（JSON 里 NaN 会变 null，而 `Number(null)` = 0 是合法数字，所以只测 NaN 是不够的）。
 - **`annotate` 的 TS 类型缺四个测量覆盖**：`somLimit` / `somEdgeZ` / `somEdgeMin` / `somIoU` 在 daemon
   与协议文档里都有、客户端类型里没有（与 `tplCrop` 同一类失真）——补齐并逐字段写明语义。
+- **客户端的 `init` 回执被静默丢弃**：spawn 后用 `id:-1` 把 init 发出去就不管，而分发链只认
+  pending 表里的 id——回执被当"未知 id"丢掉，于是宿主拿不到 `framesDir` / `daemonId` / `kfQuota`，
+  init 失败（例如 runDir 建不出来）也无从得知。现在它是一次真正的**握手**：`client.init()` 返回
+  `{ ok, data }` 或 `{ ok:false, error }`，失败另进错误环；同时**不把"对方不回 init"变成致命错误**
+  （协议要求每条请求都有应答，但客户端不该因为对方没回一条就全盘不进）。
+  `kfQuotaBytes` 也随之可验证地透传（真机探针：`12345` 原样回来）。
 
 ### 测试
 
@@ -154,6 +160,13 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   shutdown 路径不碰 maa 绑定（`loadMaa()` 懒加载），CI 里也不需要设备。单测总数 96 → 98。
 - `tpl_crop` 非数字入参 1 条（`test/unit-crop-kf.mjs`）：NaN、非数字字符串、非数字 pad 三种形态都要
   报用法错误、且不碰库——单测总数 98 → 99。
+- **公开导出 `@windsland52/maa-live/image` 补 9 条单测**（`test/unit-image.mjs`）：尺寸、只缩不放
+  （小图返回同一个 Buffer）、长边收敛与比例、maxSide 下限 16、裁剪像素逐点一致、越界夹紧语义
+  （原点夹进画布、尺寸再夹边界——与 daemon `frame_get` 同源）、**RGBA 源归一化成 RGB**（自造
+  colorType 6，`pngEncodeRGB` 只出 RGB，不测这条等于没测）、data URL 互转与坏输入返回 null。
+- **客户端协议面 3 条**（`test/unit-client-protocol.mjs` + 桩 daemon）：init 握手回执可读、
+  对方不回 init 时如实回报并留痕（沉默桩）、`stream_stopped` 订阅与错误环。两个桩都不需要设备与
+  maa-node——这些缺口的本体都在客户端一侧。（原 `unit-client-stream.mjs` 并入本文件。）
 - **真机验收改动前后各跑一遍**（MuMu v5 / `adb 127.0.0.1:16384`）：`npm run accept` **27 过 / 0 败**，
   两遍一致；确认 R2e 换成"占目录"注入后判据仍成立，且临时 runDir 不再新增（跑前 15 / 跑后 15）。
 - **`accept:crop` 挂进 CI**：它离线、不需要设备，却会真的起 daemon 与识别子进程（自匹配）——

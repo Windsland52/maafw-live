@@ -54,8 +54,25 @@ export interface DaemonEvents {
  */
 export type DaemonMessageKind = 'frame' | 'event' | 'stream_error' | 'stream_stopped'
 
+/** `init` 的回执：daemon 身份与落点（客户端 spawn 后立刻握手的那一次）。 */
+export interface DaemonInit {
+  previewPath: string | null
+  daemonId: string
+  framesDir: string
+  kfQuota: number
+}
+
+/**
+ * 握手结果。**失败不抛异常**：老实现用 `id:-1` 发出去就不管，回执在分发链里被丢弃，
+ * init 失败无从得知；现在如实回报，同时不把"daemon 不回 init"变成调用方的致命错误
+ * （协议要求每条请求都有应答，但客户端不该因为对方没回一条就全盘不进）。
+ */
+export type DaemonInitResult = { ok: true; data: DaemonInit } | { ok: false; error: string }
+
 export interface DaemonClient {
   readonly events: DaemonEvents
+  /** spawn 后那次 `init` 握手的回执（framesDir / daemonId / kfQuota）；需要时才会 spawn daemon。 */
+  init(): Promise<DaemonInitResult>
   /** 发一条命令并等应答；超时会硬杀 daemon（下次调用自动重生）。 */
   call<T = unknown>(cmd: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<T>
   /** daemon stderr + 非 JSON stdout 行（maa 原生日志，识别失败根因常在这）。 */
@@ -114,6 +131,8 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
   let reqId = 0
   let calls = 0
   let restarts = 0
+  /** 当前这次 spawn 的 init 握手（daemon 重启会换新的一条） */
+  let initResult: Promise<DaemonInitResult> | null = null
 
   const emit = (kind: DaemonMessageKind, message: unknown): void => {
     for (const cb of listeners.get(kind) ?? []) {
@@ -173,13 +192,37 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
     })
   }
 
+  /**
+   * spawn 后立刻发 init 并等回执：daemon 身份与落点是宿主真需要的东西（面板要 framesDir、
+   * 配额要 kfQuota 才能提前提示），而失败也必须可见——旧实现用 id=-1 发了就不管，
+   * 回执被分发链当"未知 id"丢弃，init 失败（比如 runDir 建不出来）完全无从得知。
+   * 与 `call` 共用同一条 stdin 管道，所以 init 一定排在后续请求之前。
+   */
+  const handshake = (c: ChildProcess): Promise<DaemonInitResult> =>
+    new Promise<DaemonInitResult>((resolve) => {
+      const id = ++reqId
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        resolve({ ok: false, error: 'init 无应答（' + defaultTimeout + 'ms）：对方可能不是本协议的实现' })
+      }, defaultTimeout)
+      pending.set(id, {
+        resolve: (d) => resolve({ ok: true, data: d as DaemonInit }),
+        reject: (e) => resolve({ ok: false, error: e.message }),
+        timer,
+      })
+      c.stdin!.write(JSON.stringify({ id, cmd: 'init', runDir, ...(kfQuotaBytes ? { kfQuotaBytes } : {}) }) + '\n')
+    })
+
   const ensure = (): ChildProcess => {
     if (child && !exited) return child
     if (child) restarts += 1
     child = spawn(process.execPath, [daemonPath, '--child'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     exited = false
     wire(child)
-    child.stdin!.write(JSON.stringify({ id: -1, cmd: 'init', runDir, ...(kfQuotaBytes ? { kfQuotaBytes } : {}) }) + '\n')
+    initResult = handshake(child).then((r) => {
+      if (!r.ok) push(events.errors, 'init 失败：' + r.error, CAP.logs)
+      return r
+    })
     return child
   }
 
@@ -212,6 +255,10 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
   return {
     events,
     call,
+    init() {
+      ensure()
+      return initResult ?? Promise.resolve({ ok: false, error: '尚未 spawn daemon' })
+    },
     logTail(n = 60) { return events.logs.slice(-n) },
     subscribe(kind, cb) {
       const set = listeners.get(kind) ?? new Set()

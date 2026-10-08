@@ -41,7 +41,7 @@
 
 | cmd | 参数 | 返回要点 |
 |---|---|---|
-| `init` | `runDir`、`kfQuotaBytes?`（字节，>0 生效；缺省 1GiB，env `MAAFW_KF_QUOTA_BYTES` 亦可覆盖；env `MAAFW_NOTIFY_DUMP=<file>` 把框架原始通知逐行 JSON 落盘，用于诊断"记录字段到底是谁填的"，默认关） | `{ ok, previewPath, daemonId, framesDir, kfQuota }`；设定预览帧落盘路径与关键帧库磁盘配额。应在 spawn 后立刻发一次 |
+| `init` | `runDir`、`kfQuotaBytes?`（字节，>0 生效；缺省 1GiB，env `MAAFW_KF_QUOTA_BYTES` 亦可覆盖；env `MAAFW_NOTIFY_DUMP=<file>` 把框架原始通知逐行 JSON 落盘，用于诊断"记录字段到底是谁填的"，默认关） | `{ ok, previewPath, daemonId, framesDir, kfQuota }`；设定预览帧落盘路径与关键帧库磁盘配额。应在 spawn 后立刻发一次——本仓客户端把它当**握手**（`client.init()`）：回执里的 framesDir / daemonId / kfQuota 对宿主可见，无应答或失败会如实回报并进错误环，不再被静默丢弃 |
 | `probe` | — | `{ version, adb, win32, errors[] }`：绑定版本与设备发现数 |
 | `device_list` | `kind: all\|adb\|win32` | 设备数组：`{ kind, id, name, cls?, adbPath? }` |
 | `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session, streamStopped? }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller**——因此若上一轮在跑帧流，本次连接会**显式停掉它并回 `streamStopped:true`**，同时向订阅者推一条 `stream_stopped`（要看帧就重新 `stream_start`；旧行为是流循环静默死掉而状态仍报"在跑"） |

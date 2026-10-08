@@ -17,7 +17,7 @@ CLI 面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON �
 | 部分 | 位置 | 做什么 |
 | --- | --- | --- |
 | daemon | `src/daemon/framed.mjs` | 独立子进程，持有 Controller / Resource / Tasker、帧流与环形缓冲；说 JSON 行协议 |
-| client | `@windsland52/maa-live/client` | 可复用客户端：spawn、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
+| client | `@windsland52/maa-live/client` | 可复用客户端：spawn、init 握手（拿 framesDir / daemonId / kfQuota）、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
 | CLI | `bin/maafw-live.mjs` | 命令面：探针、设备、输入、识别、会话 |
 
 协议的完整契约（消息形状、命令表、坐标系与稳定性约定）见 [`docs/daemon-protocol.md`](docs/daemon-protocol.md)。
