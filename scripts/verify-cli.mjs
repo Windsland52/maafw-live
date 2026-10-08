@@ -103,6 +103,12 @@ process.stdout.write('maafw-live CLI 装配级回归\n')
   const r = runCli(['env', '--json'])
   const e = parseEnvelope(r.stdout)
   check('[4] env --json 输出可解析的 JSON', e !== null, r.stdout.slice(0, 120))
+  /* env 是探针命令：它若整条失败（如某平台 spawn 异常），失败原因必须能从回归输出里直接看到——
+   * 之前 CI 上只看到三条 data 断言红，得翻 daemon 日志才知道是 spawn EINVAL。 */
+  if (e && e.ok === false) {
+    check('[4] env 不应整条失败（探针的失败要落进 warnings）', false,
+      `error=${e.error?.code}: ${e.error?.message}  stderr=${String(r.stderr).trim().slice(0, 160)}`)
+  }
 
   if (e) {
     const keys = Object.keys(e).sort()

@@ -3,9 +3,34 @@
 maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.1] - 2026-10-08
+
+> **首个经 CI + OIDC 发布的版本**：npm registry 走 trusted publishing（带 provenance），
+> 同一份 tarball 同时进 GitHub Packages，并由工作流创建 GitHub Release。
+> 0.1.0 是本地发布（无 provenance）、其 tag 的发布工作流因 action 版本写错未能运行——详见下节。
+
+### 修复
+
+- **`env` 在缺少某个探测目标的机器上会整条失败**（CI 的 Windows runner 必现，本地因 adb/python 齐全
+  而一直没暴露）：`.cmd` / `.bat` 被直接交给 `execFile` 时，新版 Node 会**同步抛 EINVAL**
+  （CVE-2024-27980 的修复），而 `src/exec.ts` 里那次 `.cmd` 重试没有兜住同步抛，于是 Promise 直接
+  reject，`Promise.all` 炸掉——`env` 以 `UNEXPECTED: spawn EINVAL` 退出，连"缺 adb"这个诚实结论都
+  没机会说出来。这违反了该模块自己写的不变量「永不抛异常」。
+  现在：`once()` 把同步抛也收敛成结果对象；`.cmd` 改为**先用 `where` 解析可执行路径、再经 `ComSpec` 执行**
+  （`cmd /d /s /c ""<path>" <args>"` + `windowsVerbatimArguments`，实测唯一能跑通的拼法），
+  并优先取带可执行扩展名的匹配（`where npm` 会先列出无扩展名的 POSIX 壳）。
+  顺带避开 `shell: true` 的两个坑：给 shell 传参会触发 `DEP0190` 弃用警告，且"命令不存在"会退化成
+  "cmd 跑起来了但退出 1"（本地化报错，判不准）。新增 `test/unit-exec.mjs` 5 条把契约钉住。
+- **发布工作流引用了不存在的 action 版本**：`actions/upload-artifact@v8` 不存在（该 action 最新 v7，
+  `download-artifact` 才是 v8），导致 `check` 作业在 "Set up job" 就失败、发布链根本起不来。改为 `@v7`。
+- **装配回归的诊断信息**：`env --json` 若整条失败，现在会把 `error.code/message` 与 stderr 直接打进
+  回归输出——这次 CI 只显示三条 data 断言红，得翻日志才知道是 `spawn EINVAL`。
+
 ## [0.1.0] - 2026-10-08
 
-> 首个发布版本，**同时进 npm registry（`@windsland52/maa-live`，OIDC trusted publishing）与 GitHub Packages**。
+> 首个发布版本，**本地发布到 npm registry（`@windsland52/maa-live`，无 provenance）**；同一 tag 的发布
+> 工作流因 `upload-artifact@v8` 不存在而未能运行，故 GitHub Release 由人工补建、GitHub Packages 的
+> 0.1.0 未发。首个经 CI + OIDC 发布的版本是 0.1.1。
 > 此前仓库以工作快照推进（下游 MaaTutorial `maafw-debug` 技能的评审核出于快照 `35c4e493`），tag 与 Release
 > 都还没有对外；本版发布前把声明与实现逐条对账——消除「声明了但没有」的第三态——并建立发布流程
 > （CHANGELOG / CI / tag 触发的发布链）。下游结果契约「以本仓库文档为准」的引用请指向 `v0.1.0`。

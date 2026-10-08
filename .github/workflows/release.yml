@@ -65,7 +65,7 @@ jobs:
             exit 1
           fi
           printf 'pack_dir=%s\n' "${pack_root}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@v8
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: ${{ steps.pack.outputs.pack_dir }}/*.tgz
