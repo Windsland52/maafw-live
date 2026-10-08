@@ -13,7 +13,7 @@ import zlib from 'node:zlib'
 import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, downscale, blockAnalyze, hashDist,
-  regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
+  regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
   l0EvictToBudget, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
@@ -387,6 +387,37 @@ test('edgeDensityBoxes 被拒计数：平坦图全记 belowZ，passed 与返回�
   const boxes = edgeDensityBoxes(rgb, w, h, {}, stats)
   assert.equal(stats.passed, boxes.length, 'passed 等于出框数：' + JSON.stringify(stats))
   assert.ok(stats.belowZ >= 1 && stats.belowMin >= 0, JSON.stringify(stats))
+})
+
+/* ────────────────────────── tightenBoundsByEdges（修法① 的测量旋钮，默认关） ──────────────────────────
+ * 语义：阈值跟着**边框环自身**的对比度走（p90 × z，与绝对地板取大者），于是"背景自带纹理"不再是
+ * 拦路虎——背景差分会把整片纹理判成非背景而剪不动。这个用例同时钉住"它会收到元素边界"与
+ * "均匀图返回 null"，因为它是可复跑的定标旋钮（生产默认走背景差分）。 */
+test('tightenBoundsByEdges：纹理背景上收出元素框；均匀图返回 null', () => {
+  const w = 80, h = 60
+  const rgb = Buffer.alloc(w * h * 3)
+  /* 背景：低频正弦纹理（幅度刻意小于元素对比度） */
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 3
+      const v = 100 + Math.round(8 * Math.sin((x + y) / 6))
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  /* 元素：20..54 × 15..39，强描边 + 内部棋盘（文字/图标那类内部结构） */
+  for (let y = 15; y <= 39; y++) {
+    for (let x = 20; x <= 54; x++) {
+      const i = (y * w + x) * 3
+      const border = x === 20 || x === 54 || y === 15 || y === 39
+      const v = border ? 240 : (60 + ((x + y) % 2 ? 120 : 0))
+      rgb[i] = v; rgb[i + 1] = v; rgb[i + 2] = v
+    }
+  }
+  const t = tightenBoundsByEdges(rgb, w, h)
+  assert.ok(t, '应当收出元素框')
+  assert.ok(Math.abs(t.x - 20) <= 2 && Math.abs(t.y - 15) <= 2, JSON.stringify(t))
+  assert.ok(Math.abs(t.w - 35) <= 4 && Math.abs(t.h - 25) <= 4, JSON.stringify(t))
+  assert.equal(tightenBoundsByEdges(solid(w, h, [128, 128, 128]), w, h), null, '均匀图没有内容可收 → null')
 })
 
 /* ────────────────────────── l0EvictToBudget（L0 字节预算淘汰） ────────────────────────── */

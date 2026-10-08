@@ -1447,6 +1447,68 @@ function tightenBounds(rgb, w, h, opts = {}) {
   return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }
 }
 
+/** 局部对比度图：左右 / 上下邻域差之和（3 通道累加）。文字/图标的描边远高于平铺纹理。 */
+function edgeMap(rgb, w, h) {
+  const e = new Int32Array(w * h)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 3
+      const l = i - 3, r = i + 3, u = i - w * 3, d = i + w * 3
+      e[y * w + x] =
+        Math.abs(rgb[r] - rgb[l]) + Math.abs(rgb[r + 1] - rgb[l + 1]) + Math.abs(rgb[r + 2] - rgb[l + 2]) +
+        Math.abs(rgb[d] - rgb[u]) + Math.abs(rgb[d + 1] - rgb[u + 1]) + Math.abs(rgb[d + 2] - rgb[u + 2])
+    }
+  }
+  return e
+}
+
+/**
+ * 边缘/局部对比度收紧（roadmap 修法①）：`tightenBounds` 量的是"与背景色的距离"，而这类游戏 UI 的
+ * **背景自带纹理**——整片纹理都被算成非背景，行/列命中率全满，于是剪不动、留白留下（实测踩过：
+ * `signin_entry` 右半张是背景，自匹配照样报"位置正确 1.0"）。
+ *
+ * 这一路量**局部对比度**，判据是自适应阈值："边框环自身的对比度水平（p90）× z" 与绝对地板 `edgeMin`
+ * 取大者——环就是背景，所以阈值跟着背景纹理走；元素（文字/图标/描边）的对比度通常高出一截。
+ * 行/列的命中比例低于 `edgeFrac` 即判为背景并剪掉。返回 null 表示"没收到东西"（撑满或无内容）。
+ *
+ * 与背景差分**取更紧者**进候选池（不是硬交集）：两路都只剪不放，更紧的那个仍是内容的子集；
+ * 而"过紧会不会把元素裁掉"交给下游既有的自匹配判据（位置正确优先于得分）去裁决。
+ */
+function tightenBoundsByEdges(rgb, w, h, opts = {}) {
+  const Z = Number(opts.edgeZ) > 0 ? Number(opts.edgeZ) : 2
+  const MIN = Number(opts.edgeMin) > 0 ? Number(opts.edgeMin) : 24
+  const FRAC = Number(opts.edgeFrac) > 0 ? Number(opts.edgeFrac) : 0.02
+  const ring = Math.max(2, Math.round(Math.min(w, h) / 12))
+  const e = edgeMap(rgb, w, h)
+  /* 环上的对比度水平：p90（不是均值——有孤立强边时均值会被拖低，p90 更能代表"这片背景的纹理有多花"） */
+  const ringVals = []
+  for (let y = 0; y < h; y++) {
+    const edgeRow = y < ring || y >= h - ring
+    for (let x = 0; x < w; x++) {
+      if (!edgeRow && !(x < ring || x >= w - ring)) continue
+      ringVals.push(e[y * w + x])
+    }
+  }
+  ringVals.sort((a, b) => a - b)
+  const bgLevel = ringVals.length ? ringVals[Math.min(ringVals.length - 1, Math.floor(ringVals.length * 0.9))] : 0
+  const thresh = Math.max(MIN, bgLevel * Z)
+  const rowHit = new Array(h).fill(0)
+  const colHit = new Array(w).fill(0)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      if (e[y * w + x] > thresh) { rowHit[y]++; colHit[x]++ }
+    }
+  }
+  let y0 = 0, y1 = h - 1
+  while (y0 < y1 && rowHit[y0] / w < FRAC) y0++
+  while (y1 > y0 && rowHit[y1] / w < FRAC) y1--
+  let x0 = 0, x1 = w - 1
+  while (x0 < x1 && colHit[x0] / h < FRAC) x0++
+  while (x1 > x0 && colHit[x1] / h < FRAC) x1--
+  if (y1 - y0 < 3 || x1 - x0 < 3) return null
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, bgLevel, thresh }
+}
+
 function cropRgb(rgb, sw, sh, box) {
   const w = Math.min(box.w, sw - box.x), h = Math.min(box.h, sh - box.y)
   const out = Buffer.alloc(w * h * 3)
@@ -1607,8 +1669,20 @@ async function cmdTplCrop(args) {
   box0.h = cl(loose[3], 8, dec.h - box0.y)
 
   const region = cropRgb(rgb, dec.w, dec.h, box0)
-  const tight = tightenBounds(region.data, region.w, region.h, { tol: args.snapTol, frac: args.snapFrac })
-  const snapped = !!tight
+  /* 两路收紧：背景差分（与背景色的距离）是**生产默认**；边缘（局部对比度）是**测量用**、默认关
+   * （见下方 tightEdge 的说明与定标结论）。两路都进候选池，更紧的排前面（与自匹配 objective 配合：
+   * 都位置正确、都满分时保留先入者 = 更贴合的框；过紧的把元素裁掉了则 objective 会输给宽松档）。 */
+  const tightBg = tightenBounds(region.data, region.w, region.h, { tol: args.snapTol, frac: args.snapFrac })
+  /* 边缘那一路**默认关**：定标结论见 docs/daemon-protocol.md 的 tpl_crop 行——在现有真值集
+   * （scripts/truth/1999-720p.json，12 例）上它单独用 IoU 均值只有 0.50–0.59，而背景差分是 0.804：
+   * 边缘判据找的是**元素内部结构**（文字笔画、图标细节），不是元素的范围，所以"取更紧者"会把
+   * 框收进元素内部（实测 0005 物品卡片：0.866 → 0.449）。要试就显式给 `edge:true`（survey:crop --edge）。 */
+  const tightEdge = args.edge === true
+    ? tightenBoundsByEdges(region.data, region.w, region.h, {
+        edgeZ: args.edgeZ, edgeMin: args.edgeMin, edgeFrac: args.edgeFrac,
+      })
+    : null
+  const snapped = !!(tightBg || tightEdge)
 
   /* 自匹配闭环：裁出的模板在同帧上匹配，逐边 ±2px 贪心取得分最高边界。
    * 判据两层：位置正确（best 落回裁剪处）优先于得分——大面积纯色的模板在
@@ -1659,23 +1733,32 @@ async function cmdTplCrop(args) {
     w: Math.min(b.w, dec.w - Math.max(0, b.x)), h: Math.min(b.h, dec.h - Math.max(0, b.y)),
   })
   /* 候选池：snap 可能塌成细条（背景差分在混合内容上会选中稀疏行带），单靠它起步会让
-   * ±2px 精修困死在退化框里——收紧框、加边距、外扩档、原始宽松框都进池，位置正确者优先。 */
+   * ±2px 精修困死在退化框里——**两路**收紧框、加边距、外扩档、原始宽松框都进池，位置正确者优先。
+   * 更紧的一路排前面：`obj` 相同时保留先入者，于是"同样位置正确、同样满分"时选更贴合的那个。 */
   const cands = []
-  if (tight) {
-    const t = { x: box0.x + tight.x, y: box0.y + tight.y, w: tight.w, h: tight.h }
-    cands.push(t)
-    cands.push(clampBox({ x: t.x - 4, y: t.y - 4, w: t.w + 8, h: t.h + 8 }))
+  const pushFamily = (t, src) => {
+    if (!t) return
+    const box = { x: box0.x + t.x, y: box0.y + t.y, w: t.w, h: t.h }
+    cands.push({ ...box, src })
+    cands.push({ ...clampBox({ x: box.x - 4, y: box.y - 4, w: box.w + 8, h: box.h + 8 }), src: src + '+4' })
     for (const f of [0.25, 0.5]) {
-      cands.push(clampBox({
-        x: Math.round(t.x - t.w * f / 2), y: Math.round(t.y - t.h * f / 2),
-        w: Math.round(t.w * (1 + f)), h: Math.round(t.h * (1 + f)),
-      }))
+      cands.push({
+        ...clampBox({
+          x: Math.round(box.x - box.w * f / 2), y: Math.round(box.y - box.h * f / 2),
+          w: Math.round(box.w * (1 + f)), h: Math.round(box.h * (1 + f)),
+        }),
+        src: src + '+' + Math.round(f * 100) + '%',
+      })
     }
   }
+  for (const f of [{ t: tightBg, src: 'bg' }, { t: tightEdge, src: 'edge' }]
+    .filter((x) => x.t)
+    .sort((a, b) => a.t.w * a.t.h - b.t.w * b.t.h)) pushFamily(f.t, f.src)
   /* 池里最后放原始宽松框：**只在没被提前命中跳过时**它才会被评过分，有就如实带上。 */
-  const looseCand = { ...box0 }
+  const looseCand = { ...box0, src: 'loose' }
   cands.push(looseCand)
   let cand = cands[0]
+  let candSrc = cand.src
   let best = { score: -1, posOk: false, at: null }
   let bestObj = -Infinity
   let looseScored = null
@@ -1684,7 +1767,7 @@ async function cmdTplCrop(args) {
     const s = await score(c)
     if (c === looseCand) looseScored = s
     tries.n++
-    if (obj(s) > bestObj) { cand = c; best = s; bestObj = obj(s) }
+    if (obj(s) > bestObj) { cand = c; best = s; bestObj = obj(s); candSrc = c.src }
     if (best.posOk && best.score >= 0.99) break
   }
   /* 逐边移动（每边独立尝试内收/外扩 2px，取更优） */
@@ -1706,7 +1789,7 @@ async function cmdTplCrop(args) {
       if (nb.x === cand.x && nb.y === cand.y && nb.w === cand.w && nb.h === cand.h) continue
       const s = await score(nb)
       tries.n++
-      if (obj(s) > bestObj + 1e-3) { cand = nb; best = s; bestObj = obj(s); improved = true }
+      if (obj(s) > bestObj + 1e-3) { cand = nb; best = s; bestObj = obj(s); improved = true; candSrc = 'refine' }
     }
     if (!improved) break
   }
@@ -1724,6 +1807,12 @@ async function cmdTplCrop(args) {
     to: [cand.w, cand.h],
     areaRatio,
     grew: boxArea > looseArea,
+    /* 两路收紧各自给出的框（含自适应阈值）：定标时看"谁赢、差多少" */
+    bgBox: tightBg ? [tightBg.w, tightBg.h] : null,
+    edgeBox: tightEdge ? [tightEdge.w, tightEdge.h] : null,
+    ...(tightEdge ? { edgeThresh: tightEdge.thresh, edgeBgLevel: tightEdge.bgLevel } : {}),
+    /** 最终框来自哪一族：bg / edge / bg+4 / edge+25% / loose / refine */
+    winner: candSrc ?? null,
     /* 宽松框自己的自匹配结果：有就带上（多数情况下被池内提前命中跳过，为 null 是正常的） */
     ...(looseScored ? { looseMatch: { score: Math.round(looseScored.score * 1000) / 1000, positionOk: looseScored.posOk } } : {}),
   }
@@ -2330,7 +2419,7 @@ if (CHILD) {
  * S 一并导出：l0EvictToBudget 等维护函数作用于模块态，单测需直改后还原。 */
 export const __test = {
   pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
-  regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
+  regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, S,
 }

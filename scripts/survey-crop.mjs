@@ -52,6 +52,13 @@ const TRUTH_IOU = Number(arg('--truth-iou', 0.5))
 /** snap 测量覆盖（不给就用生产常数 90 / 0.12）：定标靠 A/B，所以旋钮从这里进来 */
 const TOL = Number(arg('--tol', 0)) || undefined
 const FRAC = Number(arg('--frac', 0)) || undefined
+/** 边缘那一路收紧的测量覆盖（roadmap 修法①）：自适应阈值 = 环上对比度 p90 × z，与 edgeMin 取大者。
+ *  **默认关**（生产默认是背景差分）——定标结论：边缘判据在真值集上单独用 IoU 均值只有 0.50–0.59，
+ *  而背景差分 0.804。给 `--edge` 或任一旋钮即开启，用来复跑这张对照表。 */
+const EDGE_Z = Number(arg('--edge-z', 0)) || undefined
+const EDGE_MIN = Number(arg('--edge-min', 0)) || undefined
+const EDGE_FRAC = Number(arg('--edge-frac', 0)) || undefined
+const EDGE = process.argv.includes('--edge') || EDGE_Z !== undefined || EDGE_MIN !== undefined || EDGE_FRAC !== undefined
 
 /** 自造的临时目录要回收：mkdtemp 出来的目录不清理，每跑一次脚本就漏一个 */
 const tempDirs = []
@@ -166,6 +173,9 @@ async function main() {
       const r = await c.call('tpl_crop', {
         kfSource, roi, resourceDir: resource, prov: false,
         ...(TOL ? { snapTol: TOL } : {}), ...(FRAC ? { snapFrac: FRAC } : {}),
+        ...(EDGE ? { edge: true } : {}),
+        ...(EDGE_Z ? { edgeZ: EDGE_Z } : {}), ...(EDGE_MIN ? { edgeMin: EDGE_MIN } : {}),
+        ...(EDGE_FRAC ? { edgeFrac: EDGE_FRAC } : {}),
         out: path.join(outDir, rec.id.slice(-4) + '-' + label + '.png'),
       }, 300000)
       const ms = Date.now() - t0
@@ -191,6 +201,8 @@ async function main() {
         score: typeof r.score === 'number' ? r.score : null,
         positionOk: r.positionOk === true,
         tries: r.tries ?? null,
+        /* 贴合度信号原样带上：定标时要看"哪一路收紧赢了、两路各给出多大的框" */
+        ...(r.tighten ? { tighten: r.tighten } : {}),
         ms,
         ...(judged
           ? {
@@ -201,7 +213,10 @@ async function main() {
             }
           : {}),
       })
-      process.stdout.write('.')
+      /* 进度点：`--json` 时走 stderr——stdout 必须只剩 JSON 信封（本仓对 CLI 有同样的硬要求，
+       * verify-cli 里就有"无多余前后缀"那条检查；这个脚本以前把点打在 stdout 上，`--json | jq` 会炸） */
+      if (AS_JSON) process.stderr.write('.')
+      else process.stdout.write('.')
     }
   } finally {
     try { c.close() } catch { /* ignore */ }
@@ -250,7 +265,7 @@ async function main() {
   const result = {
     framesDir: FRAMES_DIR,
     grid: { cols: COLS, rows: ROWS },
-    snap: { tol: TOL ?? 90, frac: FRAC ?? 0.12 },
+    snap: { tol: TOL ?? 90, frac: FRAC ?? 0.12, edge: EDGE, edgeZ: EDGE_Z ?? 2, edgeMin: EDGE_MIN ?? 24, edgeFrac: EDGE_FRAC ?? 0.02 },
     cases, summary,
     ...(truthSummary ? { truth: { file: TRUTH, pads: String(TRUTH_PAD), summary: truthSummary, byFrame: truthFrames } } : {}),
   }
