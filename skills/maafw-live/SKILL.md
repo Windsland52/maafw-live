@@ -38,7 +38,29 @@ CLI 命令与退出码查 [README](https://github.com/Windsland52/maafw-live/blo
 8. **边界外的事交出去**。静态知识/校验归 MaaLLMWiki 技能；pipeline 改写归 maafw-pipeline；
    修复性诊断归 maafw-debug；事后日志证据归 maa-evidence。
 
-## 0. 开工自检
+## 0. 首次上手：一条最短路径
+
+动线 A–D 是**按能力**分的（看见 / 实测 / 裁 / 留档），第一次上手一台设备或一个项目时按下面这条
+**按顺序**走，每一步都带一条"过不了就别往下走"的判据。判据不成立就先修那一步——带着不确定往下走，
+后面得到的结论无法归因（是模板不行、空间不对，还是根本没连对？）。
+
+| # | 这一步做什么 | 命令 | 过这一步的判据 |
+| :- | :--- | :--- | :--- |
+| 1 | 认清环境与目标 | `version` / `env` / `probe` / `device --kind adb` | 本次要用到的链路不在 `env` 的 warnings 里（缺依赖是**探测结果**，不是命令失败）；`device` 列得出目标 |
+| 2 | 连**一次** | `repl --project <dir>`（手连才 `--kind adb --target`） | 回执里控制器类型与识别空间尺寸符合预期；此刻起这台设备只有这一条链路（硬护栏 1） |
+| 3 | 先看见 | `stream start` → `frame get --roi` / `annotate` | 拿到的是**本会话**的帧（`seq` 在动），不是"上次那一帧"；不认识画面就先要候选编号，别猜坐标 |
+| 4 | 实测再下结论 | `reco --seq` / `--image` / `--act`、`color`、`calibrate` | 识别只认 `hit`（miss 也有 detail）；阈值起点 = 实测最高分 − 0.1；静止画面先 `calibrate` 定噪声地板 |
+| 5 | 裁资产 | `crop --roi` / `--point`（库帧走 `--from-kf`） | **位置正确**（落回裁剪处）优先于得分；框贴合与否用"再裁一遍比 `box`"验；源帧空间 ≠ 当前空间就别用 |
+| 6 | 看到就留档 | `kf promote latest --note "…"` → `kf list` / `kf resolve` | 不可复现的状态**当场**升格（热缓存淘汰就没了）；出处侧车随产物一起提交 |
+
+**这条路径的意义在第 6 步之后**：3→4→5 都能重做，唯独"当时那一帧"只有升格过才重做得了——
+所以一次完整的闭环是「看见（3）→ 留档（6）→ 事后离线裁（5 的 `--from-kf`）→ 写进项目资源 → `run` 实测」。
+时间紧的时候最容易省掉的是第 6 步，而它是唯一无法补救的一步。
+
+每一步的能力细节、参数选择与反模式：第 3 步见动线 A，第 4 步见动线 B，第 5 步见动线 C，
+第 6 步与离线裁剪见动线 D。
+
+### 第 1–2 步的细节
 
 ```bash
 maafw-live version && maafw-live env && maafw-live probe   # 版本 / 环境 / 运行时与设备发现数
@@ -176,7 +198,7 @@ maafw-live kf resolve kf:<库UUID>:0142                    # available / missing
   （末尾 **Z. 经验值速查**：框余量、判据链、耗时、候选上限/IoU/edge 的默认值与"改没改、为什么"）。
 - [references/pitfalls.md](references/pitfalls.md)：真实教训与消费注意（含 daemon 协议易踩点）。
 - [references/examples.md](references/examples.md)：真机样例——一次性状态留档后离线裁模板、分辨率空间守卫、
-  两节点流程与 `record` 读法。
+  两节点流程与 `record` 读法、带 `[JumpBack]` 的分支在 `nextCandidates` 里怎么读。
 
 两件与本 skill 自身有关的事：
 
@@ -184,3 +206,6 @@ maafw-live kf resolve kf:<库UUID>:0142                    # available / missing
   `missing` / `extra`，有漂移退出 `FINDINGS(3)`）；怀疑手里的 skill 比 CLI 旧就先跑它。
 - **要动工具里的常数**：先量再改——`npm run survey:crop`（裁剪：snap 行为、位置正确率、成本）与
   `npm run survey:som`（候选：各源数量、上限截断、分带、覆盖率），都离线、不需要设备。
+  注意前者的「位置正确率」是**自洽**指标（模板在同帧上找得到自己），模板把背景连元素一起裁进去也照样为真；
+  要算**误报/漏报**得配人工真值：`node scripts/survey-crop.mjs --truth scripts/truth/<集>.json`
+  （判定口径与加标注流程见 `scripts/truth/README.md`，种子集要长）。

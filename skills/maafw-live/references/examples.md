@@ -86,6 +86,10 @@ maafw-live crop --roi 925,138,68,70 --project ./M9A --out tpl_live.png
 承接样例 1 的做法：签到月历页留档为库帧 → 离线裁出「今日奖励」标签（`556,356,120,44` → 收紧
 `556,357,85,25`，自匹配 1.0）→ 放进项目资源 → 跑节点。
 
+> 事后用人工真值量过这一例：该框面积是「今日奖励」文字的 **2.3 倍**、与真值框 IoU **0.39**——
+> 当时的「位置正确 + 自匹配 1.0」看不出这件事。它当模板能用（节点确实命中），但**不算贴合的框**；
+> 这类"够用但不贴合"只能靠外部真值发现（`scripts/truth/`，见 SKILL.md 末条）。
+
 ```bash
 # 项目侧（模板是资源的一部分，和别的素材一样提交）
 mkdir -p proj/res/image && cp tpl_signin_label.png proj/res/image/signin_label.png
@@ -169,9 +173,66 @@ maafw-live run --entry EnterGallery --project ./proj2 --timeout 40000
 2. **素材链可以完全离线**：留存帧 → `annotate --from-kf` 选候选 → `crop --from-kf` 裁模板 → 写进项目 →
    `run` 时设备才需要出现。设备在不在那个画面上，与素材制作无关。
 
+## 样例 8：带 `[JumpBack]` 的分支——`nextCandidates` 在分支场景里怎么读
+
+样例 7 的 `next` 只有一个候选（线性）。真实流程里 `next` 常常是"一个可能出现的一次性弹窗 + 真正的目标"，
+这次把 `next` 换成两个候选、**一对一错**，其中一个带 `[JumpBack]`（进图鉴后可能弹一次奖励弹窗）：
+
+```bash
+cat proj3/res/pipeline/branch.json
+# { "EnterGalleryBranch": { "recognition": "TemplateMatch", "template": "gallery_icon.png",
+#                           "roi": [40,440,140,110], "threshold": 0.8, "action": "Click",
+#                           "next": ["[JumpBack]RewardPopupGuard", "StoryEntry"] },
+#   "RewardPopupGuard":   { "recognition": "TemplateMatch", "template": "obtained_title.png",
+#                           "threshold": 0.8, "action": "DoNothing", "next": ["StoryEntry"] },
+#   "StoryEntry":         { "recognition": "TemplateMatch", "template": "story_title.png",
+#                           "roi": [80,380,200,80], "threshold": 0.8, "action": "DoNothing" } }
+
+maafw-live run --entry EnterGalleryBranch --project ./proj3 --timeout 40000
+#   任务 EnterGalleryBranch：完成（status=3000，2278ms，帧序 1..2）
+#     [ok] EnterGalleryBranch  467ms
+#     [ok] StoryEntry         1487ms
+#   exit=0
+```
+
+三个模板的关系：`gallery_icon`（大厅「图鉴」入口，留存帧 0004 离线裁）、`story_title`（图鉴页「以影像之」，
+留存帧 0007 离线裁）都实测命中（0.998 / 1.0）；`obtained_title`（签到弹窗的「获得物品」标题，留存帧 0005）在这个
+流程里**不该出现**——它就是那个错的候选，实测在跑前的大厅帧上 0.227、跑后的图鉴页帧上也 miss（不是"擦线未中"，
+是真的不在画面上）。
+
+**候选序列只在 `--json` 的 `data.record` 里**（纯文本摘要只列跑过的节点），两次复跑读出来逐条一致：
+
+```
+nextCandidateCount=7
+EnterGalleryBranch×1 → RewardPopupGuard[JumpBack]×1 → StoryEntry×1
+                     → RewardPopupGuard[JumpBack]×1 → StoryEntry×1
+                     → RewardPopupGuard[JumpBack]×1 → StoryEntry×1
+#   三轮公告的时间戳（相对第一条公告）：+541ms / +622ms / +1541ms（两次跑同一形状，只有毫秒不同）
+```
+
+四个读法，不加区分就会读错：
+
+1. **第一条是任务入口本身**，不是一次轮询——框架起手就把"下一步 = 入口节点"当候选公告出来。数轮次要**从第二条起**。
+2. **分支里 `polls` 恒为 1，改成"数条数"**：`polls` 折叠只发生在**同一候选连续重复**时（样例 7 的单候选
+   `GalleryOpened×3` 就是这么折出来的）。`next` 有两个候选时公告是 (A, B) 交替的，谁也不与上一条相邻 →
+   每条各占一行、`polls` 全是 1。本例"每个候选 3 条 = 轮询了 3 轮"，第 3 轮才命中（页面切换约 1.5s）。
+3. **`[JumpBack]` 候选带 `jumpBack: true`，而且从不折叠**（实现上明确跳过它）——它是"回头点"标记，不改变
+   轮询顺序：公告顺序就是 `next` 的书写顺序，**排在前面不代表先被选中**。
+4. **走的是哪条分支看紧接着的节点记录，不看出现在候选里的名字**：本例两条节点记录是
+   `EnterGalleryBranch → StoryEntry`，而 `RewardPopupGuard` **一条节点记录都没有**——没命中的候选不产生节点记录。
+   所以"候选轮询过哪些"只能从 `nextCandidates` 读，"实际走了哪条"从 `nodes` 读，两者合起来才是这次分支的完整故事。
+
+**屏幕状态独立复核**（判据不止退出码）：跑完截图 → `story_title` 命中 1.0、`gallery_icon` miss（0.126）
+→ 页面确实切到了图鉴页，"记录里看着走了"之外还有画面为证。
+
+**结论**：带 `[JumpBack]` 的分支在 `nextCandidates` 里读起来是**交替出现的候选序列**——用条数数轮次、
+用 `jumpBack` 认回头点、用 `nodes` 认最终走的那条；`polls` 只在单候选被反复公告时才大于 1，别当成统一的"次数"。
+
 ## 这几条样例共同说明的事
 
 1. **源帧身份决定能不能复核**：热缓存 seq 只在本会话有意义；库帧 ID + sha256 才是跨会话可复核的引用。
 2. **同一个判据链**：位置正确 → 跨帧稳定 → 空间一致。三段都过，模板才值得写进 pipeline。
 3. **失败要如实**：状态没了就是没了（miss 是结论，不是要调参）；空间不同源就说不一致，
    不产出"得分很高但用不了"的模板。
+4. **记录要读两层**：`nodes` 说"实际走了哪条路"（只有命中的节点才有记录），`nextCandidates` 说"当时轮询过哪些出口"
+   （包括没走的那条腿）——分支结论必须两层都读，并在有可见效果时用屏幕/留存帧复核。

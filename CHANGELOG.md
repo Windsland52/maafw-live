@@ -29,6 +29,14 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 变更
 
+- **skill 补「首次上手：一条最短路径」与 `[JumpBack]` 分支的读法**（`skills/maafw-live`，随包发布）：
+  SKILL.md 新增 §0 六步表（认清环境 → 连一次 → 先看见 → 实测 → 裁 → 看到就留档），每步带一条"过不了就别往下走"
+  的判据，并写明**第 6 步是唯一无法补救的一步**（前四步都能事后重做，唯独"当时那一帧"只有升格过才重做得了）；
+  references/examples.md 新增样例 8：带 `[JumpBack]` 的两候选分支真机跑通（一对一错候选，模板全来自留存帧），
+  把 `record.nextCandidates` 在分支场景里的读法写死——**序列第一条是任务入口本身、不是一次轮询；
+  `polls` 折叠只发生在同一候选连续重复时，多候选交替公告时 `polls` 恒 1、要按条数数轮次；
+  `[JumpBack]` 候选带 `jumpBack: true` 且从不折叠；没命中的候选不产生节点记录**——所以"轮询过哪些出口"
+  只能从 `nextCandidates` 读、"实际走了哪条"从 `record.nodes` 读，两层合起来才是分支的完整故事。
 - **`annotate` 回执新增 `filtered`**：分别记下被门槛拒掉的候选——`conn: {passed, tooSmall, tooLarge, tooNarrow}`、
   `edge: {passed, belowZ, belowMin, singleBlock}`。"某一段没有候选"是内容如此还是被过滤掉，以前只能从结果侧猜。
   首批实测（3 帧）：面积窗下界拒掉约 **97%** 的连通域（通过 27–53、`tooSmall` 1460–1698），
