@@ -29,4 +29,4 @@ export {
   type PlanOverrides,
   type ResourcePlan,
 } from './plan.js'
-export { computePipelineOverride, type OverrideInput, type OverrideResult } from './override.js'
+export { computePipelineOverride, mergeOverride, type OverrideInput, type OverrideResult } from './override.js'

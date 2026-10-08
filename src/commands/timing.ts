@@ -9,7 +9,7 @@
  * 单次采样退化为 P50=P95=该值，与历史单次行为逐字段一致。
  */
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
-import { computePipelineOverride } from '../interface/index.js'
+import { computePipelineOverride, mergeOverride } from '../interface/index.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession } from '../runtime/session.js'
@@ -167,9 +167,10 @@ export const timingCommand: Command = {
             taskName: task?.name ?? null,
             presetName: typeof ctx.values.preset === 'string' ? ctx.values.preset : null,
           })
-          for (const [node, fields] of Object.entries(override)) {
-            chain.override[node] = { ...(chain.override[node] as Record<string, unknown> ?? {}), ...(fields as Record<string, unknown>) }
-          }
+          /* 用户 --override 最后覆盖合成结果：**与 run 共用同一份合并实现**。
+           * 这里曾经自己展开 fields——字符串会被摊成 {0:'a',1:'b'}、null / 数字静默变空对象，
+           * 于是同一个 --override 在 timing 与 run 下结果不同。 */
+          mergeOverride(chain.override, override)
           args = {
             resourceDirs: paths, entry: task?.entry ?? entry,
             override: chain.override, timeoutMs,

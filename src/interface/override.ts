@@ -25,8 +25,14 @@ export interface OverrideResult {
   applied: string[]
 }
 
-/** 单个 pipeline_override 对象并入累计结果：同节点字段直接替换（与协议"不深度合并"一致）。 */
-function mergeInto(acc: Record<string, unknown>, po: Record<string, unknown>): void {
+/**
+ * 把一份 pipeline_override 并入累计结果：同节点字段替换（与协议"不深度合并"一致）。
+ *
+ * **唯一一份实现**：四级链、`run --override`、`timing --override` 都走这里。这三处曾经各写一份，
+ * 代价是同一个参数在不同命令里表现不同。非对象值必须**原样替换、不能展开**：字符串会被摊成
+ * `{0:'a',1:'b'}`，`null` / 数字会静默变成空对象——等于把用户写的节点悄悄丢掉。
+ */
+export function mergeOverride(acc: Record<string, unknown>, po: Record<string, unknown>): void {
   for (const [node, fields] of Object.entries(po)) {
     if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
       acc[node] = { ...((acc[node] as Record<string, unknown>) ?? {}), ...(fields as Record<string, unknown>) }
@@ -68,7 +74,13 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
     return null
   }
 
-  const mergeOption = (name: string, level: string): void => {
+  const mergeOption = (name: string, level: string, chain: string[] = []): void => {
+    /* 嵌套 option 是"case 里再列 option"，A → B → A 这类自引用会让递归停不下来：
+     * 记一条警告并跳过，而不是用栈溢出把整条 run 打断。 */
+    if (chain.includes(name)) {
+      warns.push('option ' + name + ' 出现在自己的嵌套链里（' + [...chain, name].join(' > ') + '），已跳过')
+      return
+    }
     const o = loaded.options[name]
     if (o && !applicable(o)) return
     const v = valueOf(name)
@@ -85,11 +97,11 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         continue
       }
       if (c.pipelineOverride && Object.keys(c.pipelineOverride).length) {
-        mergeInto(acc, c.pipelineOverride)
+        mergeOverride(acc, c.pipelineOverride)
         applied.push(name + '=' + cname + '（' + level + '，via ' + v.via + '）')
       }
       /* 嵌套子 option：父 case 生效后按声明顺序合并（更具体，晚于父级） */
-      for (const child of c.option ?? []) mergeOption(child, level + ' > ' + name)
+      for (const child of c.option ?? []) mergeOption(child, level + ' > ' + name, [...chain, name])
     }
   }
 

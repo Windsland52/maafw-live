@@ -4,10 +4,8 @@
  * 为什么不靠模型读像素：色值必须来自实测（降采样小图按该帧捕获尺寸换算后的 ROI），
  * 模型选完色后用 reco ColorMatch 出框（走已修好的参数透传链），出框与否是事实不是判断。
  */
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
-import { colorProbe, screencap, withDaemon } from '../runtime/actions.js'
+import { colorProbe, seedObservation, withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
@@ -38,9 +36,9 @@ export const colorCommand: Command = {
       return await withDaemon(async (client) => {
         const s = await ensureSession(client, o)
         /* 一次性命令缓冲为空：先截一帧产生观测（screencap 现在进环，有捕获身份）。
-         * 截帧文件写临时目录——它只是观测载体，不落在用户 cwd。 */
+         * 截帧文件用完即删——它只是观测载体，既不落用户 cwd，也不留在临时目录。 */
         if (seq === undefined) {
-          await screencap(client, join(tmpdir(), 'maafw_color_' + Date.now() + '.png')).catch(() => null)
+          await seedObservation(client, 'color')
         }
         const r = await colorProbe(client, {
           ...(seq !== undefined ? { seq } : {}),

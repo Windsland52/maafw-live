@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { computePipelineOverride } from '../lib/interface/override.js'
+import { computePipelineOverride, mergeOverride } from '../lib/interface/override.js'
 import { loadInterface } from '../lib/interface/load.js'
 
 /** 最小 LoadedInterface 字面量；over 覆盖需要变化的段 */
@@ -102,6 +102,33 @@ test('checkbox 多选按 cases 声明序合并，后 case 覆盖前 case 同字�
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
   assert.deepEqual(r.override, { M: { speed: 2, tag: 'a' } })
+})
+
+/**
+ * `mergeOverride` 是 override 合并的**唯一一份实现**（四级链 / `run --override` / `timing --override`）。
+ * 重点是"非对象值原样替换"：直接展开会把字符串摊成 `{0:'a',1:'b'}`、把 null / 数字静默变成空对象，
+ * 于是同一个 `--override` 在 run 与 timing 下得到不同结果（timing 曾经就是自己展开的）。
+ */
+test('mergeOverride：对象浅合并，非对象值原样替换（不展开、不丢）', () => {
+  const acc = { N: { timeout: 100, keep: true } }
+  mergeOverride(acc, { N: { timeout: 200 }, S: 'enabled', Z: null, K: 3, A: [1, 2] })
+  assert.deepEqual(acc, {
+    N: { timeout: 200, keep: true },
+    S: 'enabled', Z: null, K: 3, A: [1, 2],
+  })
+})
+
+test('嵌套 option 自引用：记警告并跳过，不让递归栈溢出', () => {
+  const loaded = mkLoaded({
+    options: {
+      a: { name: 'a', type: 'select', cases: [{ name: 'go', pipelineOverride: { A: { v: 1 } }, option: ['b'] }], defaultCase: 'go' },
+      b: { name: 'b', type: 'select', cases: [{ name: 'go', pipelineOverride: { B: { v: 2 } }, option: ['a'] }], defaultCase: 'go' },
+    },
+    globalOption: ['a'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
+  assert.deepEqual(r.override, { A: { v: 1 }, B: { v: 2 } }, '链上各方的有效覆盖都要保留，只跳过重复那一步')
+  assert.ok(r.warns.some((w) => /嵌套链/.test(w)), '要留下可行动的警告：' + JSON.stringify(r.warns))
 })
 
 test('嵌套 option：父 case 生效后按声明序合并子项（晚于父级生效）', () => {

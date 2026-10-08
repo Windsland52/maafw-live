@@ -7,7 +7,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { defaultRunDir } from '../client/daemon.js'
-import { computePipelineOverride } from '../interface/index.js'
+import { computePipelineOverride, mergeOverride } from '../interface/index.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
@@ -361,18 +361,8 @@ export const runCommand: Command = {
           args = { resourceDir, entry, override, timeoutMs }
         }
         if (o.project && chain) {
-          /* 用户 --override 最后覆盖合成结果（同节点字段替换） */
-          const merged = args.override as Record<string, unknown>
-          for (const [node, fields] of Object.entries(override)) {
-            if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-              merged[node] = {
-                ...((merged[node] as Record<string, unknown>) ?? {}),
-                ...(fields as Record<string, unknown>),
-              }
-            } else {
-              merged[node] = fields
-            }
-          }
+          /* 用户 --override 最后覆盖合成结果；与四级链共用同一份合并实现（非对象值原样替换） */
+          mergeOverride(args.override as Record<string, unknown>, override)
         }
         const r = await act.run(client, args, timeoutMs)
         if (r.ok === false || !r.record) {

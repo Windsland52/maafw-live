@@ -9,11 +9,9 @@
  * 控制器分辨率、离线、不需要设备）。库帧路径下 diff 源不可用（没有会话事件），工具如实报出，
  * 不拿别的区域顶替——所以它适合"事后在旧帧上重跑候选"，不适合替代实时变化检测。
  */
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { defaultFramesDir, resolveFrame, type KfRecord } from '../runtime/keyframes.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
-import { annotate, screencap, withDaemon, type CropKfSource } from '../runtime/actions.js'
+import { annotate, seedObservation, withDaemon, type CropKfSource } from '../runtime/actions.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
@@ -77,9 +75,9 @@ export const annotateCommand: Command = {
           }
           resourceDir = off.paths[0]
         }
-        /* 一次性命令缓冲为空：先截一帧（截帧文件写临时目录）。库帧路径不截帧——源已固定。 */
+        /* 一次性命令缓冲为空：先截一帧（用完即删，不留临时文件）。库帧路径不截帧——源已固定。 */
         if (!offline && seq === undefined) {
-          await screencap(client, join(tmpdir(), 'maafw_annotate_' + Date.now() + '.png')).catch(() => null)
+          await seedObservation(client, 'annotate')
         }
         const r = await annotate(client, {
           ...(offline ? { kfSource } : {}),

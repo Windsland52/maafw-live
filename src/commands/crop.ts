@@ -14,11 +14,9 @@
  * 裁出的 PNG 是 L2 派生图（契约 §2），旁边写 `<out>.prov.json` 出处记录
  * （契约 §5：L2 记录来源及裁剪 / 缩放变换）——出处与模板同生共死，可一起提交进仓库。
  */
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { defaultFramesDir, resolveFrame, type KfRecord } from '../runtime/keyframes.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
-import { screencap, tplCrop, withDaemon, type CropKfSource } from '../runtime/actions.js'
+import { seedObservation, tplCrop, withDaemon, type CropKfSource } from '../runtime/actions.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
@@ -145,10 +143,10 @@ export const cropCommand: Command = {
         if (!resourceDir) {
           return fail('BAD_ARGUMENTS', '自匹配需要资源目录：给 --resource-dir <dir> 或 --project <dir>', undefined, EXIT.USAGE)
         }
-        /* L0 是进程态：一次性命令先截一帧产生观测（截帧文件写临时目录，不落用户 cwd）。
+        /* L0 是进程态：一次性命令先截一帧产生观测（截帧文件用完即删，不落用户 cwd、也不留在临时目录）。
          * 库帧路径不截帧——源已经固定，重截只会拿到另一个时刻。 */
         if (kfSource === undefined && seq === undefined) {
-          await screencap(client, join(tmpdir(), 'maafw_crop_' + Date.now() + '.png')).catch(() => null)
+          await seedObservation(client, 'crop')
         }
         const r = await tplCrop(client, {
           ...(roi ? { roi } : {}),

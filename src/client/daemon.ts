@@ -116,6 +116,9 @@ function push<T>(list: T[], item: T, cap: number): void {
   if (list.length > cap) list.splice(0, list.length - cap)
 }
 
+/** 错误对象 → 一行文本（抛出来的形态不可控：Error、字符串、别的什么都有可能） */
+const message = (e: unknown): string => String((e as Error)?.message ?? e)
+
 export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
   const daemonPath = resolveDaemonPath(options.daemonPath)
   const runDir = options.runDir ?? defaultRunDir()
@@ -210,7 +213,15 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
         reject: (e) => resolve({ ok: false, error: e.message }),
         timer,
       })
-      c.stdin!.write(JSON.stringify({ id, cmd: 'init', runDir, ...(kfQuotaBytes ? { kfQuotaBytes } : {}) }) + '\n')
+      try {
+        c.stdin!.write(JSON.stringify({ id, cmd: 'init', runDir, ...(kfQuotaBytes ? { kfQuotaBytes } : {}) }) + '\n')
+      } catch (e) {
+        /* spawn 到写入之间子进程就死了 → write 同步抛（EPIPE）。这条也要落到 {ok:false}，
+         * 否则 init() 会 reject，而它的契约是"失败如实回报，不抛"。 */
+        clearTimeout(timer)
+        pending.delete(id)
+        resolve({ ok: false, error: 'init 发送失败：' + message(e) })
+      }
     })
 
   const ensure = (): ChildProcess => {
@@ -249,7 +260,15 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
         reject(new Error('daemon 调用超时：' + cmd + '（' + timeoutMs + 'ms 无应答，已重启 daemon，会话需重新 connect）'))
       }, timeoutMs)
       pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
-      c.stdin!.write(JSON.stringify({ id, cmd, ...args }) + '\n')
+      try {
+        c.stdin!.write(JSON.stringify({ id, cmd, ...args }) + '\n')
+      } catch (e) {
+        /* 子进程在 spawn 与写入之间就死了 → write 同步抛（EPIPE）。报成可读的失败，
+         * 别把 ERR_STREAM_DESTROYED 直接甩给调用方。 */
+        clearTimeout(timer)
+        pending.delete(id)
+        reject(new Error('daemon 请求发送失败（' + cmd + '）：' + message(e)))
+      }
     })
 
   return {

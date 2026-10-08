@@ -49,6 +49,31 @@ function readFlag(tokens: string[], name: string): string | undefined {
   return i >= 0 ? tokens[i + 1] : undefined
 }
 
+/**
+ * 取 count 个数字参数；任何一个不是有限数就返回 null。
+ *
+ * REPL 直接复用同一个设备会话，敲错一个坐标就是**真机上一次真实输入**——空参的 `click`
+ * 会变成 `Number(undefined)` = NaN → JSON 里变 null → daemon `Number(null)` = 0，
+ * 也就是"什么都没写"等于"点左上角"。CLI 侧（`input.ts`）每条都有这道校验，REPL 也得有。
+ */
+function nums(tokens: string[], from: number, count: number): number[] | null {
+  const out: number[] = []
+  for (let i = 0; i < count; i++) {
+    const n = Number(tokens[from + i])
+    if (!Number.isFinite(n)) return null
+    out.push(n)
+  }
+  return out
+}
+
+/** `--flag` 的数字值：没给就用默认；给了但不是数字 → null（调用方报用法，不把 NaN 发给设备） */
+function numFlag(tokens: string[], name: string, def: number): number | null {
+  const raw = readFlag(tokens, name)
+  if (raw === undefined) return def
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
 function short(v: unknown, max = 400): string {
   const s = typeof v === 'string' ? v : JSON.stringify(v)
   return s.length > max ? s.slice(0, max) + ' …' : s
@@ -298,41 +323,60 @@ export const replCommand: Command = {
             case 'stop':
               out(short(await act.runStop(client)))
               break
-            case 'click':
-              out(short(await act.input(client, { kind: 'click', x: Number(tokens[1]), y: Number(tokens[2]) })))
+            case 'click': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：click <x> <y>'); break }
+              out(short(await act.input(client, { kind: 'click', x: a[0], y: a[1] })))
               break
-            case 'swipe':
+            }
+            case 'swipe': {
+              const a = nums(tokens, 1, 4)
+              const duration = numFlag(tokens, '--duration', 300)
+              if (!a || duration === null) { out('用法：swipe <x1> <y1> <x2> <y2> [--duration ms]'); break }
               out(short(await act.input(client, {
-                kind: 'swipe',
-                x1: Number(tokens[1]), y1: Number(tokens[2]),
-                x2: Number(tokens[3]), y2: Number(tokens[4]),
-                duration: Number(readFlag(tokens, '--duration') ?? 300),
+                kind: 'swipe', x1: a[0], y1: a[1], x2: a[2], y2: a[3], duration,
               })))
               break
-            case 'key':
-              out(short(await act.input(client, { kind: 'key', code: Number(tokens[1]) })))
+            }
+            case 'key': {
+              const a = nums(tokens, 1, 1)
+              if (!a) { out('用法：key <code>（Android KeyEvent 码：3=Home、4=返回）'); break }
+              out(short(await act.input(client, { kind: 'key', code: a[0] })))
               break
-            case 'keys':
-              out(short(await act.input(client, {
-                kind: 'keys',
-                codes: String(tokens[1] ?? '').split(/[+,]/).map((s) => Number(s.trim())),
-              })))
+            }
+            case 'keys': {
+              /* 键码只保留正整数：与 CLI/daemon 同一条口径，空集合直接报用法 */
+              const codes = String(tokens[1] ?? '').split(/[+,]/)
+                .map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0)
+              if (!codes.length) { out('用法：keys <code[,code+...]>（至少一个正整数键码，如 17,67）'); break }
+              out(short(await act.input(client, { kind: 'keys', codes })))
               break
-            case 'press':
-              out(short(await act.input(client, {
-                kind: 'press', x: Number(tokens[1]), y: Number(tokens[2]),
-                duration: Number(readFlag(tokens, '--duration') ?? 800),
-              })))
+            }
+            case 'press': {
+              const a = nums(tokens, 1, 2)
+              const duration = numFlag(tokens, '--duration', 800)
+              if (!a || duration === null) { out('用法：press <x> <y> [--duration ms]'); break }
+              out(short(await act.input(client, { kind: 'press', x: a[0], y: a[1], duration })))
               break
-            case 'dbclick':
-              out(short(await act.input(client, { kind: 'dbclick', x: Number(tokens[1]), y: Number(tokens[2]) })))
+            }
+            case 'dbclick': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：dbclick <x> <y>'); break }
+              out(short(await act.input(client, { kind: 'dbclick', x: a[0], y: a[1] })))
               break
-            case 'scroll':
-              out(short(await act.input(client, { kind: 'scroll', dx: Number(tokens[1]), dy: Number(tokens[2]) })))
+            }
+            case 'scroll': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：scroll <dx> <dy>（建议 120 的倍数）'); break }
+              out(short(await act.input(client, { kind: 'scroll', dx: a[0], dy: a[1] })))
               break
-            case 'move':
-              out(short(await act.input(client, { kind: 'move', dx: Number(tokens[1]), dy: Number(tokens[2]) })))
+            }
+            case 'move': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：move <dx> <dy>'); break }
+              out(short(await act.input(client, { kind: 'move', dx: a[0], dy: a[1] })))
               break
+            }
             case 'text':
               out(short(await act.input(client, { kind: 'text', text: line.trim().slice(5) })))
               break

@@ -5,6 +5,9 @@
  * 参数拼装逻辑，否则 CLI 与 REPL 会各长出一套规则。项目（interface.json）驱动的连接与运行
  * 也在这里收口，避免"手动连 vs 项目连"两条路径对资源与坐标系的解释分叉。
  */
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import {
   loadInterface, planController, resolveResourcePaths,
   type ControllerPlan, type DeviceLike, type LoadedInterface,
@@ -56,6 +59,23 @@ export const connect = (c: DaemonClient, args: Record<string, unknown>) =>
 export const disconnect = (c: DaemonClient) => c.call<{ ok: boolean }>('disconnect', {}, 20000)
 export const screencap = (c: DaemonClient, out?: string) =>
   c.call<Record<string, unknown>>('screencap', out ? { out } : {}, 30000)
+
+/**
+ * 一次性命令的"先产生一次观测"：截一帧进 daemon 的 L0，然后**把临时文件删掉**。
+ *
+ * 为什么需要这一帧：L0 是进程态，一次性命令（`crop` / `annotate` / `color`）每次 spawn 自己的
+ * daemon，不先截一帧就没有原图可用。为什么必须删：daemon 收帧时就把像素读进缓冲了，
+ * 落盘那份只为喂它一次——不删就是每跑一次在系统临时目录留一张 720p 截图（实测攒到 42 张 / 54MB）。
+ * 失败不抛：没有观测时命令自己会报"先 screencap / stream"这类可行动的错。
+ */
+export async function seedObservation(c: DaemonClient, prefix: string): Promise<void> {
+  const file = join(tmpdir(), 'maafw_' + prefix + '_' + Date.now() + '.png')
+  try {
+    await screencap(c, file).catch(() => null)
+  } finally {
+    try { rmSync(file, { force: true }) } catch { /* ignore */ }
+  }
+}
 export const streamStart = (c: DaemonClient, args: { fps?: number; scale?: number; maxFrames?: number; l0Roll?: number; l0Anchor?: number; l0Bytes?: number; blockThresh?: number; changeGlobal?: number } = {}) =>
   c.call<Record<string, unknown>>('stream_start', args, 15000)
 export const streamStop = (c: DaemonClient) => c.call<{ ok: boolean }>('stream_stop', {}, 10000)

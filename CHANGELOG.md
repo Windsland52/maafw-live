@@ -146,6 +146,25 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `{ ok, data }` 或 `{ ok:false, error }`，失败另进错误环；同时**不把"对方不回 init"变成致命错误**
   （协议要求每条请求都有应答，但客户端不该因为对方没回一条就全盘不进）。
   `kfQuotaBytes` 也随之可验证地透传（真机探针：`12345` 原样回来）。
+- **REPL 的输入命令完全不校验数字参数**（空参 `click` 会在真机上点 (0,0)）：CLI（`input.ts`）每条
+  都有 `Number.isFinite` 校验，REPL 一条都没有——`Number(undefined)` = NaN → JSON 里变 `null` →
+  daemon `Number(null)` = 0。REPL 复用同一个设备会话，敲错一个坐标就是一次真实输入，这条比 CLI
+  更要紧。现在 8 个输入命令都先校验：不合法只打印用法、**一个请求都不发**（用记录型桩 daemon 验过：
+  旧代码发的是 `{"kind":"click","x":null,"y":null}`，新代码什么都不发），`--duration` / `--gap` 之类
+  的旗标同样走校验，`keys` 与 CLI/daemon 统一成"只保留正整数"。
+- **一次性命令的截帧临时文件从不回收**：`crop` / `annotate` / `color` 每次自动截一帧喂 L0，落盘的
+  那份用完就不管了——本机实测攒了 **42 张 / 53.71 MB**。现在收口成 `seedObservation()`：截帧只为
+  产生一次观测，daemon 收到时已把像素读进缓冲，落盘那份用完即删（失败也不抛，命令自己会报
+  "先 screencap / stream"）。真机跑完三个命令，临时目录计数不变。
+- **`timing --override` 与 `run --override` 对非对象值处理不一致**：`run` 有守卫（原样替换），
+  `timing` 直接展开 `fields`——字符串会被摊成 `{0:'a',1:'b'}`、`null` / 数字静默变成空对象，
+  等于把用户写的节点悄悄丢掉；而 `override.ts` 里的四级链本来就有正确守卫，同一判据三处各写一份。
+  现在合并收口成唯一的 `mergeOverride()`，三条路径共用。
+- **嵌套 option 自引用会栈溢出**：`case.option` 允许再列 option，A → B → A 这种自引用让递归停不下来，
+  整条 `run` 被 RangeError 打断。现在记一条可行动的警告并跳过重复那一步，链上其他覆盖照常生效。
+- **客户端写 stdin 的同步抛（EPIPE）没兜住**：daemon 在 spawn 与写入之间就死掉时，`write` 会同步抛
+  `ERR_STREAM_DESTROYED`——`init` 的契约是"失败如实回报、不抛"，却会因此 reject；`call` 也会甩出
+  一条看不懂的原生错误。两处都改成可读的失败（`init 发送失败` / `daemon 请求发送失败`）。
 
 ### 测试
 
@@ -167,6 +186,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **客户端协议面 3 条**（`test/unit-client-protocol.mjs` + 桩 daemon）：init 握手回执可读、
   对方不回 init 时如实回报并留痕（沉默桩）、`stream_stopped` 订阅与错误环。两个桩都不需要设备与
   maa-node——这些缺口的本体都在客户端一侧。（原 `unit-client-stream.mjs` 并入本文件。）
+- **override 合并 2 条**（`test/unit-interface.mjs`）：`mergeOverride` 的对象浅合并 + 非对象值原样
+  替换（字符串 / null / 数字 / 数组四种形态）、嵌套 option 自引用只记警告不栈溢出（两条都做了 A/B：
+  关掉守卫各自立刻变红）——单测总数 110 → 112。
+- **REPL 输入校验的真机验证**：空参 `click` 只打印用法（记录型桩 daemon 确认零请求）；合法
+  `click 620 520` 落到设备（`ok:true, ms=272`，带回前后 retention 帧）。
 - **真机验收改动前后各跑一遍**（MuMu v5 / `adb 127.0.0.1:16384`）：`npm run accept` **27 过 / 0 败**，
   两遍一致；确认 R2e 换成"占目录"注入后判据仍成立，且临时 runDir 不再新增（跑前 15 / 跑后 15）。
 - **`accept:crop` 挂进 CI**：它离线、不需要设备，却会真的起 daemon 与识别子进程（自匹配）——
