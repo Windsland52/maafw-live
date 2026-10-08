@@ -60,7 +60,7 @@ export const versionCommand: Command = {
             `  升级       npm install --global ${pkg.name}@latest`,
           )
           /* 自动提示不改退出码：版本旧不是"这次调用发现的问题" */
-          return { exitCode: explicit ? EXIT.FINDINGS : EXIT.OK, human, data, ...(explicit ? {} : {}) }
+          return { exitCode: explicit ? EXIT.FINDINGS : EXIT.OK, human, data }
         }
         human.push(`  最新       ${latest}（已是最新）`)
       } else if (explicit) {

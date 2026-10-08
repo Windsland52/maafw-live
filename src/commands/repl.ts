@@ -9,7 +9,7 @@
  */
 import readline from 'node:readline'
 import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
-import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
+import { EXIT, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
@@ -440,8 +440,4 @@ export const replCommand: Command = {
 
     return { exitCode: EXIT.OK, human: ['会话结束。'] }
   },
-}
-
-export function replFail(e: unknown): CommandResult {
-  return fail('REPL_FAILED', e instanceof Error ? e.message : String(e))
 }

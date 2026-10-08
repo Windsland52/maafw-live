@@ -158,9 +158,8 @@ export const envCommand: Command = {
     if (maafw) items.push({
       key: 'framework',
       status: !existsSync(maafw) ? 'missing' : checkoutVer ? 'ok' : 'warn',
-      detail: !maafw
-        ? '未提供源码目录（--checkout 或 MAAFW_CHECKOUT）'
-        : !existsSync(maafw)
+      /* 进到这里 maafw 必然非空，"未提供源码目录"那一支是死的（曾经留着） */
+      detail: !existsSync(maafw)
         ? `checkout 不存在：${maafw}`
         : checkoutVer
           ? `${checkoutVer}  (${maafw})`

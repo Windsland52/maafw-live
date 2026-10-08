@@ -192,7 +192,7 @@ test('节点级字段浅合并：同节点不同字段共存，同字段对象�
 function writeFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-'))
   fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
-    version: 2,
+    interface_version: 2,
     name: 'ut-project',
     controller: [{ name: 'C1', type: 'Adb' }],
     resource: [{ name: 'R1', path: 'res' }],
@@ -226,6 +226,8 @@ test('import 合并：后导入覆盖同名 option；task/global_option 并入�
     assert.deepEqual(l.globalOption, ['g1', 'g2'], 'global_option 并集去重')
     assert.ok(l.problems.some((p) => p.message.includes('不可导入') && p.message.includes('controller')),
       'import 声明 controller 记 problem：' + JSON.stringify(l.problems))
+    assert.ok(!l.problems.some((p) => p.message.includes('interface_version')),
+      '夹具本身必须是合法 PI 文件（字段名是 interface_version，不是 version）：' + JSON.stringify(l.problems))
     assert.ok(!l.controllers.some((c) => c.name === 'ShouldBeIgnored'), '被忽略的 controller 不进入列表')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -236,7 +238,7 @@ test('import 自引用（循环）记 problem 并跳过', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-'))
   try {
     fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
-      version: 2,
+      interface_version: 2,
       controller: [{ name: 'C1', type: 'Adb' }],
       option: { a: { type: 'select', cases: [{ name: 'x', pipeline_override: {} }], default_case: 'x' } },
       import: ['interface.json'],
@@ -291,7 +293,7 @@ test('import 不可嵌套：被导入文件里的 import 记 problem 并忽略',
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-nest-'))
   try {
     fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
-      version: 2,
+      interface_version: 2,
       controller: [{ name: 'C1', type: 'Adb' }],
       resource: [{ name: 'R1', path: 'res' }],
       task: [{ name: 'T1', entry: 'StartUp' }],

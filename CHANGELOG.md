@@ -71,6 +71,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `edge: {passed, belowZ, belowMin, singleBlock}`。"某一段没有候选"是内容如此还是被过滤掉，以前只能从结果侧猜。
   首批实测（3 帧）：面积窗下界拒掉约 **97%** 的连通域（通过 27–53、`tooSmall` 1460–1698），
   而 edge 的绝对地板**从不触发**（`belowMin` 全 0）、门槛全在 z 上。
+- **清掉三处死代码**（都是"没人引用却一直留着"）：`repl.ts` 的 `replFail`（导出但全仓零引用，
+  连带把只剩它一个用处的 `fail` 导入去掉）、`env.ts` 里 `framework` 明细的 `if (maafw)` 内又判
+  `!maafw` 的那一支（永远不可达）、`version.ts` 的 `...(explicit ? {} : {})` 空展开。
+  死代码本身无害，但它会让"这条分支到底什么时候走"变成需要现场推演的问题。
 
 ### 修复
 
@@ -205,6 +209,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `--resource <名>` / `--resource <路径>` / 未指定控制器）都带上 `attach_resource_path`；
   被导入文件里的 `import` 记 problem 且不展开（两条都做了 A/B，各自关掉守卫立刻变红）——
   单测总数 112 → 114。
+- **单测夹具写错了字段名**：三处 `interface.json` 夹具写 `version: 2`，而 PI v2 要的是
+  `interface_version: 2`（`version` 是项目版本号，字符串）——于是每个夹具都白挂一条
+  "缺少 interface_version" 的 problem，跟用例要验的东西混在一起。改对之后补了一条守卫断言：
+  夹具自身必须是合法 PI 文件（断言里明写"字段名是 interface_version，不是 version"）。
 - **真实项目核对**：拿本机 6 个 `interface.json`（MaaEnd / M9A / MST / maa-daily-lab /
   ArknightsAutoOperator / 官方 sample）跑只读探针，只有 MaaEnd 用 `attach_resource_path`（8 个控制器）；
   对它做了修复前后的 A/B——`--resource 官服` 由「1 条路径」变「2 条（含 `resource_adb`）」。
