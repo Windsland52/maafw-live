@@ -1556,6 +1556,13 @@ async function cmdTplCrop(args) {
       resourceDir, type: 'TemplateMatch', image: frameFile, templateImage: candFile, cases: [{}],
     }, 60000)
     if (!r || !r.ok) return { score: -1, posOk: false, at: null }
+    /* 子进程回 ok 但**一个 case 结果都没有**：识别压根没跑起来（实测最常见的原因是资源目录里没有可加载的
+     * pipeline，reco 会安静地回 `results: []`）。这与"识别跑了但没命中"是两回事——后者仍会有 1 条结果
+     * （hit:false）。记下来，别让它被下面的判据翻译成"低纹理/不独特"。 */
+    if (!Array.isArray(r.results) || r.results.length === 0) {
+      selfMatchDead = true
+      return { score: -1, posOk: false, at: null, noResults: true }
+    }
     const det = r.results && r.results[0] ? r.results[0].detail : null
     const best = det && det.detail && det.detail.best
     if (!best || !Array.isArray(best.box)) return { score: 0, posOk: false, at: null }
@@ -1563,6 +1570,8 @@ async function cmdTplCrop(args) {
     return { score: Number(best.score), posOk: overlapOk(at, [b.x, b.y, b.w, b.h]), at }
   }
   const obj = (s) => (s.posOk ? 1000 : 0) + s.score
+  /** 自匹配有没有跑起来（子进程回空结果 = 没跑起来）。跑到这里说明资源加载不出识别节点。 */
+  let selfMatchDead = false
   const clampBox = (b) => ({
     x: Math.max(0, b.x), y: Math.max(0, b.y),
     w: Math.min(b.w, dec.w - Math.max(0, b.x)), h: Math.min(b.h, dec.h - Math.max(0, b.y)),
@@ -1650,10 +1659,14 @@ async function cmdTplCrop(args) {
   const out = args.out || path.join(process.cwd(), 'maa_tpl_' + Date.now() + '.png')
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
-  const warn = !best.posOk
-    ? '低纹理/不独特：模板在同帧上都定位不到自己（best 落在 ' + JSON.stringify(best.at) + '，得分 ' +
-      best.score.toFixed(3) + '）——换更纹理化的框，或走点选路径'
-    : (best.score < 0.7 ? '得分偏低（' + best.score.toFixed(3) + '）但位置正确：可用，注意跨帧稳定性' : null)
+  const warn = selfMatchDead
+    ? '自匹配没跑起来：识别子进程一个结果都没回（实测最常见原因是资源目录里没有可加载的 pipeline）。' +
+      '这不是"模板不独特"——先写一个 pipeline 节点，或用 --resource-dir 指向真实资源，再重跑这次的框；' +
+      '在此之前它**未经自匹配验证**，不要拿它去写 pipeline'
+    : !best.posOk
+      ? '低纹理/不独特：模板在同帧上都定位不到自己（best 落在 ' + JSON.stringify(best.at) + '，得分 ' +
+        best.score.toFixed(3) + '）——换更纹理化的框，或走点选路径'
+      : (best.score < 0.7 ? '得分偏低（' + best.score.toFixed(3) + '）但位置正确：可用，注意跨帧稳定性' : null)
   /* 模板空间 = 源帧捕获时的控制器尺寸。与当前控制器不一致时模板不能被当前识别空间直接使用
    * （契约 §5：坐标 / ROI 必须声明所属图像空间；改过 shortSide 或换过设备就会出现）。 */
   const spaceCheck = S.ctrl && S.fullW && S.fullH

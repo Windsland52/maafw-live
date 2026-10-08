@@ -189,6 +189,20 @@ async function main() {
     check('K9 prov:false 不写侧车', r9.ok === true && r9.provPath === null && !fs.existsSync(path.join(outDir, 'tpl9.png.prov.json')),
       JSON.stringify({ provPath: r9.provPath }))
 
+    /* K10 空资源包（没有任何 pipeline）：自匹配起不来，必须**如实归因到资源**而不是"低纹理/不独特"。
+     * 这两件事的处置完全相反（去修资源 vs 去换框），混在一起会把人引到错的路上。
+     * 实测来源：真机上 resource/pipeline/ 还是空的时候，crop 报了"低纹理"（见 roadmap 第十九轮）。 */
+    const emptyRes = path.join(root, 'empty-res')
+    fs.mkdirSync(emptyRes, { recursive: true })
+    const r10 = await crop(lib, { resourceDir: emptyRes, out: path.join(outDir, 'tpl10.png') })
+    const w10 = [...(r10.warns ?? []), ...(r10.warn ? [r10.warn] : [])].join(' | ')
+    check('K10a 空资源包仍出图（裁剪本身不需要资源）', r10.ok === true && fs.existsSync(path.join(outDir, 'tpl10.png')),
+      JSON.stringify(r10).slice(0, 200))
+    check('K10b 警告如实说"自匹配没跑起来"', /自匹配没跑起来/.test(w10), w10)
+    check('K10c 不再把它归因成"低纹理/不独特"', !/低纹理/.test(w10), w10)
+    check('K10d 如实报未经验证（positionOk=false、无 best）',
+      r10.positionOk === false && r10.selfMatchBox === undefined, JSON.stringify({ p: r10.positionOk, b: r10.selfMatchBox }))
+
     console.log('C 组：CLI 一行命令（--from-kf，全程无设备）')
     const cliOut = path.join(outDir, 'cli.png')
     const cli = spawnSync(process.execPath, [

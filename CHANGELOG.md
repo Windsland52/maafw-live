@@ -36,6 +36,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 变更
 
+- **skill 补一条真机撞出来的反模式**（`skills/maafw-live/references/pitfalls.md`）：
+  **识别框默认就是动作框**——`Click` 落点是 target 框内的随机点，没给 `target` 时 target 就是识别框，
+  所以"框里有一片空地"就有概率点在空地上（实测：宽 115px 的入口模板右侧 40% 是空地，一次 `run` 的点击
+  就这么丢了，而动作回执照样 `Action.Succeeded`——**动作成功 ≠ 点到了东西**）；对策是把模板裁成按钮本体
+  （`crop --point` 点图标中心）或显式给 `target`。
 - **skill 补「首次上手：一条最短路径」与 `[JumpBack]` 分支的读法**（`skills/maafw-live`，随包发布）：
   SKILL.md 新增 §0 六步表（认清环境 → 连一次 → 先看见 → 实测 → 裁 → 看到就留档），每步带一条"过不了就别往下走"
   的判据，并写明**第 6 步是唯一无法补救的一步**（前四步都能事后重做，唯独"当时那一帧"只有升格过才重做得了）；
@@ -51,6 +56,14 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 修复
 
+- **`crop` 把"资源里没有可加载的 pipeline"误报成"低纹理/不独特"**：自匹配要起识别子进程，而资源包为空时
+  子进程会安静地回 `ok:true` + `results: []`（一个 case 结果都没有），旧代码把这句翻译成
+  "模板在同帧上都定位不到自己（best 落在 null，得分 0.000）"——**工具的安装问题被说成了内容问题**，
+  处置方向正好相反（去修资源 vs 去换框）。实测：真机上 `resource/pipeline/` 还是空的时候连撞两次；
+  放一个（哪怕无关的）pipeline 文件后，同框同 roi 的自匹配立刻 1.0。
+  现在：子进程回空结果即判定"自匹配没跑起来"，警告直说原因与下一步（先写一个 pipeline 节点或给
+  `--resource-dir`），并明确"这次的框**未经自匹配验证**，不要拿它去写 pipeline"；`positionOk` 仍为 `false`。
+  验收加 K10 四条（空资源包仍出图、警告如实归因、不再出现"低纹理"、未验证状态如实）。
 - **`survey:crop` / `survey:som` 的进度点与末尾汇总会被截断**：`process.exit()` 在 stdout 是管道时
   （`> out.txt`、`| tee`）会丢掉还没落地的缓冲——实测 12 个进度点只冲出 6 个，汇总行也可能一起没。
   改为 `process.exitCode` 让事件循环自然排空（daemon 已 shutdown）。
