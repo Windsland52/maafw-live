@@ -177,7 +177,7 @@ try {
 | 0 | 正常完成，未发现问题（run 的任务级 `record.ok=true`） |
 | 1 | 命令自身失败（未预期异常、IO 错误）；**run 的任务失败**（`record.ok=false`，含超时被停止） |
 | 2 | 参数 / 用法错误 |
-| 3 | 跑成了，但发现了问题：run 的**调用级**失败（未连接 / 资源缺失 / 已有任务在跑）、reco 识别未命中（含 `--act` 单测失败）、crop / color / annotate / calibrate 的失败或警告、kf manifest / promote 失败、device 未发现设备、`version --check` 查到新版、`skill --check` 检出已装副本漂移 |
+| 3 | 跑成了，但发现了问题：run 的**调用级**失败（未连接 / 资源缺失 / 已有任务在跑）、reco 识别未命中（含 `--act` 单测失败）、crop / color / annotate / calibrate 的失败或警告、kf manifest / promote 失败、device 未发现设备、frame 取不到帧（帧流未开 / 环形缓冲为空）、timing 采样未跑起来（资源缺失 / 任务没跑起来 / `--runs` 次全未成功）、`version --check` 查到新版、`skill --check` 检出已装副本漂移 |
 | 4 | 前置环境缺失 |
 
 关键是 **1 与 3 的区分**：1 是「没跑成」（含任务失败），3 是「跑成了但有问题」。任务级结果看
