@@ -219,6 +219,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （`/^init 失败/`），与推流通知无关，时序上不可能再红。这也是这次 push 唯一抓到的红：
   **`accept:crop` 在 Linux（Node 22.13 · ubuntu）与 Windows 两腿上都是绿的**——原生绑定在 ubuntu 上能跑，
   这条 CI 门禁值得留着。
+- **补上两块结构性测试盲区**（都不需要设备，也不再依赖手工验证）：
+  - `test/unit-repl-input.mjs` + **记录型桩 daemon**（`MAA_DAEMON` 指过去 + 管道喂 stdin）：REPL 的输入
+    校验必须**只打印用法、零请求**——空参/非数字 `click`、`keys` 全非法、非法 `--duration`、参数不够的
+    `swipe` 都算；同时合法 `click 620 520` / `scroll 0 -120` 必须照发。断言直接看桩收到的请求清单，
+    所以"发没发出去"是可证的，不是从 stdout 猜的。
+  - `test/unit-client-timeout.mjs` + **两阶段桩 daemon**（先卡死，放行标记出现后才应答）：调用超时 →
+    **硬杀** daemon → 下次调用自动重生（`stats().restarts === 1`）。"硬杀"不靠 sleep 猜，而是轮询
+    `stats().alive` 直到转 false——本仓刚在 CI 上被"靠时序的断言"坑过一次，这里刻意不重复。
+  - 两条都做了 A/B：取修复前的 `repl.ts`（`4af7d49^`）→ **0 过 2 败**；把客户端的 `kill()` 改瞎 →
+    断言"超时后必须硬杀 daemon"变红。**单测总数 114 → 117。**
 - **真实项目核对**：拿本机 6 个 `interface.json`（MaaEnd / M9A / MST / maa-daily-lab /
   ArknightsAutoOperator / 官方 sample）跑只读探针，只有 MaaEnd 用 `attach_resource_path`（8 个控制器）；
   对它做了修复前后的 A/B——`--resource 官服` 由「1 条路径」变「2 条（含 `resource_adb`）」。
