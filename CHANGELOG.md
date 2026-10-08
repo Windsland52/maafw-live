@@ -36,6 +36,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 变更
 
+- **skill 的 §0 写清"项目从哪来不影响本工具"**（`skills/maafw-live/SKILL.md`）：本工具只读 `interface.json`
+  里的控制器条目与 `resource[].path`，`resource/` 与 `resource/base/` 这类布局差异都实测能连能跑；
+  识别空间由控制器条目（如 `display_short_side`）决定、与目录布局无关，**唯一要守的是别把两套坐标系混起来**。
+  自己新建项目时跟随该项目生态的既定布局即可——skill 不指定任何一套脚手架。
 - **skill 补一条真机撞出来的反模式**（`skills/maafw-live/references/pitfalls.md`）：
   **识别框默认就是动作框**——`Click` 落点是 target 框内的随机点，没给 `target` 时 target 就是识别框，
   所以"框里有一片空地"就有概率点在空地上（实测：宽 115px 的入口模板右侧 40% 是空地，一次 `run` 的点击
