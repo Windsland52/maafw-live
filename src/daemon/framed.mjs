@@ -1536,6 +1536,11 @@ async function cmdTplCrop(args) {
   } else {
     return { ok: false, error: '给 --roi x,y,w,h 或 --point x,y [--pad n]' }
   }
+  /* 非数字入参要在算框之前拦掉：NaN 会一路传成 NaN 框，最后报一个跟病因无关的失败。
+   * 线上真会遇到的形态是 `[0,0,"x",10]` 这类（JSON 里 NaN 变 null，Number(null) = 0 是合法数字）。 */
+  if (!loose.every((v) => Number.isFinite(v))) {
+    return { ok: false, error: 'roi / point / pad 必须是数字：' + JSON.stringify(loose) }
+  }
 
   let ent = null
   let kf = null

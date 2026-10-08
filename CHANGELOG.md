@@ -125,6 +125,21 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **配额注释说"≤0 视为不设限"，但 env 与 init 都到不了 0**：`S.kfQuota > 0` 的判据本身是有意的
   "0 = 不设限"（单测直接改 `S` 走这条），注释却把不可达的入口写成了用法。改成如实描述：
   代码层 0 = 不设限，但 `MAAFW_KF_QUOTA_BYTES` / `init kfQuotaBytes` 都只认 >0。
+- **`accept-emulator` 的 R2e 故障注入在 Linux 上不生效（会假失败）**：原来把 `manifest.json`
+  `chmod 0444` 来注入写失败，但 daemon 是 tmp + rename 写入——POSIX 的 rename 只看目录写权限、
+  不看目标文件的只读位，于是 Linux 上照样写得进去，"必须写失败"的断言就成了假失败（只有 Windows 有效）。
+  改成把 `manifest.json.tmp` 这个路径**占成目录**：POSIX 报 EISDIR、Windows 报 EPERM/EACCES，
+  两端都必失败，而且不必再改动库文件本身。真机复跑 R2e/R2e2/R2e3 全过（判据没被削弱）。
+- **`accept-emulator` 的临时 runDir 从不回收**：本机实测攒了 15 个 `maafw-acc-*`（每跑一次漏一个）。
+  现在 R1–R3 读完后统一回收，并用 `maxRetries` 兜住 Windows 上 close 的 kill 延迟导致的 EBUSY/EPERM。
+- **`accept-emulator` 末尾汇总可能被 `process.exit` 截断**：与 survey 脚本同一个坑（stdout 还没冲完
+  就退出，管道里尤其明显）。改成 `process.exitCode` 让事件循环自然排空。
+- **`tpl_crop` 的非数字入参一路变成 NaN 框**：`roi` / `point` / `pad` 里只要有非数字元素，
+  `Number()` 出来就是 NaN，夹取、裁剪、snap 全在 NaN 上跑，最后报出来的失败跟病因无关。
+  现在算框之前先校验，直接报 `roi / point / pad 必须是数字`。线上会遇到的形态是 `[0,0,"x",10]`
+  这类（JSON 里 NaN 会变 null，而 `Number(null)` = 0 是合法数字，所以只测 NaN 是不够的）。
+- **`annotate` 的 TS 类型缺四个测量覆盖**：`somLimit` / `somEdgeZ` / `somEdgeMin` / `somIoU` 在 daemon
+  与协议文档里都有、客户端类型里没有（与 `tplCrop` 同一类失真）——补齐并逐字段写明语义。
 
 ### 测试
 
@@ -137,6 +152,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - `shutdown` 回执 1 条（`test/unit-daemon-shutdown.mjs`）：裸协议 spawn 真 daemon 子进程，
   断言"先收到 `{ok:true}`、进程再退 0"——客户端把 shutdown 当"发了就不管"，所以这条只有裸协议看得见；
   shutdown 路径不碰 maa 绑定（`loadMaa()` 懒加载），CI 里也不需要设备。单测总数 96 → 98。
+- `tpl_crop` 非数字入参 1 条（`test/unit-crop-kf.mjs`）：NaN、非数字字符串、非数字 pad 三种形态都要
+  报用法错误、且不碰库——单测总数 98 → 99。
+- **真机验收改动前后各跑一遍**（MuMu v5 / `adb 127.0.0.1:16384`）：`npm run accept` **27 过 / 0 败**，
+  两遍一致；确认 R2e 换成"占目录"注入后判据仍成立，且临时 runDir 不再新增（跑前 15 / 跑后 15）。
 - **`accept:crop` 挂进 CI**：它离线、不需要设备，却会真的起 daemon 与识别子进程（自匹配）——
   是唯一覆盖 client 的 spawn / 应答配对的验收。此前不进 CI 的理由是"需 maa-node 加载资源"，
   而 `@maaxyz/maa-node` 的平台包（含 `linux-x64`）本来就是 `npm ci` 装的，值得让 CI 说话。

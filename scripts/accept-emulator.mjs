@@ -128,18 +128,21 @@ async function main() {
     check('R2d 同捕获内容不符 → 冲突拒绝', p3.ok === false && /冲突/.test(p3.error || ''), (p3.error || '') + '')
     fs.writeFileSync(manifestFile, manifestBackup)
 
-    /* R2e 磁盘失败注入：manifest 只读 → rename 失败 → 报错并回收 L0 文件，不留半成品 */
+    /* R2e 磁盘失败注入：把 manifest 的临时文件路径占成**目录** → tmp 写入必失败 → 报错并回收 L0 文件，不留半成品。
+     * 原来是把 manifest `chmod 0444`，但 daemon 走 tmp + rename：POSIX 的 rename 只看目录写权限、
+     * 不看目标文件的只读位，于是 Linux 上照样写成功——R2e 系列会假失败（那套注入只在 Windows 有效）。
+     * 占目录两端都必失败（POSIX 报 EISDIR、Windows 报 EPERM/EACCES），也不再改动库文件本身。 */
     const f2 = await pollLatest(c, (f) => f.seq > f1.seq, '新帧到达')
-    fs.chmodSync(manifestFile, 0o444)
+    const tmpBlocker = manifestFile + '.tmp'
+    fs.mkdirSync(tmpBlocker, { recursive: true })
     let q = null
     try {
       q = await c.call('kf_promote', { seq: f2.seq })
-    } finally { fs.chmodSync(manifestFile, 0o666) }
+    } finally { fs.rmSync(tmpBlocker, { recursive: true, force: true }) }
     check('R2e manifest 写失败 → 明确报错', q.ok === false && /manifest 写入失败/.test(q.error || ''), (q.error || '') + '')
     check('R2e2 失败后 L0 文件已回收（无半成品引用）', !fs.existsSync(path.join(framesDir, 'l0', '0002.png')))
     const afterFail = JSON.parse(fs.readFileSync(manifestFile, 'utf8'))
     check('R2e3 manifest 未发布新记录', afterFail.frames.length === 1)
-    try { fs.rmSync(manifestFile + '.tmp', { force: true }) } catch (e) { /* rename 失败残留的 tmp，清掉 */ }
 
     /* R2f 故障恢复后重试成功（没有留下卡死状态） */
     const q2 = await c.call('kf_promote', { seq: f2.seq })
@@ -220,7 +223,10 @@ async function main() {
       JSON.stringify({ status: r.status, reason: r.reason, recSha: r.record?.sha256, wantSha: offlineCheck.sha }))
   }
   console.log(`\nR1-R4：${pass} 过 / ${fail} 败`)
-  process.exit(fail ? 1 : 0)
+  /* 临时 runDir 收尾：R1–R3 都读完了才删；close 的 kill 有 1.5s 延迟，Windows 上偶发 EBUSY/EPERM → 重试兜住 */
+  try { fs.rmSync(runDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }) } catch (e) { /* ignore */ }
+  /* 用 exitCode 让 stdout 自然排空：process.exit 在管道里会丢掉还没落地的汇总（survey 脚本踩过同一个坑） */
+  process.exitCode = fail ? 1 : 0
 }
 
 main().catch((e) => { console.error('R1 执行异常：', e.message); process.exit(1) })

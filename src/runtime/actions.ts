@@ -92,8 +92,19 @@ export const tplCrop = (c: DaemonClient, args: {
   snapTol?: number
   snapFrac?: number
 }) => c.call<Record<string, unknown>>('tpl_crop', args, 240000)
-export const annotate = (c: DaemonClient, args: { seq?: number; out?: string; resourceDir?: string; kfSource?: CropKfSource }) =>
-  c.call<Record<string, unknown>>('annotate', args, 120000)
+export const annotate = (c: DaemonClient, args: {
+  seq?: number
+  out?: string
+  resourceDir?: string
+  kfSource?: CropKfSource
+  /** 候选上限（缺省 30；截断按横向分带轮转，`mergedTotal` 才是去重后的真实规模） */
+  somLimit?: number
+  /** 边缘源门槛的**测量用覆盖**（定标 A/B）；缺省即生产常数 */
+  somEdgeZ?: number
+  somEdgeMin?: number
+  /** 连通域合并 IoU 的测量用覆盖 */
+  somIoU?: number
+}) => c.call<Record<string, unknown>>('annotate', args, 120000)
 export const calibrate = (c: DaemonClient, args: { frames?: number; interval?: number } = {}) =>
   c.call<Record<string, unknown>>('calibrate', args, 120000)
 export const runStop = (c: DaemonClient) => c.call<{ ok: boolean }>('run_stop', {}, 10000)

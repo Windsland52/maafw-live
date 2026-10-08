@@ -211,3 +211,31 @@ test('tpl_crop：坏参数（既没 roi 也没 point）先被拒，不取源、�
     fs.rmSync(runDir, { recursive: true, force: true })
   }
 })
+
+/**
+ * 非数字的 roi / pad 要在**算框之前**报用法错误。
+ * 否则 NaN 会一路变成 NaN 框：夹取、裁剪、snap 全在 NaN 上跑，最后报出来的失败跟病因无关
+ * （线上真会遇到的是 `[0,0,"x",10]` 这类——JSON 里 NaN 会变 null，而 Number(null) = 0 是合法数字）。
+ */
+test('tpl_crop：roi / pad 非数字 → 用法错误（不产生 NaN 框）', async () => {
+  const { cmdTplCrop, S } = __test
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-crop-nan-'))
+  const saved = { runDir: S.runDir, roll: S.l0.roll, anchor: S.l0.anchor, ring: S.ring, session: S.session }
+  try {
+    S.runDir = runDir
+    S.l0.roll = [{ seq: 7, t: Date.now(), png: framePng(11), w: 32, h: 24 }]
+    S.l0.anchor = []
+    S.ring = []
+    S.session = null
+    for (const args of [{ roi: [0, 0, Number.NaN, 10] }, { roi: ['x', 0, 10, 10] }, { point: [5, 5], pad: 'abc' }]) {
+      const r = await cmdTplCrop(args)
+      assert.equal(r.ok, false, JSON.stringify(args) + ' 必须失败，实际：' + JSON.stringify(r))
+      assert.match(String(r.error), /必须是数字/, JSON.stringify(args))
+    }
+    assert.ok(!fs.existsSync(path.join(runDir, 'frames')), '这些失败都不该碰库')
+  } finally {
+    S.runDir = saved.runDir; S.l0.roll = saved.roll; S.l0.anchor = saved.anchor
+    S.ring = saved.ring; S.session = saved.session
+    fs.rmSync(runDir, { recursive: true, force: true })
+  }
+})
