@@ -39,7 +39,10 @@ test('init 握手：回执可读（framesDir / daemonId / kfQuota），不再被
   assert.equal(r.data.daemonId, 'stub-daemon-0001')
   assert.match(r.data.framesDir, /frames$/)
   assert.equal(r.data.kfQuota, 1073741824)
-  assert.equal(c.events.errors.length, 0, '握手成功不该在错误环里留东西')
+  /* 只钉"握手没被记成失败"：桩 daemon 在 init 回执后**紧接着**会推一条 stream_stopped，
+   * 那条按设计会进错误环——断言整个环为空会变成时序竞态（Node 24 / ubuntu 上真红过一次）。 */
+  assert.ok(!c.events.errors.some((e) => /^init 失败/.test(e)),
+    '握手成功不该记 init 失败：' + JSON.stringify(c.events.errors))
 })
 
 test('init 握手：对方不回 → 如实回报 + 错误环留痕（不抛异常、不假装成功）', async (t) => {

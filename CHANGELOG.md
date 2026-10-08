@@ -213,6 +213,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `interface_version: 2`（`version` 是项目版本号，字符串）——于是每个夹具都白挂一条
   "缺少 interface_version" 的 problem，跟用例要验的东西混在一起。改对之后补了一条守卫断言：
   夹具自身必须是合法 PI 文件（断言里明写"字段名是 interface_version，不是 version"）。
+- **`unit-client-protocol` 的一条断言是时序竞态**（CI 在 Node 24 · ubuntu 上第一次抓到）：桩 daemon 在
+  init 回执之后紧接着会推 `stream_stopped`，那条**按设计**会进错误环，于是"握手成功时错误环必须为空"
+  这条断言本身不成立——本机（Node 22 / Windows）恰好每次都排在它后面。改成只钉"握手没被记成失败"
+  （`/^init 失败/`），与推流通知无关，时序上不可能再红。这也是这次 push 唯一抓到的红：
+  **`accept:crop` 在 Linux（Node 22.13 · ubuntu）与 Windows 两腿上都是绿的**——原生绑定在 ubuntu 上能跑，
+  这条 CI 门禁值得留着。
 - **真实项目核对**：拿本机 6 个 `interface.json`（MaaEnd / M9A / MST / maa-daily-lab /
   ArknightsAutoOperator / 官方 sample）跑只读探针，只有 MaaEnd 用 `attach_resource_path`（8 个控制器）；
   对它做了修复前后的 A/B——`--resource 官服` 由「1 条路径」变「2 条（含 `resource_adb`）」。
