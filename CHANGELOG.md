@@ -3,7 +3,12 @@
 maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.1.0] - 2026-10-08
+
+> 首个发布版本，**同时进 npm registry（`@windsland52/maa-live`，OIDC trusted publishing）与 GitHub Packages**。
+> 此前仓库以工作快照推进（下游 MaaTutorial `maafw-debug` 技能的评审核出于快照 `35c4e493`），tag 与 Release
+> 都还没有对外；本版发布前把声明与实现逐条对账——消除「声明了但没有」的第三态——并建立发布流程
+> （CHANGELOG / CI / tag 触发的发布链）。下游结果契约「以本仓库文档为准」的引用请指向 `v0.1.0`。
 
 ### 变更
 
@@ -95,14 +100,7 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   库帧裁剪、出处落盘、L0 不可变、空间比对如实为 null、替换与尺寸不符各自拒绝、CLI 一行命令走通。
   该脚本需 maa-node 加载资源，不进 CI（与 `accept` 同属需要原生绑定的验收）。
 
-## [0.1.0] - 2026-10-07
-
-首个发布版本。此前仓库以工作快照推进（下游 MaaTutorial `maafw-debug` 技能的评审核出于快照
-`35c4e493`，未发布）；本版发布前把声明与实现逐条对账——消除「声明了但没有」的第三态——并建立
-发布流程（CHANGELOG / CI / tag 触发的发布链）。下游结果契约「以本仓库文档为准」的引用请指向
-`v0.1.0`。
-
-### 新增
+### 新增（首批实现）
 
 - **daemon + 客户端 + CLI 三件套**：常驻 daemon 持有 Controller / Resource / Tasker 与连续帧流
   （fps / scale / maxFrames 可调）、环形缓冲与原生日志环，JSON 行协议不绑定宿主；可复用客户端
@@ -154,7 +152,7 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   - 补 6 个从未入表的命令：`l0_status`、`kf_promote`、`tpl_crop`、`color_probe`、`annotate`、
     `calibrate`（含 kf promote 语义：身份接受时固定、L0 淘汰即失败、重试幂等）
 
-### 变更
+### 变更（首批）
 
 - `--no-interactive` 与 `--yes` 措辞降级：两者当前均无门控（本工具没有交互式提问与确认步骤），
   照传即可——保留解析是防后续版本引入交互时挂住自动化调用
