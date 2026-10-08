@@ -22,7 +22,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **发布身份无长期凭据**：npm 侧走 **trusted publishing（OIDC，`id-token: write`）** + `--access public
   --provenance`；GitHub Packages 侧走 `GITHUB_TOKEN`（`packages: write`，GHCR 不支持 trusted publishing，
   也不接受 provenance，故不带 `--provenance`）。两个发布作业都先查该版本是否已存在，存在即跳过——
-  部分失败后重跑安全。`release` 作业改为 `needs: [check, publish-npm, publish-ghcr]`。
+  部分失败后重跑安全。`release` 作业改为 `needs: [check, publish-npm]`：GHCR 是镜像通道，
+  它失败不该挡住 GitHub Release 的创建。
   一次性配置（npm scope 归属、npm 侧 trusted publisher 绑定本仓 `release.yml`、GHCR 靠 `repository`
   字段关联）见 RELEASING.md。
 

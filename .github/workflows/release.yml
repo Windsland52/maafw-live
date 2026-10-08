@@ -181,7 +181,8 @@ jobs:
           npm publish "${tarball}"
 
   release:
-    needs: [check, publish-npm, publish-ghcr]
+    # 只等公共通道（npm）与校验：GHCR 是镜像通道，它失败不该挡住 GitHub Release 的创建
+    needs: [check, publish-npm]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
