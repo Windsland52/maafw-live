@@ -60,7 +60,7 @@
 | `run_stop` | — | `{ ok }` |
 | `input` | `kind: click\|dbclick\|press\|swipe\|key\|keys\|scroll\|move\|text\|app` + 对应参数（见下） | `{ ok, kind, ms, retention }`；`retention.before/.after` 是动作边界帧，自动入 L0 锚区 |
 | `reco_test` | `resourceDir`、`type`、`image` 或 `seq`、`param?`、`sweep?{key,min,max,step}`、`node?`（整节点 JSON 透传，V1/V2 由框架解析）、`act?`（配 `node`：识别拿框 → 真机执行动作半）、`templateImage?`（调用方裁好的模板，不写资源目录） | `{ ok, type, meta, results[] }`；`act` 时含 `reco/action/stage/retention`。除 `act` 外在**一次性子进程**里执行：beta 绑定遇到无效模板会原生崩溃，子进程炸掉只损失一次测试 |
-| `shutdown` | — | 停流 + 断开 + 退出进程 |
+| `shutdown` | — | 停流 + 断开 + 退出进程；回执 `{ ok:true }` **先落地再退**（`process.exit` 不冲 stdout，而调用方在等这条应答） |
 
 `input` 的参数：`click{x,y,contact?,pressure?}`、`dbclick{x,y,gap?}`、`press{x,y,duration?,contact?,pressure?}`、
 `swipe{x1,y1,x2,y2,duration?,contact?,pressure?}`、`key{code}`（Android KeyEvent 码）、

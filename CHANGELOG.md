@@ -115,6 +115,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `close()` 的 kill 有 1.5s 延迟，紧接着 `rmSync` 偶发 EPERM）。
 - **`tplCrop` 的 TS 参数类型失真**：`provOut` / `keepSource` 已实装并被 CLI 使用，类型里却没有
   （靠对象展开逃过多余属性检查），`snapTol` / `snapFrac` 也缺——补齐后调用方传错名会被 typecheck 拦住。
+- **`pngDecode` 对像素数据长度不作校验，会静默产出全黑图**：IDAT 解压后字节不足时，`line[x]` 取到
+  undefined → `NaN & 255` 变成 0，于是"解码没解出东西"和"画面本来就是黑的"长得一模一样——
+  观测类工具最不能出的错就是把解码失败当证据。现在解压后断言正好 `h ×（1 + 行字节）`，不符即报错
+  （截断的文件本来就在 `inflateSync` 那步抛，这条挡的是"合法 deflate 但字节不够"那一类）。
+- **`shutdown` 不回执就退出**：`process.exit(0)` 排在应答之前，于是"最后一条命令没有回执"——
+  调用方若真的 `await` 它，只能拿到超时或"daemon 已退出"。现在 shutdown 回 `{ ok:true }`，
+  并等这条回执写到 stdout 再退（`process.exit` 不等冲刷，所以用 write 回调兜住）。
+- **配额注释说"≤0 视为不设限"，但 env 与 init 都到不了 0**：`S.kfQuota > 0` 的判据本身是有意的
+  "0 = 不设限"（单测直接改 `S` 走这条），注释却把不可达的入口写成了用法。改成如实描述：
+  代码层 0 = 不设限，但 `MAAFW_KF_QUOTA_BYTES` / `init kfQuotaBytes` 都只认 >0。
 
 ### 测试
 
@@ -122,6 +132,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   无设备、无 maa-node 也能跑——真 daemon 只在控制器销毁时推这条，而缺口在客户端这一侧。
 - `tpl_crop` 坏参数不升格 1 条（`test/unit-crop-kf.mjs`）：用合法 L0 原图 + 临时 runDir，
   旧顺序会在 `runDir/frames` 下落库，所以这条用例有牙齿——单测总数 94 → 96。
+- `pngDecode` 拒收像素数据不足 1 条（`test/unit-framed.mjs`）：自造"结构合法、IDAT 字节不够"的 PNG，
+  并配一张同尺寸给足字节的对照，确认拒的是长度而不是别的东西。
+- `shutdown` 回执 1 条（`test/unit-daemon-shutdown.mjs`）：裸协议 spawn 真 daemon 子进程，
+  断言"先收到 `{ok:true}`、进程再退 0"——客户端把 shutdown 当"发了就不管"，所以这条只有裸协议看得见；
+  shutdown 路径不碰 maa 绑定（`loadMaa()` 懒加载），CI 里也不需要设备。单测总数 96 → 98。
+- **`accept:crop` 挂进 CI**：它离线、不需要设备，却会真的起 daemon 与识别子进程（自匹配）——
+  是唯一覆盖 client 的 spawn / 应答配对的验收。此前不进 CI 的理由是"需 maa-node 加载资源"，
+  而 `@maaxyz/maa-node` 的平台包（含 `linux-x64`）本来就是 `npm ci` 装的，值得让 CI 说话。
+  先只挂 CI（两个 OS）：它要是只在 ubuntu 上红，那是"服务器侧安装"的真实发现；
+  确认绿过之后再决定是否同步到 release 的 check 作业（那条在 ubuntu 上跑且会挡住发版）。
 - 验收新增/变更：`accept:crop`（离线）43 条——加 K11a–c（`--prov-out` 落点、模板旁不留、逐字段一致）与
   CLI 的 C1e；`accept`（真机，不进 CI）**27 条**——加 R4a–f（`--keep-source`：出处升级为 kf、`keptSource`
   与出处同 ID、落点、**该 ID 在本库可解析**，以及不加时的 `l0-cache` + 可行动警告），并修好 R1 重连流程。

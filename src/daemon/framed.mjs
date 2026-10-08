@@ -30,8 +30,11 @@ const require = createRequire(import.meta.url)
 /* 子进程模式（host 经 spawn 启动带 --child）：stdin/stdout 走 JSON 行协议；
  * 无 --child 时（headless 单测 import）模块无副作用。原生崩溃只杀子进程，不陪葬 host。 */
 const CHILD = process.argv.includes('--child')
-const send = (m) => {
-  if (CHILD) process.stdout.write(JSON.stringify(m) + '\n')
+const send = (m, done) => {
+  if (!CHILD) { if (done) done(); return }
+  const line = JSON.stringify(m) + '\n'
+  if (done) process.stdout.write(line, done)
+  else process.stdout.write(line)
 }
 
 let maa = null
@@ -83,6 +86,12 @@ function pngDecode(buf) {
   const ch = colorType === 6 ? 4 : 3
   const raw = zlib.inflateSync(Buffer.concat(idat))
   const stride = w * ch
+  /* 解压后必须正好是 h 行 ×（每行 1 个滤镜字节 + 行字节）。少了就是文件被截断 / IDAT 不完整——
+   * 不校验的话 line[x] 取到 undefined，NaN & 255 静默变成 0，产出一张全黑图被当成证据。 */
+  const need = h * (stride + 1)
+  if (raw.length !== need) {
+    throw new Error('png 像素数据长度不符：期望 ' + need + ' 字节（' + h + ' 行 ×（1 + ' + stride + '）），实际 ' + raw.length)
+  }
   const out = Buffer.alloc(w * h * ch)
   let pos = 0
   for (let y = 0; y < h; y++) {
@@ -195,7 +204,9 @@ const hashStr = (h) => Array.from(h, (v) => (v ? '1' : '0')).join('')
 
 /* ────────────────────────── 状态 ────────────────────────── */
 /* 关键帧库磁盘配额（契约 §4.1 保留与清理）：满额拒绝新增留存并报告，不后台静默删除——
- * 清理是用户的决定。init 可覆盖；env MAAFW_KF_QUOTA_BYTES 次之；≤0 视为不设限。 */
+ * 清理是用户的决定。init 可覆盖；env MAAFW_KF_QUOTA_BYTES 次之。
+ * 判据是 `S.kfQuota > 0`，也就是 0 = 不设限（单测直接改 S 走这条）；但**从 env 与 init 到不了 0**：
+ * 两处都只认 >0 的值（缺省 1GiB），想不设限得由宿主直接控制 S。 */
 const KF_QUOTA_DEFAULT = (() => {
   const v = Number(process.env.MAAFW_KF_QUOTA_BYTES)
   return Number.isFinite(v) && v > 0 ? v : 1024 * 1024 * 1024
@@ -206,7 +217,7 @@ const S = {
   daemonId: randomUUID(),              // 本 daemon 实例身份（留存记录的 session.daemon）
   connGen: 0,                          // 连接代次：每次 connect 成功 +1（留存记录定位用）
   runDir: null,                        // host init 传入；关键帧库 = runDir/frames
-  kfQuota: KF_QUOTA_DEFAULT,           // 库目录字节配额（0=不设限）
+  kfQuota: KF_QUOTA_DEFAULT,           // 库目录字节配额（>0 生效，0 = 不设限；env/init 都只认 >0）
   fullW: 0, fullH: 0,                  // 控制器分辨率（默认短边 720p，pipeline roi/模板同空间）
   previewPath: null,                   // 面板实时预览帧落盘路径（host 传 runDir 初始化）
   stream: false, streamTimer: null,
@@ -238,8 +249,8 @@ const S = {
 }
 const STATUS = { pending: 1000, running: 2000, succeeded: 3000, failed: 4000 }
 
-function reply(id, ok, data) {
-  send({ kind: 'reply', id, ok, ...(ok ? { data } : { error: data }) })
+function reply(id, ok, data, done) {
+  send({ kind: 'reply', id, ok, ...(ok ? { data } : { error: data }) }, done)
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -2240,7 +2251,7 @@ const handlers = {
   run_stop: cmdRunStop,
   input: cmdInput,
   reco_test: cmdRecoTest,
-  shutdown: async () => { await cmdStreamStop(); await cleanupAgents(); await cmdDisconnect(); process.exit(0) },
+  shutdown: async () => { await cmdStreamStop(); await cleanupAgents(); await cmdDisconnect(); return { ok: true } },
 }
 
 /* 子进程模式：stdin JSON 行协议（每行一条消息）。非 --child（headless 单测 import）不挂监听。 */
@@ -2257,7 +2268,8 @@ if (CHILD) {
     if (!h) { reply(m.id, false, 'unknown cmd: ' + m.cmd); return }
     Promise.resolve()
       .then(() => h(m))
-      .then((data) => reply(m.id, true, data))
+      /* shutdown 的回执要落地再退：process.exit 不等 stdout 冲刷，而调用方在等这条应答 */
+      .then((data) => reply(m.id, true, data, m.cmd === 'shutdown' ? () => process.exit(0) : null))
       .catch((e) => reply(m.id, false, String(e && e.message || e)))
   })
 }

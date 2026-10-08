@@ -41,3 +41,5 @@ jobs:
       - run: npm test
       - run: npm run verify
       - run: npm run accept:offline
+      # 离线、不需要设备，但会真的起 daemon + 识别子进程（自匹配）：覆盖 client 的 spawn/应答配对
+      - run: npm run accept:crop

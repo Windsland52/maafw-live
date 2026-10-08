@@ -9,6 +9,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import zlib from 'node:zlib'
 import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, downscale, blockAnalyze, hashDist,
@@ -46,6 +47,37 @@ test('png 编解码往返保持像素与尺寸', () => {
 
 test('pngDecode 拒绝非 PNG', () => {
   assert.throws(() => pngDecode(Buffer.from('not a png at all....')), /not a png/)
+})
+
+/** 结构合法、但 IDAT 解压后字节不足的 PNG。CRC 随便填：这个最小解码器只按 chunk 长度切，不校 CRC */
+function shortIdatPng(w, h, rawBytes) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length, 0)
+    return Buffer.concat([len, Buffer.from(type, 'ascii'), data, Buffer.alloc(4)])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(Buffer.alloc(rawBytes))),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/**
+ * 像素数据不足必须报错，不能静默给一张全黑图。
+ * 旧行为：`line[x]` 取到 undefined → NaN & 255 = 0，于是"什么都没解出来"和"画面本来就是黑的"
+ * 长得一模一样——观测类工具最不能出的错就是把解码失败当成证据。
+ */
+test('pngDecode 拒绝像素数据不足的 PNG（不给"静默全黑图"留口子）', () => {
+  /* 4x4 RGB 需要 4×(1+12) = 52 字节；这里只给 3 字节 */
+  assert.throws(() => pngDecode(shortIdatPng(4, 4, 3)), /长度不符/)
+  /* 同尺寸给足字节就正常解码：确认拒绝的是长度，不是别的 */
+  const ok = pngDecode(shortIdatPng(4, 4, 4 * 13))
+  assert.equal(ok.w, 4)
+  assert.equal(ok.h, 4)
 })
 
 /* ────────────────────────── downscale ────────────────────────── */
