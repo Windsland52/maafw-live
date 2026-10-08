@@ -10,6 +10,7 @@
  *  - [9] --json 时 stdout 必须是纯 JSON。ANSI 转义或多余提示混进去会让管道解析失败。
  */
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -85,7 +86,11 @@ process.stdout.write('maafw-live CLI 装配级回归\n')
 {
   const v = runCli(['version'])
   check('[3] version 退出 0', v.code === 0, `code=${v.code}`)
-  check('[3] version 含 CLI 版本号', /maafw-live \d+\.\d+\.\d+/.test(v.stdout), v.stdout.split('\n')[0])
+  /* 包名可能带 scope（@owner/name），所以按 package.json 自称的名字断言，别写死字面量 */
+  const selfName = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).name
+  const selfVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+  check('[3] version 打出包名与版本号', v.stdout.includes(`${selfName} ${selfVersion}`), v.stdout.split('\n')[0])
+  check('[3] version 打出命令名（scoped 包与命令名不同）', /command\s+maafw-live/.test(v.stdout), v.stdout.split('\n')[1])
 
   const vj = runCli(['version', '--json'])
   const e = parseEnvelope(vj.stdout)

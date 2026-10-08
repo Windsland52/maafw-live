@@ -24,6 +24,15 @@ CLI 面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON �
 
 ## 安装
 
+从 registry（命令名仍是 `maafw-live`，包名是 scoped）：
+
+```bash
+npm install --global @windsland52/maa-live
+maafw-live version
+```
+
+本地开发（checkout 里）：
+
 ```bash
 npm install
 npm run build

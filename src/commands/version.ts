@@ -12,6 +12,8 @@ export const versionCommand: Command = {
 
     const human = [
       `${pkg.name} ${pkg.version}`,
+      // scoped 包最容易混的就是"装的名字"与"敲的命令"：装的是 @windsland52/maa-live，敲的是 maafw-live
+      `  command    maafw-live`,
       `  node       ${process.version}`,
       `  platform   ${process.platform} ${process.arch}`,
     ]

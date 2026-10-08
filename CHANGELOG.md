@@ -5,6 +5,22 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### 变更
+
+- **包改名为 `@windsland52/maa-live`（scoped），命令名仍是 `maafw-live`**，并同时发布到两个 registry：
+  npm registry（`npm install --global @windsland52/maa-live`，公共通道）与 GitHub Packages（同 scope；安装需带
+  PAT，属镜像/内部通道）。scoped 是两边共用的前提——GitHub Packages 要求 scope 与仓库 owner 同名，
+  而 npm 包名只能小写。
+- **`maafw-live version` 增打命令行名**：scoped 包最容易混的就是"装的名字"与"敲的命令"——现在输出
+  `@windsland52/maa-live 0.1.0` 之后另起一行 `command    maafw-live`。装配断言改为按 `package.json`
+  自称的名字/版本判定，不写死字面量（顺带补一条"命令名"断言）。
+- **发布身份无长期凭据**：npm 侧走 **trusted publishing（OIDC，`id-token: write`）** + `--access public
+  --provenance`；GitHub Packages 侧走 `GITHUB_TOKEN`（`packages: write`，GHCR 不支持 trusted publishing，
+  也不接受 provenance，故不带 `--provenance`）。两个发布作业都先查该版本是否已存在，存在即跳过——
+  部分失败后重跑安全。`release` 作业改为 `needs: [check, publish-npm, publish-ghcr]`。
+  一次性配置（npm scope 归属、npm 侧 trusted publisher 绑定本仓 `release.yml`、GHCR 靠 `repository`
+  字段关联）见 RELEASING.md。
+
 ### 新增
 
 - **自带 Agent Skill**（`skills/`，随 npm 包发布）：把**使用动线、纪律、判据与反模式**写成可装载的 skill

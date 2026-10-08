@@ -1,5 +1,5 @@
 {
-  "name": "maafw-live",
+  "name": "@windsland52/maa-live",
   "version": "0.1.0",
   "description": "MaaFramework 设备交互与实时观测底座：常驻 daemon + 可复用客户端 + 确定性 CLI。不绑定宿主。",
   "type": "module",
@@ -14,6 +14,27 @@
     "docs",
     "skills"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Windsland52/maafw-live.git"
+  },
+  "homepage": "https://github.com/Windsland52/maafw-live#readme",
+  "bugs": {
+    "url": "https://github.com/Windsland52/maafw-live/issues"
+  },
+  "keywords": [
+    "maaframework",
+    "maa",
+    "automation",
+    "agent",
+    "adb",
+    "win32",
+    "cli",
+    "daemon"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",

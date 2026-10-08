@@ -7,8 +7,8 @@
 Skill 与 CLI 分开安装：装 CLI 不等于装 skill（反之亦然）。
 
 ```bash
-# CLI（skill 里所有命令都要它）
-npm install --global maafw-live@latest
+# CLI（skill 里所有命令都要它；包名是 scoped，命令名仍是 maafw-live）
+npm install --global @windsland52/maa-live@latest
 maafw-live version
 
 # skill（标准 skills CLI；列仓库里有哪些：--list）

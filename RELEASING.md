@@ -42,9 +42,28 @@ tag 推送触发 `.github/workflows/release.yml`，任务链（`needs` 决定顺
 | `check` | 校验 tag == `package.json` 版本、**CHANGELOG 必须有该版段落**（空 notes 不许发）；`npm ci` + test + verify + accept:offline；`npm pack` 出 tarball 并上传 artifact |
 | `release` | 用 `scripts/release-notes.mjs` 从 **tag 树**的 CHANGELOG 提取该版段落，`gh release create` 建 GitHub Release 并把 tarball 挂为附件；已存在则跳过 |
 
-全程只用 GitHub 内置的 `GITHUB_TOKEN`，无任何凭据配置。包不发布到 npm registry：安装走
-`npm install <Release 附件的 tgz 地址>` 或 git 引用；将来要上 registry 时，按 MaaEvidenceKit 的
-trusted publishing 流程在 `check` 与 `release` 之间加 publish 任务即可。
+全程只用 GitHub 内置的 `GITHUB_TOKEN`（GitHub Release + GitHub Packages）与 npm 的
+**trusted publishing（OIDC）**：仓库里没有任何长期发布凭据。
+
+发布产物同时进两个 registry：
+
+| 通道 | 身份 | 说明 |
+| --- | --- | --- |
+| npm registry `@windsland52/maa-live` | OIDC（`id-token: write`） | `--access public --provenance`。`publish-npm` 作业**刻意不写** `registry-url` / `NODE_AUTH_TOKEN`：setup-node 的 `registry-url` 会写一个带占位 token 的 `.npmrc`，遮蔽 OIDC 交换，而 npm 对任何认证失败都回报成掩码 E404（PUT 404） |
+| GitHub Packages（同名 scope） | `GITHUB_TOKEN`（`packages: write`） | 镜像/内部通道。GHCR 不支持 npm 的 trusted publishing，也不接受 provenance 证明，故**不带** `--provenance`；安装需带 PAT，匿名装不了。因此**公共安装通道是 npm registry** |
+
+两个发布作业都先查"该版本是否已存在"，存在即跳过——部分失败后重跑是安全的。
+
+### 首次发布前的一次性配置（人工，改不了代码）
+
+1. **scope 归属**：`@windsland52` 必须是你的 npm scope（用户名同名，或建同名组织）。npm 包名只能小写，
+   `@Windsland52/...` 这种大写形式会被拒。
+2. **npm trusted publisher**：在 npmjs.com 上为该包（或该包名的 pending publisher）绑定
+   仓库 `Windsland52/maafw-live` + workflow 文件名 `release.yml`。
+   若 npm 当前要求"先有一次成功发布才能配 trusted publisher"，就先本地 `npm publish --access public` 一次
+   再启用 OIDC——**以 npm 页面当时的口径为准**（本仓文档不预判它）。
+3. **GitHub Packages**：无需额外配置，`packages: write` 已在 workflow 里；包靠 `package.json` 的
+   `repository` 字段关联到本仓（缺这个字段 GHCR 会拒绝发布）。
 
 ## 已知事项
 

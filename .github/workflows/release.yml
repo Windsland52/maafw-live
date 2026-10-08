@@ -71,8 +71,117 @@ jobs:
           path: ${{ steps.pack.outputs.pack_dir }}/*.tgz
           if-no-files-found: error
 
-  release:
+  # 发布到 npm registry：走 trusted publishing（OIDC），全程没有长期凭据。
+  publish-npm:
     needs: check
+    if: github.repository == 'Windsland52/maafw-live'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: dist/npm
+      # 刻意不写 registry-url、不配 NODE_AUTH_TOKEN：发布靠 OIDC 换取临时凭据，
+      # 而 setup-node 的 registry-url 会写一个带占位 token 的 .npmrc，遮蔽 OIDC 交换——
+      # npm 对任何认证失败都回报成掩码 E404（PUT 404），极难归因。
+      # 这里只发布 tarball，不 install、不 build。
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: 发布到 npm registry（OIDC + provenance）
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm_version="$(npm --version)"
+          echo "npm ${npm_version}"
+          # trusted publishing 要 npm >= 11.5.1；在这里响亮失败，别留到后面变成那个掩码 E404
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            const supported = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+            if (!supported) {
+              console.error(`npm ${process.argv[1]} 不支持 trusted publishing（需要 >= 11.5.1）`);
+              process.exit(1);
+            }
+          ' "$npm_version"
+          mapfile -t tarballs < <(find dist/npm -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ "${#tarballs[@]}" -ne 1 ]]; then
+            echo "artifact 里应恰好一个 tarball，实际 ${#tarballs[@]}。" >&2
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          # 身份从 tarball 自己读：已发布判断必须描述"将要上传的东西"，而不是检出树的声明
+          meta="${RUNNER_TEMP}/maafw-live-package-meta"
+          rm -rf "${meta}"; mkdir -p "${meta}"
+          tar -xzf "${tarball}" -C "${meta}" package/package.json
+          pkg_name="$(node -e 'process.stdout.write(require(process.argv[1]).name)' "${meta}/package/package.json")"
+          pkg_version="$(node -e 'process.stdout.write(require(process.argv[1]).version)' "${meta}/package/package.json")"
+          ref="${pkg_name}@${pkg_version}"
+          if view_out=$(npm view "${ref}" version 2>&1); then
+            echo "${ref} 已存在于 npm；跳过发布。"
+            exit 0
+          elif grep -q 'E404' <<< "${view_out}"; then
+            echo "${ref} 尚未发布，继续。"
+          else
+            echo "查询 ${ref} 失败：" >&2; echo "${view_out}" >&2; exit 1
+          fi
+          # 任何 npmrc 里的陈旧 token 都会遮蔽 OIDC 交换，显式清掉
+          npm config delete "//registry.npmjs.org/:_authToken" >/dev/null 2>&1 || true
+          # provenance 显式保留：它由同一个 OIDC 身份生成，静默丢失是供应链回退
+          npm publish "${tarball}" --access public --provenance
+
+  # 同时发布到 GitHub Packages（npm.pkg.github.com），作为镜像/内部通道。
+  # 与上面相反：这里**必须**用 GITHUB_TOKEN（GHCR 不支持 npm 的 trusted publishing），
+  # 且必须写 registry-url + scope，否则 .npmrc 里没有对应 registry 的凭据。
+  # GHCR 也不接受 npm 的 provenance 证明，所以不带 --provenance。
+  publish-ghcr:
+    needs: check
+    if: github.repository == 'Windsland52/maafw-live'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      NODE_AUTH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: dist/ghcr
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@windsland52'
+      - name: 发布到 GitHub Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tarballs < <(find dist/ghcr -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ "${#tarballs[@]}" -ne 1 ]]; then
+            echo "artifact 里应恰好一个 tarball，实际 ${#tarballs[@]}。" >&2
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          meta="${RUNNER_TEMP}/maafw-live-ghcr-meta"
+          rm -rf "${meta}"; mkdir -p "${meta}"
+          tar -xzf "${tarball}" -C "${meta}" package/package.json
+          pkg_name="$(node -e 'process.stdout.write(require(process.argv[1]).name)' "${meta}/package/package.json")"
+          pkg_version="$(node -e 'process.stdout.write(require(process.argv[1]).version)' "${meta}/package/package.json")"
+          ref="${pkg_name}@${pkg_version}"
+          if view_out=$(npm view "${ref}" version 2>&1); then
+            echo "${ref} 已存在于 GitHub Packages；跳过发布。"
+            exit 0
+          fi
+          echo "${ref} 尚未发布，继续。"
+          npm publish "${tarball}"
+
+  release:
+    needs: [check, publish-npm, publish-ghcr]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
