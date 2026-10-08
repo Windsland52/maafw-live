@@ -456,7 +456,8 @@ async function cmdScreencap(outFile) {
   const dec = pngDecode(b)
   /* 截图也是一次观测：进环、进 L0（有捕获身份，可被 kf promote --seq 指定升格） */
   pushFrame(dec, b)
-  const file = outFile || path.join(process.cwd(), 'maa_screencap_' + Date.now() + '.png')
+  const d = defaultOutFile(S.runDir, 'screencap');
+  const file = outFile || d.file
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, b)
   return { ok: true, path: file, bytes: b.length, w: dec.w, h: dec.h, seq: S.seq }
@@ -696,7 +697,7 @@ function cmdFrameGet(args) {
   if (args.seq === undefined || args.seq === null) fr = S.ring[S.ring.length - 1]
   else fr = S.ring.find((r) => r.seq === Number(args.seq))
   if (!fr) return { ok: false, error: '帧不在缓冲中（seq=' + args.seq + '，范围 ' + (S.ring[0] ? S.ring[0].seq : 0) + '..' + S.seq + '）' }
-  const outFile = args.out || path.join(process.cwd(), 'maa_frame_' + fr.seq + '.png')
+  const outFile = args.out || defaultOutFile(S.runDir, 'frame-' + fr.seq).file
   if (args.roi && Array.isArray(args.roi) && args.roi.length === 4) {
     /* ROI 为控制器分辨率坐标（默认短边 720p，与 pipeline 里写的 roi 同空间）→ 映射到降采样缓冲。
      * 换算必须用该帧捕获时的尺寸（fr.fw/fr.fh），不能用当前全局尺寸——重连/改分辨率后旧帧会被错剪。 */
@@ -1498,6 +1499,15 @@ function buildL2Provenance(o) {
   }
 }
 
+/** 缺省落点：daemon 的 run 目录下 `out/`（一次性命令给的是临时目录）——**不写调用方的 cwd**。
+ * 调用方的 cwd 通常就是项目仓库：一次 `frame_get` / `annotate` 就把产物丢进仓库。
+ * 实测踩过两次（`maa_frame_*.png` 十张进了 maafw-live 仓、`maa_som_*.png` 进了同一个根目录），
+ * 而这几个命令本质是"看/量"，产物只是顺便落盘——落哪儿由 `out` 说话，不落调用方家里。 */
+function defaultOutFile(runDir, prefix, ts = Date.now()) {
+  const dir = path.join(runDir || os.tmpdir(), 'out')
+  return { dir, file: path.join(dir, prefix + '-' + ts + '.png') }
+}
+
 async function cmdTplCrop(args) {
   /* 源帧两条路，都必须是控制器分辨率的完整原图（模板尺寸要与识别空间一致，绝不从降采样小图裁）：
    *  - L0 热缓存：seq 或最新（同一会话内，有设备）；
@@ -1692,7 +1702,7 @@ async function cmdTplCrop(args) {
   try { if (!kf) fs.rmSync(frameFile, { force: true }); fs.rmSync(candFile, { force: true }) } catch (e) { /* ignore */ }
 
   const final = cropRgb(rgb, dec.w, dec.h, cand)
-  const out = args.out || path.join(process.cwd(), 'maa_tpl_' + Date.now() + '.png')
+  const out = args.out || defaultOutFile(S.runDir, 'tpl').file
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
   const warn = selfMatchDead
@@ -2128,7 +2138,7 @@ async function cmdAnnotate(args) {
     drawRect(buf, work.w, work.h, c.box, color)
     drawLabel(buf, work.w, work.h, c.box[0], c.box[1] - 8, i + 1, [20, 20, 20])
   })
-  const out = args.out || path.join(process.cwd(), 'maa_som_' + Date.now() + '.png')
+  const out = args.out || defaultOutFile(S.runDir, 'som').file
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(buf, work.w, work.h))
   return {
@@ -2255,5 +2265,5 @@ export const __test = {
   pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName,
-  l0EvictToBudget, cmdKfPromote, kfUsageBytes, S,
+  l0EvictToBudget, cmdKfPromote, kfUsageBytes, defaultOutFile, S,
 }

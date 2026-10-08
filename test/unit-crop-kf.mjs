@@ -169,3 +169,17 @@ test('resolveFrame：非字符串 id 报 missing 而不是抛异常', async () =
     }
   } finally { L.cleanup() }
 })
+
+/**
+ * 缺省落点不写调用方 cwd（踩过两次：maa_frame_*.png / maa_som_*.png 进了项目仓库）。
+ * 约定：落到 daemon 的 runDir/out（一次性命令给的是临时目录）；给了 out 就按 out 走。
+ */
+test('defaultOutFile：缺省落在 runDir/out，不落 cwd；无 runDir 时退回临时目录', () => {
+  const { defaultOutFile } = __test
+  const r1 = defaultOutFile('C:/run/dir', 'frame-7', 1700000000000)
+  assert.match(r1.file.replace(/\\/g, '/'), /^C:\/run\/dir\/out\/frame-7-1700000000000\.png$/)
+  assert.equal(r1.dir.replace(/\\/g, '/'), 'C:/run/dir/out')
+  const r2 = defaultOutFile(null, 'som', 1700000000000)
+  assert.ok(!r2.file.replace(/\\/g, '/').startsWith(process.cwd().replace(/\\/g, '/')), '不能落在调用方 cwd：' + r2.file)
+  assert.match(r2.file.replace(/\\/g, '/'), /\/out\/som-1700000000000\.png$/)
+})
