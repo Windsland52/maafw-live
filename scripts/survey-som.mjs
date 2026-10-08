@@ -207,7 +207,8 @@ async function main() {
   return rows.filter((r) => r.error).length
 }
 
-await main().then((failed) => { process.exit(failed ? 1 : 0) }).catch((e) => {
+/* 同 survey-crop：exitCode 而非 process.exit——管道下的汇总行不能被截掉 */
+await main().then((failed) => { process.exitCode = failed ? 1 : 0 }).catch((e) => {
   console.error('survey 失败：' + (e && e.message || e))
-  process.exit(1)
+  process.exitCode = 1
 })
