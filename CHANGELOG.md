@@ -5,6 +5,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### 新增
 
 - **`crop --keep-source`：顺手把源帧留在库里**——热缓存路径下，把**本次裁剪实际用的那一帧**（按 `seq`，
@@ -129,6 +131,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `out` 缺省落 cwd 时代的产物（`6882ac1` 进 11 张、`a8f67d1` 又进 2 张），并给 `.gitignore`
   加上 `maa_*.png`。历史里仍可取回；工作区文件未删。随后这批图**从全部历史中清除**（重写了含它们的
   4 个提交，作者/日期/message 逐字节保留；tag 与已发布版本不受影响，`.git` 从 13.6MiB 降到 395KiB）。
+- **`out` 类参数的缺省落点是调用方 cwd**（上一条那 13 张就是这么进去的）：`screencap` / `frame_get` /
+  `tpl_crop` / `annotate` 四处都把"没给 `out`"落到调用方当前目录，而这几个命令本质是"看 / 量"、产物只是
+  顺便落盘，调用方 cwd 通常就是项目仓库根——默认值不该做这种副作用。现在四处统一走 `defaultOutFile` →
+  `<runDir>/out/<prefix>-<ts>.png`（一次性命令给的是临时目录），要留住产物就显式给 `out`；
+  协议文档新增「落盘约定」一节。纯函数 `defaultOutFile` 有单测钉住（含"不落 cwd"断言）。
 - **`stream_stopped` 是"只发不收"的孤儿消息**：daemon 在控制器被销毁时推它（`framed.mjs`），但客户端
   `DaemonMessageKind` 里没有它、分发链里也没分支——消息被静默丢弃，订阅者收不到、日志也不留痕，
   只能从 `connect` 回执的 `streamStopped` 间接推断。现在：类型联合加 `stream_stopped`、分发链补分支
@@ -528,6 +535,7 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - 本地工作区文档移出 `docs/`（根目录 `roadmap.local.md`，入 `.gitignore`）：`files` 白名单目录
   会压过 ignore 规则，留在 `docs/` 内会进 npm 包
 
-[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.0
