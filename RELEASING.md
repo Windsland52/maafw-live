@@ -21,6 +21,7 @@
    npm test                                # 构建 + 纯函数单测
    npm run verify                          # 装配级回归：断言 stdout/stderr/退出码外部契约
    npm run accept:offline                  # 关键帧库离线契约验收
+   npm run accept:crop                     # 离线库帧裁剪验收（会真的起 daemon + 识别子进程）
    node scripts/release-notes.mjs <version>  # 验证 CHANGELOG 段可提取（与 CI 同一脚本）
    ```
 
@@ -39,7 +40,7 @@ tag 推送触发 `.github/workflows/release.yml`，任务链（`needs` 决定顺
 
 | 任务 | 行为 |
 | --- | --- |
-| `check` | 校验 tag == `package.json` 版本、**CHANGELOG 必须有该版段落**（空 notes 不许发）；`npm ci` + test + verify + accept:offline；`npm pack` 出 tarball 并上传 artifact |
+| `check` | 校验 tag == `package.json` 版本、**CHANGELOG 必须有该版段落**（空 notes 不许发）；`npm ci` + test + verify + accept:offline + accept:crop；`npm pack` 出 tarball 并上传 artifact |
 | `release` | 用 `scripts/release-notes.mjs` 从 **tag 树**的 CHANGELOG 提取该版段落，`gh release create` 建 GitHub Release 并把 tarball 挂为附件；已存在则跳过 |
 
 全程只用 GitHub 内置的 `GITHUB_TOKEN`（GitHub Release + GitHub Packages）与 npm 的
