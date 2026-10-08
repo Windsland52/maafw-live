@@ -50,6 +50,9 @@ jobs:
       - run: npm test
       - run: npm run verify
       - run: npm run accept:offline
+      # 离线、不需要设备，但会起真 daemon + 识别子进程：CI 四腿（含 ubuntu/Node 24）已连续绿，
+      # 所以发版门禁也带上它——它是唯一覆盖 client spawn/应答配对与离线识别入口的验收
+      - run: npm run accept:crop
       - name: 打 npm 包
         id: pack
         shell: bash

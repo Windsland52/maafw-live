@@ -1672,13 +1672,17 @@ async function cmdTplCrop(args) {
       }))
     }
   }
-  cands.push({ ...box0 })
+  /* 池里最后放原始宽松框：**只在没被提前命中跳过时**它才会被评过分，有就如实带上。 */
+  const looseCand = { ...box0 }
+  cands.push(looseCand)
   let cand = cands[0]
   let best = { score: -1, posOk: false, at: null }
   let bestObj = -Infinity
+  let looseScored = null
   const tries = { n: 0 }
   for (const c of cands) {
     const s = await score(c)
+    if (c === looseCand) looseScored = s
     tries.n++
     if (obj(s) > bestObj) { cand = c; best = s; bestObj = obj(s) }
     if (best.posOk && best.score >= 0.99) break
@@ -1706,6 +1710,31 @@ async function cmdTplCrop(args) {
     }
     if (!improved) break
   }
+  /* 贴合度信号（这一条是**免费**的：两个框都是现成的）。
+   * 为什么不是"两个框各自的得分对比"：实测同一元素在 40×61（元素本体）/ 80×80（点选窗口）/
+   * 120×120（更大窗口）三种情况下自匹配**都是 1.0** 且都落回自己——像素完全相同，
+   * 自匹配本质上是自洽指标，分辨不出"框不贴合"。几何比例才分辨得出。
+   * `grew` = 最后选中的候选比宽松框还大：背景差分在这块内容上没收到元素边界（背景自带纹理时
+   * 实测常见），或收紧塌成细条后带边距的候选赢了。留白留下的后果是 Click 的随机落点可能落在元素外。 */
+  const looseArea = box0.w * box0.h
+  const boxArea = cand.w * cand.h
+  const areaRatio = looseArea > 0 ? Math.round((boxArea / looseArea) * 1000) / 1000 : null
+  const tighten = {
+    from: [box0.w, box0.h],
+    to: [cand.w, cand.h],
+    areaRatio,
+    grew: boxArea > looseArea,
+    /* 宽松框自己的自匹配结果：有就带上（多数情况下被池内提前命中跳过，为 null 是正常的） */
+    ...(looseScored ? { looseMatch: { score: Math.round(looseScored.score * 1000) / 1000, positionOk: looseScored.posOk } } : {}),
+  }
+  const fitWarn = tighten.grew
+    ? 'snap 收紧反而放大：' + box0.w + 'x' + box0.h + ' → ' + cand.w + 'x' + cand.h + '（面积 ' + areaRatio + '×）；' +
+      '自匹配照样 1.0（它只证明模板与源帧一致，不证明框贴合）。留白仍在——Click 的随机落点可能落在元素外，' +
+      '换更贴合的框或把 target 收窄'
+    : (areaRatio !== null && areaRatio < 0.35
+        ? 'snap 把框收到了 ' + areaRatio + '×（' + box0.w + 'x' + box0.h + ' → ' + cand.w + 'x' + cand.h +
+          '）：属"塌陷"（定标数据里它位置通常仍正确），确认没把元素本身裁掉'
+        : null)
   /* 跨帧验证：同帧自匹配 1.0 只证明模板与源帧一致；真正要的是在新帧上仍稳定。
    * 连接着真机就再抓一帧验证，得分大幅衰减或位置漂移 → 模板跨帧不稳，如实警告。
    * 库帧路径默认不做：留存帧对应的状态通常已不在画面上，拿当前帧比会得到假警告；
@@ -1802,12 +1831,13 @@ async function cmdTplCrop(args) {
     ? '出处来源是热缓存帧（seq=' + provenance.derivedFrom.seq + '）：本进程结束后无从复核。' +
       '要入库的模板加 --keep-source（顺手把这一帧升格进库）或先 kf promote 再裁'
     : null
-  const warns = [warn, crossWarn, spaceWarn, provWarn, keepWarn, transientWarn].filter(Boolean)
+  const warns = [fitWarn, warn, crossWarn, spaceWarn, provWarn, keepWarn, transientWarn].filter(Boolean)
   return {
     ok: true, path: out, seq: kf ? null : ent.seq, source,
     provPath, provenance,
     ...(keptSource ? { keptSource } : {}),
     box, loose: looseBox,
+    tighten,
     snapped, score: selfScore,
     positionOk: best.posOk,
     ...(best.at ? { selfMatchBox: best.at } : {}),

@@ -176,6 +176,11 @@ export const cropCommand: Command = {
           seq?: number; captureSeq?: number | null
         } | undefined
         const cross = r.cross as { seq?: number; score?: number; posOk?: boolean; box?: number[] } | undefined
+        /* 贴合度信号：宽松框 → 最终框的几何对比（得分那一路分辨不出贴合度：三种窗口自匹配都是 1.0） */
+        const tg = r.tighten as {
+          from?: number[]; to?: number[]; areaRatio?: number | null; grew?: boolean
+          looseMatch?: { score: number; positionOk: boolean }
+        } | undefined
         const space = r.spaceCheck as { current?: { w: number; h: number } | null; match?: boolean | null } | undefined
         const srcLine = src && src.kind === 'kf'
           ? '源帧 ' + String(src.id) + '（留存帧，捕获 seq=' + String(src.captureSeq) + '，' +
@@ -191,7 +196,16 @@ export const cropCommand: Command = {
           ...(offline ? ['离线裁剪：未连接设备（留存帧是本机持久文件，裁剪不需要设备）'] : []),
           '模板 ' + String(r.w) + 'x' + String(r.h) + ' → ' + String(r.path),
           '  ' + srcLine,
-          '  宽松框 ' + JSON.stringify(r.loose) + ' → 收紧 ' + JSON.stringify(box) + (r.snapped ? '' : '（snap 无内容收紧，用原框）'),
+          '  宽松框 ' + JSON.stringify(r.loose) + ' → 收紧 ' + JSON.stringify(box) +
+            (tg?.from && tg?.to
+              ? '（' + tg.from.join('×') + ' → ' + tg.to.join('×') +
+                (tg.areaRatio !== null && tg.areaRatio !== undefined ? '，面积 ' + tg.areaRatio + '×' : '') +
+                (tg.grew ? '，反而放大' : '') + '）'
+              : '') +
+            (tg?.looseMatch
+              ? '；宽松框自匹配 ' + tg.looseMatch.score + (tg.looseMatch.positionOk ? '（位置正确，说明得分分辨不出贴合度）' : '（位置漂移）')
+              : '') +
+            (r.snapped ? '' : '（snap 无内容收紧，用原框）'),
           '  自匹配 ' + (r.positionOk === false ? '位置错误（best 落在 ' + JSON.stringify(r.selfMatchBox ?? null) + '）' : '位置正确') +
             '，得分 ' + String(r.score) + '（' + String(r.tries) + ' 次评估）',
           ...(cross

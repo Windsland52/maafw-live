@@ -215,6 +215,39 @@ async function main() {
     check('K11c 回执 provenance 与文件逐字段一致',
       JSON.stringify(JSON.parse(fs.readFileSync(r11.provPath, 'utf8'))) === JSON.stringify(r11.provenance))
 
+    /* K12 贴合度信号（roadmap 第十九轮待办）：宽松框 → 最终框的**几何**对比。
+     * 为什么不是"两个框各自的得分"：自匹配是自洽指标——同一元素在 40×61 / 80×80 / 120×120 三种窗口下
+     * 实测都是 1.0 且都落回自己，得分分辨不出"框不贴合"，面积比才分辨得出。 */
+    const r12a = await crop(lib, { out: path.join(outDir, 'tpl12a.png') })
+    const t12a = r12a.tighten ?? {}
+    check('K12a 贴合度信号自洽：from/to 与 loose/box 一致、面积比 = 面积之比',
+      r12a.ok === true &&
+      JSON.stringify(t12a.from) === JSON.stringify([r12a.loose[2], r12a.loose[3]]) &&
+      JSON.stringify(t12a.to) === JSON.stringify([r12a.box[2], r12a.box[3]]) &&
+      Math.abs(t12a.areaRatio - (r12a.box[2] * r12a.box[3]) / (r12a.loose[2] * r12a.loose[3])) < 0.01 &&
+      typeof t12a.grew === 'boolean',
+      JSON.stringify({ t: t12a, loose: r12a.loose, box: r12a.box }))
+    check('K12b 验收 ROI 是"收紧到元素"的正常例：grew=false 且不报放大',
+      t12a.grew === false && !(r12a.warns || []).some((w) => /反而放大/.test(w)),
+      JSON.stringify(r12a.warns))
+
+    /* 合成帧上的确定性放大例：16×16 的窗口落在条纹交界，snap 反而收到 19×24（实测）。 */
+    const r12c = await crop(lib, { roi: [128, 168, 16, 16], out: path.join(outDir, 'tpl12c.png') })
+    const t12c = r12c.tighten ?? {}
+    check('K12c 收紧反而放大 → grew=true，警告里带两个框的尺寸与面积比',
+      r12c.ok === true && t12c.grew === true && t12c.areaRatio > 1 &&
+      (r12c.warns || []).some((w) => /反而放大/.test(w) &&
+        w.includes(t12c.from.join('x')) && w.includes(t12c.to.join('x')) && w.includes(String(t12c.areaRatio))),
+      JSON.stringify({ t: t12c, warns: r12c.warns }))
+    const k12cli = spawnSync(process.execPath, [
+      BIN, 'crop', '--from-kf', lib.rec.id, '--frames-dir', lib.dir, '--roi', '128,168,16,16',
+      '--project', project, '--out', path.join(outDir, 'tpl12cli.png'),
+    ], { encoding: 'utf8' })
+    check('K12d 人类输出把尺寸/面积比与位置判定放在同一行（不是只报一个布尔）',
+      /→ 收紧 .*（\d+×\d+ → \d+×\d+，面积 [\d.]+×，反而放大）/.test(k12cli.stdout) &&
+      /自匹配 (位置正确|位置错误)，得分 [\d.]+/.test(k12cli.stdout),
+      String(k12cli.stdout).slice(0, 600))
+
     console.log('C 组：CLI 一行命令（--from-kf，全程无设备）')
     const cliOut = path.join(outDir, 'cli.png')
     const cli = spawnSync(process.execPath, [
