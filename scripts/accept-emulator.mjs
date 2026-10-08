@@ -86,6 +86,9 @@ async function main() {
     /* 3. 重连改短边（720→1080：1280x720 → 1920x1080），等新尺寸帧 */
     const conn2 = await c.call('connect', { kind: 'adb', target: TARGET, shortSide: 1080 })
     if (!conn2.ok) throw new Error('重连失败：' + JSON.stringify(conn2))
+    /* connect 会先销毁并重建 Controller —— **流绑在旧的 Controller 上，要跟着重开**，
+     * 否则环里停在旧尺寸、永远等不到新帧（实测：不重开则在 seq=3/1280x720 上超时）。 */
+    await c.call('stream_start', { fps: 5 })
     const W2 = Math.round(W1 * 1.5), H2 = Math.round(H1 * 1.5)
     const fresh = await pollLatest(c, (f) => f.ctrlW === W2 && f.ctrlH === H2 && f.seq > oldSeq, '新分辨率帧到达')
     check('新帧跟随新分辨率', fresh.ctrlW === W2, `seq=${fresh.seq} ctrl=${fresh.ctrlW}x${fresh.ctrlH}`)
@@ -156,6 +159,50 @@ async function main() {
       check('R2g 已淘汰 seq 拒绝升格并说明', pe.ok === false && /L0 已淘汰/.test(pe.error || ''), (pe.ok + ' ' + (pe.error || '')).slice(0, 160))
     }
 
+    /* R4 模板出处：源帧留档（keepSource）+ 出处落点（provOut）。
+     * 契约的核心动线是 "L0 缓存 → 选择性升格 → 从库帧裁 L2"，但中间那一步以前只能人手补——
+     * 实测踩过：先做的五张模板出处全是 l0-cache（seq 随进程消失，无从复核）。
+     * 这里验证工具把这一步接上了，并且**升格的是本次裁剪实际用的那一帧**（按 seq，不取最新帧）。 */
+    {
+      /* 自匹配要能加载资源：现造一个最小资源（pipeline 里一个不需要模型与图片的节点） */
+      const resDir = path.join(runDir, 'keep-res')
+      fs.mkdirSync(path.join(resDir, 'pipeline'), { recursive: true })
+      fs.writeFileSync(path.join(resDir, 'pipeline', 'dummy.json'),
+        JSON.stringify({ Dummy: { recognition: 'ColorMatch', lower: [0, 0, 0], upper: [255, 255, 255], action: 'DoNothing' } }))
+      const provDir = path.join(runDir, 'prov')
+      const tplOut = path.join(runDir, 'tpl-keep.png')
+      const before = await c.call('frame_get', {})
+      const k4 = await c.call('tpl_crop', {
+        seq: before.seq, roi: [0, 0, 120, 120], resourceDir: resDir,
+        out: tplOut, provOut: provDir, keepSource: true,
+      }, 180000)
+      check('R4a keepSource：出处升级为可复核的 kf 来源',
+        k4.ok === true && k4.provenance?.derivedFrom?.kind === 'kf' && /^kf:[0-9a-f-]{36}:\d{4}$/i.test(k4.provenance.derivedFrom.id || ''),
+        JSON.stringify(k4.provenance?.derivedFrom))
+      check('R4b 回执 keptSource 与出处同 ID、且记下来源 seq',
+        typeof k4.keptSource?.id === 'string' && k4.keptSource.id.startsWith('kf:') &&
+        k4.keptSource.id === k4.provenance?.derivedFrom?.id && k4.keptSource.seq === before.seq,
+        JSON.stringify(k4.keptSource) + ' want seq=' + before.seq)
+      check('R4c 出处落在 --prov-out 指定目录，模板旁不留',
+        k4.provPath === path.join(provDir, 'tpl-keep.png.prov.json') && fs.existsSync(k4.provPath) && !fs.existsSync(tplOut + '.prov.json'),
+        String(k4.provPath))
+      const { resolveFrame } = await import('../lib/runtime/keyframes.js')
+      const resolved = resolveFrame(framesDir, k4.provenance?.derivedFrom?.id ?? '')
+      check('R4d 出处里的 ID 在本库可解析（而 hot-cache 来源做不到）',
+        resolved.status === 'available' && resolved.record?.sha256 === k4.provenance?.derivedFrom?.sha256,
+        JSON.stringify({ status: resolved.status, reason: resolved.reason }))
+
+      /* R4e 反向：不加 keepSource 时出处是热缓存来源，且**如实警告**（无从复核） */
+      const tpl2 = path.join(runDir, 'tpl-nokeep.png')
+      const k5 = await c.call('tpl_crop', {
+        seq: (await c.call('frame_get', {})).seq, roi: [0, 0, 120, 120], resourceDir: resDir, out: tpl2,
+      }, 180000)
+      const w5 = ((k5.warns || []).join(' | '))
+      check('R4e 不加 keepSource → 出处是 l0-cache 且给出可行动警告',
+        k5.provenance?.derivedFrom?.kind === 'l0-cache' && /--keep-source/.test(w5), w5 || '(无警告)')
+      check('R4f 反向时回执不带 keptSource', k5.keptSource === undefined, JSON.stringify(k5.keptSource))
+    }
+
     offlineCheck = { framesDir, id: p1.id, sha: p1.sha256 }
   } finally {
     try { await c.call('disconnect') } catch (e) { /* ignore */ }
@@ -172,7 +219,7 @@ async function main() {
       shaOfLocal(fs.readFileSync(r.path)) === offlineCheck.sha,
       JSON.stringify({ status: r.status, reason: r.reason, recSha: r.record?.sha256, wantSha: offlineCheck.sha }))
   }
-  console.log(`\nR1-R3：${pass} 过 / ${fail} 败`)
+  console.log(`\nR1-R4：${pass} 过 / ${fail} 败`)
   process.exit(fail ? 1 : 0)
 }
 

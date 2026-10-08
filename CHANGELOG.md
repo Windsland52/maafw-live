@@ -7,6 +7,20 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 新增
 
+- **`crop --keep-source`：顺手把源帧留在库里**——热缓存路径下，把**本次裁剪实际用的那一帧**（按 `seq`，
+  不取最新帧）升格进关键帧库，出处随即从"只有一个随进程消失的 seq"升级为**可复核的 `kf:` 身份**；
+  回执多一个 `keptSource`。没加它而出处是热缓存来源时，`crop` **如实警告**（出处无从复核，建议加 `--keep-source`
+  或先 `kf promote`）。动机是真机开发里踩到的：先做的五张模板出处**全是 l0-cache**，sha256 之外无从复核——
+  契约的模型是「L0 缓存 → 选择性升格 → 从库帧裁 L2」，而中间那一步以前只能人手补。
+  实现上**升格必须在裁剪计算之前**：自匹配 + 跨帧验证要 1–2 秒，滚动区小的时候（实测 `l0Roll=2`、流 5fps）
+  那一帧早被淘汰——验收里就是这么先失败一次的。
+- **`crop --prov-out <dir>`：出处侧车可以写到资源包外**——缺省仍在模板旁（"同生共死"，复制/改名时出处跟着走）；
+  给了这个开关就把 `<out>.prov.json` 写到该目录下、保持同名。动机是真机开发时撞到的：模板要进资源包的
+  `image/`，而发行打包按 `interface.json` 的 `resource[].path` **整目录拷贝**——侧车（含本机库 UUID）会
+  随包发给用户，而它是给开发者的过程资产。配套把不变量从"同一目录"改成**同一相对路径**（契约 §5 已同步：
+  建议与 `image/` 同构，例如 `state-plan/provenance/`），并可在项目里加一条对账检查防漂移
+  （本仓试验项目加了 `tools/check-provenance.mjs`，挂进它的 `pnpm check`）。验收 +4：K11a–c（落点/模板旁不留/逐字段一致）
+  与 CLI 的 C1e。
 - **`version --check`：更新检查（只报不换）**——对 registry 查 latest，报出"该升级了"并给出升级命令。
   刻意的取舍：**不自动切换运行时**（agent 长任务跑到一半换版本，比晚一天升级风险大）；**只在交互终端自动查**
   （管道与 agent 调用不付代价）；**限频 24h**（结果缓存到 `~/.maafw-live/version-check.json`）；
@@ -60,6 +74,15 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 修复
 
+- **重连后帧流静默死掉**（真机验收 R1 抓到的 flaky）：`connect` 会先销毁并重建 Controller，而流循环
+  `streamTick` 撞到空控制器时**只 `return`、不再排期**，于是循环死了而 `stream` 状态仍是"在跑"——
+  之后 `stream_start` 被"已启动"挡回去，表现为**重连后一帧都不来**（实测：`frame_get` 停在旧 seq/旧尺寸，
+  而 `screencap` 一切正常，很容易误判成"设备卡了"）。现在：tick 撞到空控制器会**把流显式停掉**并推
+  `stream_stopped` 事件；`connect` 也主动停流并在回执里报 `streamStopped:true`（CLI 会打印一行"帧流已停止…
+  要看帧就 stream start 重开"）。验收 R1 补上"重连后必须重开流"这一步并恢复为稳定通过。
+- **`resolveFrame` 对非字符串 id 抛 TypeError**：调用方漏字段时（实测：验收里读 `derivedFrom.id` 为 undefined）
+  解析函数抛 `startsWith` 异常，把整条验收打断。它的契约是"如实报状态"，现在非字符串/空 id 一律返回
+  `missing` + 说明，并加单测钉住（5 种坏输入）。
 - **`crop` 把"资源里没有可加载的 pipeline"误报成"低纹理/不独特"**：自匹配要起识别子进程，而资源包为空时
   子进程会安静地回 `ok:true` + `results: []`（一个 case 结果都没有），旧代码把这句翻译成
   "模板在同帧上都定位不到自己（best 落在 null，得分 0.000）"——**工具的安装问题被说成了内容问题**，
@@ -74,6 +97,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 测试
 
+- 验收新增/变更：`accept:crop`（离线）43 条——加 K11a–c（`--prov-out` 落点、模板旁不留、逐字段一致）与
+  CLI 的 C1e；`accept`（真机，不进 CI）**27 条**——加 R4a–f（`--keep-source`：出处升级为 kf、`keptSource`
+  与出处同 ID、落点、**该 ID 在本库可解析**，以及不加时的 `l0-cache` + 可行动警告），并修好 R1 重连流程。
+- `resolveFrame` 非字符串 id 单测 1 条（5 种坏输入）——单测总数 92 → 93。
 - 更新检查 6 条单测：数值段比较（`0.9.10 > 0.9.9`）、预发布低于同号正式版、24h 限频与坏缓存回落、
   scoped 名的 packument URL 编码、环境开关。
 - 过滤器计数 2 条单测 + 一条实测记录：`passed` 必须等于实际返回框数；并钉住"`dev` 掩码是偏离局部均值，

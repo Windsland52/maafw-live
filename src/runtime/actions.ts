@@ -29,6 +29,8 @@ export interface ConnectSession {
   ok: boolean
   error?: string
   session?: Record<string, unknown> | null
+  /** 本次连接重建了控制器、因而停掉了上一轮的帧流（需要看帧就重新 stream_start） */
+  streamStopped?: boolean
 }
 
 /** 起一个 daemon、跑 fn、无论如何都收掉子进程。一次性命令用它，REPL 用长活客户端。 */

@@ -32,6 +32,8 @@ export interface SessionState {
   plan?: ProjectPlan
   session?: Record<string, unknown> | null
   notes?: string[]
+  /** 本次连接重建了控制器、因而停掉了上一轮的帧流（daemon 回执 streamStopped）：调用方要接着看帧就重开流 */
+  streamStopped?: boolean
 }
 
 export class SessionError extends Error {
@@ -63,7 +65,10 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
     }
     const conn = await connect(client, { ...planned.plan.connect })
     if (conn && conn.ok === false) throw new SessionError(conn.error ?? '连接失败', 'CONNECT_FAILED')
-    return { connected: true, plan: planned, session: conn.session ?? null, notes: planned.plan.notes }
+    return {
+      connected: true, plan: planned, session: conn.session ?? null, notes: planned.plan.notes,
+      ...(conn.streamStopped === true ? { streamStopped: true } : {}),
+    }
   }
 
   const conn = await connect(client, {
@@ -74,7 +79,10 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
     ...(o.rawSize ? { rawSize: true } : {}),
   })
   if (conn && conn.ok === false) throw new SessionError(conn.error ?? '连接失败', 'CONNECT_FAILED')
-  return { connected: true, session: conn.session ?? null }
+  return {
+    connected: true, session: conn.session ?? null,
+    ...(conn.streamStopped === true ? { streamStopped: true } : {}),
+  }
 }
 
 /**

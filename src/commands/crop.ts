@@ -52,7 +52,11 @@ export const cropCommand: Command = {
     '       maafw-live crop --from-kf <kf:库UUID:序号> --roi x,y,w,h [--frames-dir <dir>] [--resource-dir <dir> | --project <dir>] [--cross]\n' +
     '       源帧缺省是 L0 最新原图（screencap/stream/输入都会产生）；连接真机时自动做跨帧验证（新帧再匹配一次）\n' +
     '       --from-kf 改从关键帧库留存帧裁：离线可用（不需要设备），跨帧验证缺省关（留存帧对应的状态通常已不在画面上）\n' +
-    '       裁出的 PNG 是 L2 派生图，旁边写 <out>.prov.json 出处记录（来源 + 裁剪变换；--no-prov 可关）',
+    '       裁出的 PNG 是 L2 派生图，旁边写 <out>.prov.json 出处记录（来源 + 裁剪变换；--no-prov 可关）\n' +
+    '       --keep-source 顺手把本次裁剪用的那一帧升格进关键帧库，出处随即带上可复核的 kf: 身份\n' +
+    '       （契约的模型是 L0 缓存 → 选择性升格 → 从库帧裁；少了这步，出处只剩一个随进程消失的 seq）\n' +
+    '       --prov-out <dir> 把出处写到该目录下（同名），用于模板要进资源包、而资源包只装框架要加载的东西：\n' +
+    '       约定不变量是"同一相对路径"（如 state-plan/provenance/ 与 image/ 同构）',
   options: {
     ...CONNECT_OPTIONS,
     roi: { type: 'string' },
@@ -66,6 +70,8 @@ export const cropCommand: Command = {
     'frames-dir': { type: 'string' },
     cross: { type: 'boolean' },
     'no-prov': { type: 'boolean' },
+    'prov-out': { type: 'string' },
+    'keep-source': { type: 'boolean' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -156,6 +162,8 @@ export const cropCommand: Command = {
           ...(kfSource !== undefined && !wantCross ? { cross: false } : (wantCross ? { cross: true } : {})),
           ...(ctx.values['no-cross'] === true ? { cross: false } : {}),
           ...(ctx.values['no-prov'] === true ? { prov: false } : {}),
+      ...(typeof ctx.values['prov-out'] === 'string' && ctx.values['prov-out'] ? { provOut: ctx.values['prov-out'] } : {}),
+      ...(ctx.values['keep-source'] === true ? { keepSource: true } : {}),
         })
         if (r.ok === false) {
           return fail('TPL_CROP', String(r.error ?? '裁剪失败'),
@@ -198,6 +206,9 @@ export const cropCommand: Command = {
           ...(r.provPath
             ? ['L2 出处：' + String(r.provPath) + '（来源 + 裁剪变换；随模板一起提交进仓库）']
             : ['L2 出处：未写（--no-prov）']),
+          ...(r.keptSource && (r.keptSource as { id?: string }).id
+            ? ['源帧已留档：' + String((r.keptSource as { id: string }).id) + '（出处随之升级为可复核的 kf: 身份）']
+            : []),
           ...((r.warns as string[] | undefined) ?? []).map((w) => '  警告：' + w),
           'pipeline 用法：roi ' + box.join(',') + ' + template 该文件（同帧验证：maafw-live reco --node …）',
         ]

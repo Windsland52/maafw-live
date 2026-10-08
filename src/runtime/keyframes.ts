@@ -67,7 +67,9 @@ export function resolveFrame(
   dir: string,
   id: string,
 ): { status: KfResolveStatus; record?: KfRecord; path?: string; reason?: string } {
-  if (!id.startsWith('kf:')) {
+  /* 非字符串 id（缺字段、拼错的调用方）也走"不可复核"这条路，而不是抛 TypeError——
+   * 解析函数的契约是**如实报状态**，不该给调用方一个异常。 */
+  if (typeof id !== 'string' || !id.startsWith('kf:')) {
     return { status: 'missing', reason: '要完整 ID：kf:<库UUID>:<序号>（裸序号只可作展示简称，不能跨库引用）' }
   }
   const { manifest, error } = loadManifest(dir)

@@ -159,6 +159,9 @@ maafw-live kf resolve kf:<库UUID>:0142                    # available / missing
   拿当前帧比只会得到假警告；状态可复现时显式给 `--cross`。
 - 裁剪前工具会校 sha256 与像素尺寸，不符即拒——不许把"另一个字节"当依据。
 - 出处侧车随模板一起提交进仓库；**设备地址与目标不落进 L2**，它们留在本地 manifest。
+  模板要进资源包时用 `crop --prov-out <dir>` 把侧车写到**包外**——资源包（`resource[].path`）会被整目录打包
+  发给用户，而出处是给开发者的过程资产；此时不变量从"同一目录"变成**同一相对路径**（建议与 `image/` 同构，
+  例如 `state-plan/provenance/`），并加一条对账检查防止漂移。
 - 裁出的模板就是 pipeline 素材：PNG 放进项目资源的 `image/`，节点写 `template` + `roi`，`run` 一发看
   `record.ok` 与节点状态（样例见 [references/examples.md](references/examples.md) 样例 5）。
 - `missing` 只表示**本机**不可复核，不表示历史从未观测；L0 已淘汰时只能导 L1 参考帧，
@@ -194,6 +197,7 @@ maafw-live kf resolve kf:<库UUID>:0142                    # available / missing
 | :--- | :--- |
 | 连不上 / 找不到设备 | `device` 看目标是否在列表；项目模式检查 `interface.json` 的 controller 声明与窗口正则 |
 | 一次性命令的缓冲是空的 | `seq` 恒为 0、环内无历史：帧序对齐与历史帧只在 `repl` / 客户端订阅路径有效 |
+| 重连后帧流不再更新 | `connect` 会重建控制器，**旧流随之失效**（回执 `streamStopped:true`）：重新 `stream start` 即可，别按"设备卡了"处理 |
 | 资源未解析 / 缺模板 | `--resource-dir` 显式给，或修项目的 `resource[]` 声明 |
 | 工具不可用 | **硬要求不随工具变**：像素空间一致 + 裁后自匹配复核 + 不猜参数；换工具要在结论里说明缺了哪项能力 |
 

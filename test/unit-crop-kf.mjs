@@ -152,3 +152,20 @@ test('L2 出处对热缓存源同样成立（kind 区分，seq 保留）', () =>
     kind: 'l0-cache', seq: 42, sha256: 'abc', ctrlW: 1280, ctrlH: 720, capturedAt: '2026-10-05T10:03:00.000Z',
   })
 })
+
+/**
+ * resolveFrame 的契约是"如实报状态"，不该给调用方异常：
+ * 非字符串 id（缺字段、拼错的调用方）走「不可复核」而不是 TypeError——
+ * 实测来源：真机验收里 derivedFrom.id 为 undefined 时它抛 startsWith，把整条验收打断。
+ */
+test('resolveFrame：非字符串 id 报 missing 而不是抛异常', async () => {
+  const { resolveFrame } = await import('../lib/runtime/keyframes.js')
+  const L = library()
+  try {
+    for (const bad of [undefined, null, 42, {}, '']) {
+      const r = resolveFrame(L.dir, bad)
+      assert.equal(r.status, 'missing', JSON.stringify({ bad, r }))
+      assert.match(String(r.reason), /完整 ID/)
+    }
+  } finally { L.cleanup() }
+})

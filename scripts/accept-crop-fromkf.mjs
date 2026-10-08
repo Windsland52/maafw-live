@@ -203,6 +203,18 @@ async function main() {
     check('K10d 如实报未经验证（positionOk=false、无 best）',
       r10.positionOk === false && r10.selfMatchBox === undefined, JSON.stringify({ p: r10.positionOk, b: r10.selfMatchBox }))
 
+    /* K11 出处落点可改：provOut 把侧车写到指定目录（同名、自动建目录）——模板进资源包、
+     * 出处留包外的项目靠它（框架会把资源包整目录打包发给用户；出处是过程资产）。
+     * 不变量从"同一目录"变成"同一相对路径"。 */
+    const provDir = path.join(root, 'prov-out')
+    const r11 = await crop(lib, { out: path.join(outDir, 'tpl11.png'), provOut: provDir })
+    check('K11a 出处落在指定目录下（同名）',
+      r11.provPath === path.join(provDir, 'tpl11.png.prov.json') && fs.existsSync(r11.provPath), String(r11.provPath))
+    check('K11b 模板旁不再有侧车', !fs.existsSync(path.join(outDir, 'tpl11.png.prov.json')),
+      JSON.stringify(listFiles(outDir).filter((f) => f.includes('tpl11'))))
+    check('K11c 回执 provenance 与文件逐字段一致',
+      JSON.stringify(JSON.parse(fs.readFileSync(r11.provPath, 'utf8'))) === JSON.stringify(r11.provenance))
+
     console.log('C 组：CLI 一行命令（--from-kf，全程无设备）')
     const cliOut = path.join(outDir, 'cli.png')
     const cli = spawnSync(process.execPath, [
@@ -220,6 +232,20 @@ async function main() {
     check('C1d written 列出模板与出处两个文件',
       Array.isArray(env?.written) && env.written.includes(cliOut) && env.written.includes(cliOut + '.prov.json'),
       JSON.stringify(env?.written))
+
+    /* C1e CLI 的 --prov-out：出处写到指定目录（并且 written 里如实列出它） */
+    const cliProvOut = path.join(root, 'cli-prov')
+    const cli2Out = path.join(outDir, 'cli2.png')
+    const cli2 = spawnSync(process.execPath, [
+      BIN, 'crop', '--from-kf', lib.rec.id, '--frames-dir', lib.dir,
+      '--roi', ROI.join(','), '--project', project, '--out', cli2Out, '--prov-out', cliProvOut, '--json',
+    ], { encoding: 'utf8' })
+    let env2 = null
+    try { env2 = JSON.parse(cli2.stdout) } catch { /* 下面断言会报出来 */ }
+    check('C1e CLI --prov-out：出处落在指定目录、模板旁没有',
+      cli2.status === 0 && env2?.data?.provPath === path.join(cliProvOut, 'cli2.png.prov.json') &&
+      fs.existsSync(env2?.data?.provPath) && !fs.existsSync(cli2Out + '.prov.json'),
+      `status=${cli2.status} provPath=${env2?.data?.provPath}`)
 
     const clash = spawnSync(process.execPath, [
       BIN, 'crop', '--from-kf', lib.rec.id, '--seq', '3', '--roi', ROI.join(','), '--resource-dir', path.join(project, 'res'), '--json',

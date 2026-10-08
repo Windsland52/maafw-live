@@ -130,6 +130,10 @@ export const connectCommand: Command = {
       return await withDaemon(async (client) => {
         const s = await ensureSession(client, o)
         const lines = describeSession(s)
+        if (s.streamStopped) {
+          /* 重建控制器会让旧流失效：如实说，别让调用方以为是设备卡了（曾经是"流静默死掉"） */
+          lines.push('', '帧流：已停止（本次连接重建了控制器）；要看帧就 stream start 重开。')
+        }
         lines.push('', '注意：连接是进程态，本命令退出即断开。多步操作请用 maafw-live repl（连接一次、命令复用）。')
         return {
           exitCode: EXIT.OK,

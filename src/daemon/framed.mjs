@@ -310,6 +310,11 @@ function resolveEnum(table, value, fallback, label, warns) {
 async function cmdConnect(args) {
   const m = loadMaa()
   if (S.ctrl) { try { S.ctrl.destroy() } catch (e) { /* ignore */ } S.ctrl = null }
+  /* 控制器重建 = 旧流失效：显式停掉并在回执里说明（`streamStopped`），别让调用方以为流还在跑。
+   * 曾经的行为是"tick 撞到空控制器后静默死掉、S.stream 仍为 true"，于是重连后的 stream_start 被
+   * "已启动"挡回去，表现为一帧都不来（实测：seq 卡死，而 screencap 正常）。 */
+  const streamStopped = S.stream === true
+  if (S.stream) await cmdStreamStop()
   S.session = null
   let ctrl = null
   let session = null
@@ -424,7 +429,12 @@ async function cmdConnect(args) {
       res = { w: dec.w, h: dec.h, bytes: buf.byteLength }
     }
   } catch (e) { res = { error: String(e.message) } }
-  return { ok: true, session: { ...session, resolution: res, ...(warns.length ? { warns } : {}) } }
+  return {
+    ok: true,
+    session: { ...session, resolution: res, ...(warns.length ? { warns } : {}) },
+    /* 重连会重建控制器 → 旧流已停；调用方要接着看帧就得重新 stream_start（回执里说清楚，不靠猜） */
+    ...(streamStopped ? { streamStopped: true } : {}),
+  }
 }
 
 async function cmdDisconnect() {
@@ -618,7 +628,16 @@ function pushEvent(ev) {
 }
 
 async function streamTick() {
-  if (!S.stream || !S.ctrl) return
+  /* 控制器没了（典型：connect 会先销毁旧 Controller 再重建）时**必须把流的开关也关掉**：
+   * 只 return 不排期会让循环静默死掉，而 S.stream 仍是 true → 之后的 stream_start 被"已启动"挡回去，
+   * 表现为"重连后一帧都不来"（实测：seq 卡死、screencap 却正常）。 */
+  if (!S.ctrl) {
+    S.stream = false
+    if (S.streamTimer) { clearTimeout(S.streamTimer); S.streamTimer = null }
+    send({ kind: 'stream_stopped', reason: '控制器已销毁（connect 会重建控制器，需要时重新 stream_start）' })
+    return
+  }
+  if (!S.stream) return
   const t0 = Date.now()
   try {
     const j = S.ctrl.post_screencap()
@@ -1504,6 +1523,23 @@ async function cmdTplCrop(args) {
     kind: 'l0-cache', seq: ent.seq, sha256: createHash('sha256').update(png).digest('hex'),
     ctrlW: dec.w, ctrlH: dec.h, capturedAt: new Date(ent.t).toISOString(),
   }
+  /* 「源帧也留下」（--keep-source，只对热缓存路径有意义）：
+   * 契约的模型是 **L0 缓存 → 选择性升格 → 从库帧裁 L2**，但少走中间那一步时，模板的出处只剩一个
+   * 随进程消失的 seq（实测踩过：先做的五张模板出处全是 l0-cache，sha256 之外无从复核）。
+   * **必须在裁剪计算之前做**：自匹配 + 跨帧验证要 1–2 秒，滚动区小的时候（实测 l0Roll=2、流 5fps）
+   * 那一帧早就被淘汰了——曾经把升格放在末尾，验收里直接失败。按 ent.seq 升格本次用的那一帧，不取最新帧。 */
+  let keptSource = null
+  if (!kf && args.keepSource === true) {
+    const promoted = await cmdKfPromote({ seq: ent.seq })
+    if (promoted && promoted.ok && promoted.id) {
+      keptSource = { id: promoted.id, path: promoted.path ?? null, seq: ent.seq }
+      source.kind = 'kf'
+      source.id = promoted.id
+      source.captureSeq = ent.seq
+    } else {
+      keptSource = { error: String((promoted && promoted.error) || '升格失败'), seq: ent.seq }
+    }
+  }
   /* 宽松框：显式 roi，或点 + 外扩（点→ROI 派生与裁剪共享同一条 snap 链） */
   let loose = null
   if (Array.isArray(args.roi) && args.roi.length === 4) {
@@ -1687,7 +1723,7 @@ async function cmdTplCrop(args) {
   const box = [cand.x, cand.y, cand.w, cand.h]
   const looseBox = [box0.x, box0.y, box0.w, box0.h]
   const selfScore = Math.round(best.score * 1000) / 1000
-  /* L2 出处：写到模板旁边（<out>.prov.json），与模板同生共死——复制 / 提交进仓库时出处跟着走 */
+  /* L2 出处：字段白名单见 buildL2Provenance；落点由上面的 provOut / 缺省"模板旁"决定 */
   const provenance = buildL2Provenance({
     source, loose: looseBox, box, snapped, score: selfScore, positionOk: best.posOk,
     ...(best.at ? { selfMatchBox: best.at } : {}), tries: tries.n, cross,
@@ -1696,18 +1732,35 @@ async function cmdTplCrop(args) {
   let provPath = null
   let provWarn = null
   if (args.prov !== false) {
-    provPath = out + '.prov.json'
+    /* 出处落点：缺省写在模板旁（"同生共死"，复制/改名时出处跟着走）；给了 provOut 就写到那个目录下、
+     * 保持同文件名。**为什么需要它**：模板常常要放进资源包的 image/（框架会整目录打包发给用户），
+     * 而出处是给开发者/计划用的过程资产——留在包外能让资源包只装框架要加载的东西（实测该项目一条：
+     * 发行打包按 resource[].path 整目录拷贝，侧车会随包发出去）。约定不变量：**同一相对路径**，
+     * 目录根由项目自定（例如 state-plan/provenance/ 与 image/ 同构）。 */
+    const provOut = typeof args.provOut === 'string' && args.provOut ? String(args.provOut) : null
+    provPath = provOut ? path.join(provOut, path.basename(out) + '.prov.json') : out + '.prov.json'
     try {
+      fs.mkdirSync(path.dirname(provPath), { recursive: true })
       fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2) + '\n')
     } catch (e) {
       provPath = null
       provWarn = 'L2 出处记录写入失败：' + String(e && e.message || e) + '（模板已裁出，但其出处未落盘）'
     }
   }
-  const warns = [warn, crossWarn, spaceWarn, provWarn].filter(Boolean)
+  /* 出处是"热缓存帧"时给出可行动提示：这种出处在进程结束后无从复核（seq 指不回任何东西）。
+   * 它本身不是错误（真机上现裁现用是合法动线），但**入库的模板**该有可复核的来源。 */
+  const keepWarn = keptSource && keptSource.error
+    ? '--keep-source 没能升格源帧（' + keptSource.error + '）：出处仍是热缓存来源，无从复核'
+    : null
+  const transientWarn = provenance.derivedFrom.kind === 'l0-cache'
+    ? '出处来源是热缓存帧（seq=' + provenance.derivedFrom.seq + '）：本进程结束后无从复核。' +
+      '要入库的模板加 --keep-source（顺手把这一帧升格进库）或先 kf promote 再裁'
+    : null
+  const warns = [warn, crossWarn, spaceWarn, provWarn, keepWarn, transientWarn].filter(Boolean)
   return {
     ok: true, path: out, seq: kf ? null : ent.seq, source,
     provPath, provenance,
+    ...(keptSource ? { keptSource } : {}),
     box, loose: looseBox,
     snapped, score: selfScore,
     positionOk: best.posOk,
