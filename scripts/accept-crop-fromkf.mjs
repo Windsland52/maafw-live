@@ -356,4 +356,6 @@ async function main() {
 
 await main()
 console.log(`\nK/C/R/S 组：${pass} 过 / ${fail} 败`)
-process.exit(fail ? 1 : 0)
+/* 用 exitCode 让 stdout 自然排空：process.exit 在管道里会丢掉还没落地的汇总与 FAIL 行
+ * （survey 脚本与 accept-emulator 踩过同一个坑——失败行丢了就看不出是哪条失败） */
+process.exitCode = fail ? 1 : 0
