@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { computePipelineOverride, mergeOverride } from '../lib/interface/override.js'
 import { loadInterface } from '../lib/interface/load.js'
+import { resolveResourcePaths } from '../lib/interface/plan.js'
 
 /** 最小 LoadedInterface 字面量；over 覆盖需要变化的段 */
 const mkLoaded = (over = {}) => ({
@@ -242,6 +243,70 @@ test('import 自引用（循环）记 problem 并跳过', () => {
     }))
     const l = loadInterface(dir)
     assert.ok(l.problems.some((p) => p.message.includes('循环引用')), JSON.stringify(l.problems))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * `resolveResourcePaths` 的分支覆盖：resource[] 条目 + 控制器附加路径。
+ * `controller.attach_resource_path` 是**控制器的属性**（v2.2.0："在 resource.path 加载完成后额外加载"），
+ * 所以 `--resource <名>` / `--resource <路径>` 这两条分支也必须带上它——它们曾经提前 return 把它丢了。
+ */
+test('resolveResourcePaths：--resource 指定条目或路径时，仍追加 controller.attach_resource_path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-attach-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      name: 'attach',
+      controller: [{ name: 'C1', type: 'Adb', attach_resource_path: ['attachA'] }],
+      resource: [
+        { name: 'R1', path: ['res1'] },
+        { name: 'R2', path: ['res2'] },
+      ],
+      task: [{ name: 'T1', entry: 'StartUp' }],
+    }))
+    const l = loadInterface(dir)
+    const attach = path.join(dir, 'attachA')
+
+    const byDefault = resolveResourcePaths(l, 'C1')
+    assert.deepEqual(byDefault.paths, [path.join(dir, 'res1'), attach], '缺省：首个适用条目 + 附加路径')
+    assert.equal(byDefault.selected, 'R1')
+
+    const byName = resolveResourcePaths(l, 'C1', 'R2')
+    assert.deepEqual(byName.paths, [path.join(dir, 'res2'), attach], '按名选中：也要带附加路径')
+    assert.equal(byName.selected, 'R2')
+
+    const byPath = resolveResourcePaths(l, 'C1', path.join(dir, 'loose'))
+    assert.deepEqual(byPath.paths, [path.join(dir, 'loose'), attach], '按路径选中：也要带附加路径')
+
+    const noCtrl = resolveResourcePaths(l, undefined, 'R2')
+    assert.deepEqual(noCtrl.paths, [path.join(dir, 'res2')], '没说控制器就没有附加路径')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('import 不可嵌套：被导入文件里的 import 记 problem 并忽略', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-nest-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      version: 2,
+      controller: [{ name: 'C1', type: 'Adb' }],
+      resource: [{ name: 'R1', path: 'res' }],
+      task: [{ name: 'T1', entry: 'StartUp' }],
+      import: ['mid.json'],
+    }))
+    fs.writeFileSync(path.join(dir, 'mid.json'), JSON.stringify({
+      task: [{ name: 'T2', entry: 'Mid' }],
+      import: ['leaf.json'],
+    }))
+    fs.writeFileSync(path.join(dir, 'leaf.json'), JSON.stringify({ task: [{ name: 'T3', entry: 'Leaf' }] }))
+    const l = loadInterface(dir)
+    assert.ok(l.tasks.some((t) => t.name === 'T2'), '一级导入照常合并')
+    assert.ok(!l.tasks.some((t) => t.name === 'T3'), '二级文件不展开——嵌套不是协议的一部分')
+    assert.ok(l.problems.some((p) => p.message.includes('不可嵌套')),
+      '要留下可行动的 problem（静默吞掉会让整份二级文件消失）：' + JSON.stringify(l.problems))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

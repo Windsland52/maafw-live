@@ -368,6 +368,13 @@ export function loadInterface(dir: string): LoadedInterface {
     if (child.controller !== undefined || child.resource !== undefined) {
       problems.push({ message: 'import 文件 ' + rel + ' 声明了 controller/resource：协议不可导入，已忽略' })
     }
+    /* import 不可嵌套：被引用的文件由 interface_import.schema.json 约束（MaaFW 5.14.2，
+     * 顶层只有 task/option/pretask/global_option/setting/preset 且 additionalProperties: false，
+     * 文档 3.3 的 import 节也没有嵌套写法）。静默吞掉会让"二级文件"整份消失得无影无踪，
+     * 所以这里记一条 problem——它通常意味着拆分方式需要改成平铺。 */
+    if (child.import !== undefined) {
+      problems.push({ message: 'import 文件 ' + rel + ' 里还有 import：import 不可嵌套（该文件的 schema 顶层没有 import 字段），其引用的文件已忽略' })
+    }
     readTasks(child.task, rel)
     readOptions(child.option, rel)
     readPresets(child.preset)

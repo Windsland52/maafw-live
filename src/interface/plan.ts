@@ -209,13 +209,25 @@ export function resolveResourcePaths(
   override?: string,
 ): ResourcePlan {
   const dir = loaded.dir
+  /**
+   * 追加控制器声明的 attach_resource_path（v2.2.0："在 resource.path 加载完成后，额外加载"）。
+   * 它是**控制器的属性**，所以 `--resource` 走哪条分支都要追加——曾经两条提前 return 把它丢了。
+   */
+  const withAttach = (paths: string[], names: string[], selected: string | null): ResourcePlan => {
+    const out = [...paths]
+    if (dir && controllerName) {
+      const c = loaded.controllers.find((x) => x.name === controllerName)
+      for (const p of c?.attachResourcePath ?? []) out.push(resolve(dir, p))
+    }
+    return { paths: [...new Set(out)], names, selected }
+  }
+
   if (override) {
     const byName = loaded.resources.find((r) => r.name === override)
     if (byName && dir) {
-      const paths = [...new Set(byName.paths.map((p) => resolve(dir, p)))]
-      return { paths, names: [byName.name], selected: byName.name }
+      return withAttach(byName.paths.map((p) => resolve(dir, p)), [byName.name], byName.name)
     }
-    return { paths: [resolve(override)], names: ['(--resource)'], selected: null }
+    return withAttach([resolve(override)], ['(--resource)'], null)
   }
   if (!dir) return { paths: [], names: [], selected: null }
 
@@ -228,9 +240,5 @@ export function resolveResourcePaths(
     selected = applicable[0].name
     for (const p of applicable[0].paths) paths.push(resolve(dir, p))
   }
-  if (controllerName) {
-    const c = loaded.controllers.find((x) => x.name === controllerName)
-    for (const p of c?.attachResourcePath ?? []) paths.push(resolve(dir, p))
-  }
-  return { paths: [...new Set(paths)], names: selected ? [selected] : [], selected }
+  return withAttach(paths, selected ? [selected] : [], selected)
 }

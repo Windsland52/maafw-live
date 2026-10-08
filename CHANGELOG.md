@@ -165,6 +165,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **客户端写 stdin 的同步抛（EPIPE）没兜住**：daemon 在 spawn 与写入之间就死掉时，`write` 会同步抛
   `ERR_STREAM_DESTROYED`——`init` 的契约是"失败如实回报、不抛"，却会因此 reject；`call` 也会甩出
   一条看不懂的原生错误。两处都改成可读的失败（`init 发送失败` / `daemon 请求发送失败`）。
+- **`--resource <名|路径>` 会丢掉 `controller.attach_resource_path`**：不传 `--resource` 时附加路径
+  会追加（v2.2.0："在 `resource.path` 加载完成后，额外加载"），可传了就走进两条**提前 return** 的分支，
+  附加路径直接消失。它是**控制器的属性**、与选中哪个资源条目无关，所以三条分支都该追加。真实项目实测
+  （MaaEnd，8 个控制器声明了附加路径）：`--resource 官服` 修复前只加载 1 条路径、`resource_adb` 丢失，
+  修复后 2 条齐全——这类项目里附加包正是控制器专属的图像/模型，丢了就是"识别找不到模板"。
+- **被导入文件里的 `import` 被静默吞掉**：`import` 不可嵌套——被引用文件由 `interface_import.schema.json`
+  约束（MaaFW 5.14.2 @ `8061d5b`：顶层只有 `task`/`option`/`pretask`/`global_option`/`setting`/`preset`，
+  且 `additionalProperties: false`；协议文档 3.3 的 `import` 节也没有嵌套写法）。此前我们既不展开也不报，
+  于是"拆出去的二级文件"整份消失得无影无踪。现在记一条 problem 并说明（与 `controller`/`resource`
+  不可导入的处理一致），提示作者改成平铺。
 
 ### 测试
 
@@ -191,6 +201,13 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   关掉守卫各自立刻变红）——单测总数 110 → 112。
 - **REPL 输入校验的真机验证**：空参 `click` 只打印用法（记录型桩 daemon 确认零请求）；合法
   `click 620 520` 落到设备（`ok:true, ms=272`，带回前后 retention 帧）。
+- **interface 解析 2 条**（`test/unit-interface.mjs`）：`resolveResourcePaths` 四条分支（缺省 /
+  `--resource <名>` / `--resource <路径>` / 未指定控制器）都带上 `attach_resource_path`；
+  被导入文件里的 `import` 记 problem 且不展开（两条都做了 A/B，各自关掉守卫立刻变红）——
+  单测总数 112 → 114。
+- **真实项目核对**：拿本机 6 个 `interface.json`（MaaEnd / M9A / MST / maa-daily-lab /
+  ArknightsAutoOperator / 官方 sample）跑只读探针，只有 MaaEnd 用 `attach_resource_path`（8 个控制器）；
+  对它做了修复前后的 A/B——`--resource 官服` 由「1 条路径」变「2 条（含 `resource_adb`）」。
 - **真机验收改动前后各跑一遍**（MuMu v5 / `adb 127.0.0.1:16384`）：`npm run accept` **27 过 / 0 败**，
   两遍一致；确认 R2e 换成"占目录"注入后判据仍成立，且临时 runDir 不再新增（跑前 15 / 跑后 15）。
 - **`accept:crop` 挂进 CI**：它离线、不需要设备，却会真的起 daemon 与识别子进程（自匹配）——
