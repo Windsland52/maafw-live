@@ -94,6 +94,14 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **`survey:crop` / `survey:som` 的进度点与末尾汇总会被截断**：`process.exit()` 在 stdout 是管道时
   （`> out.txt`、`| tee`）会丢掉还没落地的缓冲——实测 12 个进度点只冲出 6 个，汇总行也可能一起没。
   改为 `process.exitCode` 让事件循环自然排空（daemon 已 shutdown）。
+- **`npm run survey:som` 根本不存在**：`scripts/survey-som.mjs` 在、文档也在教它跑，但 `package.json`
+  只定义了 `survey:crop`——照做的 agent 拿到 "Missing script"。补上别名，与 `survey:crop` 对称。
+- **`--dry-run` / `--limit` / `--verbose` 是假承诺**：三个都只被解析、全库无人消费（`--dry-run` 说
+  "只计算不落盘"，实际照样写模板与帧文件）。现在帮助文本、README 与 `GlobalFlags` 注释统一标为
+  **预留未实现**——解析位照留（防后续引入时挂住自动化调用），但不再承诺行为。
+- **根目录 13 张设备截图（`maa_som_*` / `maa_screencap_*`，合计 8.1MB）从索引移除**：它们是
+  `out` 缺省落 cwd 时代的产物（`6882ac1` 进 11 张、`a8f67d1` 又进 2 张），并给 `.gitignore`
+  加上 `maa_*.png`。历史里仍可取回；工作区文件未删。
 
 ### 测试
 
@@ -115,6 +123,15 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - `RELEASING.md` 补三条实测坑：registry 传播延迟（实测 2–3 分钟，期间 `npm view`/安装全是 404，
   **不是发布失败**）、本机 npm 缓存会掩盖新版本（`ETARGET`，要 `--prefer-online`）、
   发布前必须本地干跑 `npm publish --dry-run`（`bin` 路径那类问题只有 publish 报）。
+- **文档里的包名写错**：`README.md` / `docs/daemon-protocol.md` / `docs/keyframe-retention-contract-v0.md`
+  都写 `maafw-live/client`，而包名是 `@windsland52/maa-live`（registry 上 `maafw-live` 不存在）——
+  照抄示例必 `ERR_MODULE_NOT_FOUND`。全部改为 `@windsland52/maa-live/client`。
+- **契约 §7 标注现状**：`reco` 参数丢失与 CLI 退出码两条早已修复，表头却仍写"均已证实、待实机复现"；
+  同时删掉已被移除的"单次 run 超时上限 300s"（现为缺省 30s、`0` 不自动停，见 `daemon-protocol.md`）。
+- **skill 里两条跑不通的命令**：`workflows.md` 让在 REPL 里跑 `l0 status` 与 `calibrate`，而 REPL 只有
+  `kf status`、`calibrate` 是一次性 CLI 命令——改成实际可用的形态。
+- `kf promote` 的 usage 写 `[--seq n]`，实际只吃位置参数（strict 解析下 `--seq 42` 直接退 2）——改为
+  `<seq>|latest`。
 
 ## [0.1.1] - 2026-10-08
 
@@ -305,5 +322,6 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - 本地工作区文档移出 `docs/`（根目录 `roadmap.local.md`，入 `.gitignore`）：`files` 白名单目录
   会压过 ignore 规则，留在 `docs/` 内会进 npm 包
 
-[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.0

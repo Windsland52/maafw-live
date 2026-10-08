@@ -33,12 +33,12 @@
 
 - `stream` 的 fps 与 scale 决定 CPU 与环内容量；活跃场景 5–10 fps 够用，静态等待降到 1–2 fps。
 - 环形缓冲（L1 小图）与 L0 原图缓存是两条链：**环里的小图能看不能当证据**，原图才能裁模板（见动线 C/D）。
-- L0 有双重上限（张数 + 字节预算），先淘汰滚动区；`l0 status` 看实时占用与 seq 区间——升格前拿不准就先看它。
+- L0 有双重上限（张数 + 字节预算），先淘汰滚动区；`kf status` 看实时占用与 seq 区间——升格前拿不准就先看它。
 
 校准（写进 pipeline 之前做一次，换场景再复测）：
 
 ```bash
-maa> calibrate            # 静止画面采样，给 blockThresh / changeGlobal 推荐值
+$ maafw-live calibrate --project <dir>    # 静止画面采样，给 blockThresh / changeGlobal 推荐值（REPL 无此命令）
 maa> stream start --fps 6 --block-thresh <推荐> --change-global <推荐>
 ```
 

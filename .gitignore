@@ -6,3 +6,5 @@ lib/
 roadmap.local.md
 # 发布流程会产出 tarball（npm pack / publish），别误提交
 *.tgz
+# out 类命令的旧缺省落点曾是调用方 cwd（仓库根），留下来的设备截图别再进仓
+maa_*.png

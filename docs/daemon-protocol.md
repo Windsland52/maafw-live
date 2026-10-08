@@ -4,7 +4,7 @@
 其他语言写的壳）都可以直接跟这个 daemon 说话，而不必依赖本仓库的 CLI 或 TypeScript 客户端。
 
 实现：`src/daemon/framed.mjs`（随包发布为 `lib/daemon/framed.mjs`）。
-客户端参考实现：`src/client/daemon.ts`（`maafw-live/client` 导出）。
+客户端参考实现：`src/client/daemon.ts`（`@windsland52/maa-live/client` 导出）。
 
 ## 传输
 
@@ -88,7 +88,7 @@
 
 ## 复用示例
 
-    import { spawnDaemon } from 'maafw-live/client'
+    import { spawnDaemon } from '@windsland52/maa-live/client'
 
     const c = spawnDaemon({ runDir: '/tmp/maa-run' })
     try {

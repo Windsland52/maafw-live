@@ -17,7 +17,7 @@ CLI 面向 agent、脚本与人：命令是确定性的，输出有稳定 JSON �
 | 部分 | 位置 | 做什么 |
 | --- | --- | --- |
 | daemon | `src/daemon/framed.mjs` | 独立子进程，持有 Controller / Resource / Tasker、帧流与环形缓冲；说 JSON 行协议 |
-| client | `maafw-live/client` | 可复用客户端：spawn、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
+| client | `@windsland52/maa-live/client` | 可复用客户端：spawn、应答配对、超时硬杀自愈、帧 / 事件 / 原生日志汇聚 |
 | CLI | `bin/maafw-live.mjs` | 命令面：探针、设备、输入、识别、会话 |
 
 协议的完整契约（消息形状、命令表、坐标系与稳定性约定）见 [`docs/daemon-protocol.md`](docs/daemon-protocol.md)。
@@ -131,7 +131,7 @@ maafw-live crop --from-kf kf:<库UUID>:0142 --roi 640,300,220,80 \
 ## 复用 daemon
 
 ```js
-import { spawnDaemon } from "maafw-live/client"
+import { spawnDaemon } from "@windsland52/maa-live/client"
 
 const c = spawnDaemon({ runDir: "/tmp/maa-run" })
 try {
@@ -185,10 +185,12 @@ JSON 信封的 `data.record.ok`，不是外层 `ok`——外层只代表调用�
 
 ### 全局选项
 
-`--json` / `--dry-run` / `--yes` / `--no-interactive` / `--no-color` / `--cwd <dir>` / `--limit <n>` /
-`--verbose` / `-h` / `-V`。`--no-color` 是自动化场景的硬要求：ANSI 转义会混进 JSON（非 TTY 下自动
-无色）。`--no-interactive` 与 `--yes` 当前无门控——本工具没有交互式提问与确认步骤，照传即可，防
-后续版本引入交互提问挂住自动化调用。
+`--json` / `--yes` / `--no-interactive` / `--no-color` / `--cwd <dir>` / `-h` / `-V`。`--no-color` 是自动化
+场景的硬要求：ANSI 转义会混进 JSON（非 TTY 下自动无色）。`--no-interactive` 与 `--yes` 当前无门控——
+本工具没有交互式提问与确认步骤，照传即可，防后续版本引入交互提问挂住自动化调用。
+
+`--dry-run` / `--limit <n>` / `--verbose` 是**预留位、当前未实现**：传了不报错，但不改变任何命令的行为
+（`--dry-run` 照样落盘）——别把它们写进脚本当保证。
 
 ## 代码结构
 

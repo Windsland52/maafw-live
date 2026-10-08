@@ -6,6 +6,9 @@
  *    保留解析是防后续版本引入交互时挂住 agent 的自动化调用；
  *  - `--no-color`：ANSI 转义会混进 JSON；
  *  - `--json`：稳定信封，供技能与 CI 解析。
+ *
+ * `--dry-run` / `--limit` / `--verbose` 同样只有解析位：当前没有任何命令消费它们，
+ * 帮助文本与 README 都按"预留未实现"标注——不要把它们当成行为保证。
  */
 import type { ParseArgsOptionsConfig } from 'node:util'
 
@@ -24,6 +27,7 @@ export const GLOBAL_OPTIONS = {
 
 export interface GlobalFlags {
   json: boolean
+  /** 预留位：当前没有"只计算不落盘"的实现，值不被消费 */
   dryRun: boolean
   /** 预留授权位：当前版本没有确认步骤，值不被消费 */
   yes: boolean
@@ -31,7 +35,9 @@ export interface GlobalFlags {
   interactive: boolean
   color: boolean
   cwd: string
+  /** 预留位：当前没有输出条数上限，值不被消费 */
   limit: number
+  /** 预留位：当前没有详细输出，值不被消费 */
   verbose: boolean
   help: boolean
   version: boolean

@@ -17,7 +17,7 @@ export const kfCommand: Command = {
   name: 'kf',
   summary: '关键帧：status 看 L0 缓存，promote 升格原图进本地库，list/resolve 离线解析',
   usage: 'maafw-live kf status [--project <dir>|--kind ...]\n' +
-    '       maafw-live kf promote [--seq n | --latest] [--note <s>] [--project <dir>|--kind ...]\n' +
+    '       maafw-live kf promote <seq>|latest [--note <s>] [--project <dir>|--kind ...]\n' +
     '       maafw-live kf list [--dir <frames>]      （离线，不需要设备）\n' +
     '       maafw-live kf resolve <kf:...> [--dir <frames>]   （离线）',
   options: { ...CONNECT_OPTIONS, note: { type: 'string' }, dir: { type: 'string' }, latest: { type: 'boolean' } },
