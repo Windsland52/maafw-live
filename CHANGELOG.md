@@ -336,8 +336,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `tools/interface_import.schema.json` 约束（顶层无 `import` → **不可嵌套**、无 `agent`、
   `additionalProperties: false`），而协议文档 3.3 的 import 节却把 **`group`** 列为可导入字段、合并表里
   还有 group 行——**上游文档与 schema 打架**。我们按 schema 走（`group` 既不消费也不报错；`agent` 是
-  超出协议的宽容读取，已在注释里标明）。这份不一致已整理成**可直接提交的 issue 草稿**，存在
-  `roadmap.local.md` 的"待提交的上游 issue"一节（本地文件，不入包）。
+  超出协议的宽容读取，已在注释里标明）。**后续：上游已就这条提 PR，结论是改 schema**（import 文件将来可
+  合法带 `group`）；我们的行为不变（group 不消费）。草稿留在 `roadmap.local.md` 备查（本地文件，不入包）。
 
 ## [0.1.1] - 2026-10-08
 

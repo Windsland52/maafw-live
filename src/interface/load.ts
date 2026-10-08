@@ -353,9 +353,10 @@ export function loadInterface(dir: string): LoadedInterface {
    *  - 被 import 的文件由 tools/interface_import.schema.json 约束（描述原文："用于 interface.json 的
    *    import 字段引用的文件"），顶层只有 task/option/pretask/global_option/setting/preset，且
    *    `additionalProperties: false` → **`import` 不可嵌套**、`agent` 也不在其中；
-   *  - 协议文档 3.3 的 import 节却把 `group` 列进可导入字段（v2.4.0，合并表里也有 group 行），
-   *    而 5.14.2 的 import schema 顶层**没有 group** → 文档与 schema 打架（上游漂移）。
-   *    我们按 schema 走：group 本工具不消费、也不报错（schema 合法的文件里它本来就不会出现）；
+   *  - 协议文档 3.3 的 import 节把 `group` 列进可导入字段（v2.4.0，合并表里也有 group 行），
+   *    而 5.14.2 的 import schema 顶层**没有 group** → 文档与 schema 不一致（上游漂移）。
+   *    **后续：上游已就这条提 PR，结论是"改 schema"**（即 import 文件将来可以合法带 group）。
+   *    我们的行为不变——group 本工具不消费，因此既不合并也不报错；真要用到 UI 分组时再说。
    *  - `agent` 不在 import schema 里，但本工具**宽容读取**（下面的 readAgents）：这是超出协议的扩展，
    *    只影响"文件结构校验收紧的工具"与我们的行为差异，实现上进 candidates 前仍会如实报 problems。 */
   const seen = new Set([file])
