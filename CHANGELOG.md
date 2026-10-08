@@ -101,10 +101,27 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   **预留未实现**——解析位照留（防后续引入时挂住自动化调用），但不再承诺行为。
 - **根目录 13 张设备截图（`maa_som_*` / `maa_screencap_*`，合计 8.1MB）从索引移除**：它们是
   `out` 缺省落 cwd 时代的产物（`6882ac1` 进 11 张、`a8f67d1` 又进 2 张），并给 `.gitignore`
-  加上 `maa_*.png`。历史里仍可取回；工作区文件未删。
+  加上 `maa_*.png`。历史里仍可取回；工作区文件未删。随后这批图**从全部历史中清除**（重写了含它们的
+  4 个提交，作者/日期/message 逐字节保留；tag 与已发布版本不受影响，`.git` 从 13.6MiB 降到 395KiB）。
+- **`stream_stopped` 是"只发不收"的孤儿消息**：daemon 在控制器被销毁时推它（`framed.mjs`），但客户端
+  `DaemonMessageKind` 里没有它、分发链里也没分支——消息被静默丢弃，订阅者收不到、日志也不留痕，
+  只能从 `connect` 回执的 `streamStopped` 间接推断。现在：类型联合加 `stream_stopped`、分发链补分支
+  （进错误环 + 推给订阅者）、协议文档消息表补一行、`subscribe` 的载荷按种类写进类型注释。
+- **`crop --keep-source` 在坏参数上也会升格**：框参数（`--roi` / `--point`）的校验排在取源与升格之后，
+  于是"忘了给框"的失败调用照样往关键帧库塞一条留存帧。现在校验提到最前——坏请求不取源、不解码、不升格；
+  升格仍在自匹配之前（那条纪律不变）。
+- **`survey:crop` 每跑一次漏一个 `%TEMP%` 目录**：自造的资源目录（`maafw-survey-res-*`）从不回收，
+  实测本机攒了 14 个。现在 runDir 与自造目录统一回收；清理失败也不再盖掉测量结果（Windows 上
+  `close()` 的 kill 有 1.5s 延迟，紧接着 `rmSync` 偶发 EPERM）。
+- **`tplCrop` 的 TS 参数类型失真**：`provOut` / `keepSource` 已实装并被 CLI 使用，类型里却没有
+  （靠对象展开逃过多余属性检查），`snapTol` / `snapFrac` 也缺——补齐后调用方传错名会被 typecheck 拦住。
 
 ### 测试
 
+- `stream_stopped` 推送分发 1 条（`test/unit-client-stream.mjs` + 桩 daemon `test/fixtures/`）：
+  无设备、无 maa-node 也能跑——真 daemon 只在控制器销毁时推这条，而缺口在客户端这一侧。
+- `tpl_crop` 坏参数不升格 1 条（`test/unit-crop-kf.mjs`）：用合法 L0 原图 + 临时 runDir，
+  旧顺序会在 `runDir/frames` 下落库，所以这条用例有牙齿——单测总数 94 → 96。
 - 验收新增/变更：`accept:crop`（离线）43 条——加 K11a–c（`--prov-out` 落点、模板旁不留、逐字段一致）与
   CLI 的 C1e；`accept`（真机，不进 CI）**27 条**——加 R4a–f（`--keep-source`：出处升级为 kf、`keptSource`
   与出处同 ID、落点、**该 ID 在本库可解析**，以及不加时的 `l0-cache` + 可行动警告），并修好 R1 重连流程。

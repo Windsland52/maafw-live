@@ -1512,6 +1512,20 @@ async function cmdTplCrop(args) {
   /* 源帧两条路，都必须是控制器分辨率的完整原图（模板尺寸要与识别空间一致，绝不从降采样小图裁）：
    *  - L0 热缓存：seq 或最新（同一会话内，有设备）；
    *  - 关键帧库留存帧：kfSource（跨会话、可无设备——契约 §2 库内 L0 即原图本体）。 */
+
+  /* 宽松框：显式 roi，或点 + 外扩（点→ROI 派生与裁剪共享同一条 snap 链）。
+   * 校验放在最前：坏参数（既没 roi 也没 point）不该有任何副作用——尤其不该把源帧升格进库。 */
+  let loose = null
+  if (Array.isArray(args.roi) && args.roi.length === 4) {
+    loose = args.roi.map(Number)
+  } else if (Array.isArray(args.point) && args.point.length === 2) {
+    const pad = Math.max(8, Number(args.pad ?? 24))
+    const [px, py] = args.point.map(Number)
+    loose = [px - pad, py - pad, pad * 2, pad * 2]
+  } else {
+    return { ok: false, error: '给 --roi x,y,w,h 或 --point x,y [--pad n]' }
+  }
+
   let ent = null
   let kf = null
   if (args.kfSource) {
@@ -1549,17 +1563,6 @@ async function cmdTplCrop(args) {
     } else {
       keptSource = { error: String((promoted && promoted.error) || '升格失败'), seq: ent.seq }
     }
-  }
-  /* 宽松框：显式 roi，或点 + 外扩（点→ROI 派生与裁剪共享同一条 snap 链） */
-  let loose = null
-  if (Array.isArray(args.roi) && args.roi.length === 4) {
-    loose = args.roi.map(Number)
-  } else if (Array.isArray(args.point) && args.point.length === 2) {
-    const pad = Math.max(8, Number(args.pad ?? 24))
-    const [px, py] = args.point.map(Number)
-    loose = [px - pad, py - pad, pad * 2, pad * 2]
-  } else {
-    return { ok: false, error: '给 --roi x,y,w,h 或 --point x,y [--pad n]' }
   }
   const cl = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)))
   const box0 = {
@@ -2265,5 +2268,5 @@ export const __test = {
   pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName,
-  l0EvictToBudget, cmdKfPromote, kfUsageBytes, defaultOutFile, S,
+  l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, S,
 }

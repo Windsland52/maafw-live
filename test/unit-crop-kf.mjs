@@ -183,3 +183,31 @@ test('defaultOutFile：缺省落在 runDir/out，不落 cwd；无 runDir 时退�
   assert.ok(!r2.file.replace(/\\/g, '/').startsWith(process.cwd().replace(/\\/g, '/')), '不能落在调用方 cwd：' + r2.file)
   assert.match(r2.file.replace(/\\/g, '/'), /\/out\/som-1700000000000\.png$/)
 })
+
+/**
+ * 坏参数不该有副作用：既没 roi 也没 point 的请求要在**取源/升格之前**就被拒。
+ *
+ * 曾经校验排在升格之后——`crop --keep-source` 只要忘了给框，这次失败调用就先往关键帧库里
+ * 塞了一条留存帧（框错了可以重来，"库里多一条"不会自己消失）。
+ * 用合法的 L0 原图 + 临时 runDir：旧顺序会走到升格、在 runDir/frames 下落库，本用例因此有牙齿。
+ */
+test('tpl_crop：坏参数（既没 roi 也没 point）先被拒，不取源、不升格', async () => {
+  const { cmdTplCrop, S } = __test
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-crop-args-'))
+  const saved = { runDir: S.runDir, roll: S.l0.roll, anchor: S.l0.anchor, ring: S.ring, session: S.session }
+  try {
+    S.runDir = runDir
+    S.l0.roll = [{ seq: 7, t: Date.now(), png: framePng(9), w: 32, h: 24 }]
+    S.l0.anchor = []
+    S.ring = [{ seq: 7, w: 8, h: 6, fw: 32, fh: 24 }]
+    S.session = null
+    const r = await cmdTplCrop({ keepSource: true })
+    assert.equal(r.ok, false, '坏参数必须失败：' + JSON.stringify(r))
+    assert.match(String(r.error), /--roi/, '要给的是用法错误，而不是走完取源/升格才失败')
+    assert.ok(!fs.existsSync(path.join(runDir, 'frames')), '坏参数不该建库、更不该升格')
+  } finally {
+    S.runDir = saved.runDir; S.l0.roll = saved.roll; S.l0.anchor = saved.anchor
+    S.ring = saved.ring; S.session = saved.session
+    fs.rmSync(runDir, { recursive: true, force: true })
+  }
+})

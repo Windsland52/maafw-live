@@ -29,6 +29,7 @@
 | `{ kind:'frame', meta, preview? }` | daemon → 调用方 | 每接受一帧的元数据；`preview` 是预览帧 PNG 路径 |
 | `{ kind:'event', ev }` | daemon → 调用方 | 画面变化/稳定事件与 Tasker 节点消息（按帧序对齐） |
 | `{ kind:'stream_error', error }` | daemon → 调用方 | 帧流自身出错（设备掉线等），流可能已停 |
+| `{ kind:'stream_stopped', reason }` | daemon → 调用方 | daemon 主动停流（控制器被销毁，如 `connect` 重建）：流已不在跑，要看帧得重新 `stream_start` |
 
 `meta` 至少含 `seq`（帧序，单调递增）、`t`（毫秒时间戳）；差异检测命中时含 `diff`。
 `ev.type` 取值：`change` / `stable`（画面）、`run`（节点级消息，含 `node`、`msg`、`id`）。
@@ -43,7 +44,7 @@
 | `init` | `runDir`、`kfQuotaBytes?`（字节，>0 生效；缺省 1GiB，env `MAAFW_KF_QUOTA_BYTES` 亦可覆盖；env `MAAFW_NOTIFY_DUMP=<file>` 把框架原始通知逐行 JSON 落盘，用于诊断"记录字段到底是谁填的"，默认关） | `{ ok, previewPath, daemonId, framesDir, kfQuota }`；设定预览帧落盘路径与关键帧库磁盘配额。应在 spawn 后立刻发一次 |
 | `probe` | — | `{ version, adb, win32, errors[] }`：绑定版本与设备发现数 |
 | `device_list` | `kind: all\|adb\|win32` | 设备数组：`{ kind, id, name, cls?, adbPath? }` |
-| `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session, streamStopped? }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller**——因此若上一轮在跑帧流，本次连接会**显式停掉它并回 `streamStopped:true`**（要看帧就重新 `stream_start`；旧行为是流循环静默死掉而状态仍报"在跑"） |
+| `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session, streamStopped? }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller**——因此若上一轮在跑帧流，本次连接会**显式停掉它并回 `streamStopped:true`**，同时向订阅者推一条 `stream_stopped`（要看帧就重新 `stream_start`；旧行为是流循环静默死掉而状态仍报"在跑"） |
 | `disconnect` | — | `{ ok }`；停流、销毁 Tasker/Controller。adb 的 destroy 偶发阻塞 → 客户端超时后硬杀自愈 |
 | `screencap` | `out` | `{ ok, path, bytes }` 或 `{ error }` |
 | `stream_start` | `fps`(1-30)、`scale`(160-1280)、`maxFrames`(20-600)；可选 `l0Roll`/`l0Anchor`/`l0Bytes`/`blockThresh`/`changeGlobal`（L0 与变化检测调优） | `{ ok, fps, scale, maxFrames }` |

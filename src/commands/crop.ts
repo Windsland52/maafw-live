@@ -162,8 +162,10 @@ export const cropCommand: Command = {
           ...(kfSource !== undefined && !wantCross ? { cross: false } : (wantCross ? { cross: true } : {})),
           ...(ctx.values['no-cross'] === true ? { cross: false } : {}),
           ...(ctx.values['no-prov'] === true ? { prov: false } : {}),
-      ...(typeof ctx.values['prov-out'] === 'string' && ctx.values['prov-out'] ? { provOut: ctx.values['prov-out'] } : {}),
-      ...(ctx.values['keep-source'] === true ? { keepSource: true } : {}),
+          ...(typeof ctx.values['prov-out'] === 'string' && ctx.values['prov-out']
+            ? { provOut: ctx.values['prov-out'] }
+            : {}),
+          ...(ctx.values['keep-source'] === true ? { keepSource: true } : {}),
         })
         if (r.ok === false) {
           return fail('TPL_CROP', String(r.error ?? '裁剪失败'),

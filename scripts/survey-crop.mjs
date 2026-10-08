@@ -53,10 +53,14 @@ const TRUTH_IOU = Number(arg('--truth-iou', 0.5))
 const TOL = Number(arg('--tol', 0)) || undefined
 const FRAC = Number(arg('--frac', 0)) || undefined
 
+/** 自造的临时目录要回收：mkdtemp 出来的目录不清理，每跑一次脚本就漏一个 */
+const tempDirs = []
+
 /** 自匹配要加载资源；没给就现造一个最小资源（pipeline 里一个不需要模型与图片的节点），保持脚本可移植 */
 function ensureResource(explicit) {
   if (explicit) return explicit
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-survey-res-'))
+  tempDirs.push(dir)
   fs.mkdirSync(path.join(dir, 'pipeline'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'pipeline', 'dummy.json'), JSON.stringify({
     Dummy: { recognition: 'ColorMatch', lower: [0, 0, 0], upper: [255, 255, 255], action: 'DoNothing' },
@@ -201,7 +205,11 @@ async function main() {
     }
   } finally {
     try { c.close() } catch { /* ignore */ }
-    fs.rmSync(runDir, { recursive: true, force: true })
+    /* 回收所有临时目录（runDir + 自造的资源目录）；清理失败不该盖掉测量结果
+     * （Windows 上 close 的 kill 有 1.5s 延迟，紧接着 rmSync 偶发 EPERM） */
+    for (const dir of [runDir, ...tempDirs]) {
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
   }
 
   const ok = cases.filter((x) => x.ok)

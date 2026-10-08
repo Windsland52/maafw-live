@@ -84,6 +84,13 @@ export const tplCrop = (c: DaemonClient, args: {
   cross?: boolean
   kfSource?: CropKfSource
   prov?: boolean
+  /** 出处侧车改写到该目录下（保持同名）；缺省写在模板旁 */
+  provOut?: string
+  /** 热缓存路径下把本次实际用的那一帧升格进库，出处随即带上可复核的 `kf:` 身份 */
+  keepSource?: boolean
+  /** snap 收紧阈值的**测量用覆盖**（定标 A/B）；缺省即生产常数 */
+  snapTol?: number
+  snapFrac?: number
 }) => c.call<Record<string, unknown>>('tpl_crop', args, 240000)
 export const annotate = (c: DaemonClient, args: { seq?: number; out?: string; resourceDir?: string; kfSource?: CropKfSource }) =>
   c.call<Record<string, unknown>>('annotate', args, 120000)

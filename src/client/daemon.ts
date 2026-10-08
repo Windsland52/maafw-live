@@ -41,13 +41,18 @@ export interface StreamEvent {
 export interface DaemonEvents {
   frames: FrameMeta[]
   events: StreamEvent[]
+  /** 流级异常与通知：`stream_error`（设备掉线等）与 `stream_stopped`（控制器销毁导致流被停） */
   errors: string[]
   logs: string[]
   /** 最新预览帧路径（daemon 收到 init 的 runDir 后写入 runDir/preview.png） */
   preview: string | null
 }
 
-export type DaemonMessageKind = 'frame' | 'event' | 'stream_error'
+/**
+ * daemon 推送的消息种类。`subscribe` 的回调按种类拿不同载荷：
+ * `frame` → FrameMeta、`event` → StreamEvent、`stream_error` → 错误文本、`stream_stopped` → 停流原因。
+ */
+export type DaemonMessageKind = 'frame' | 'event' | 'stream_error' | 'stream_stopped'
 
 export interface DaemonClient {
   readonly events: DaemonEvents
@@ -55,7 +60,7 @@ export interface DaemonClient {
   call<T = unknown>(cmd: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<T>
   /** daemon stderr + 非 JSON stdout 行（maa 原生日志，识别失败根因常在这）。 */
   logTail(n?: number): string[]
-  /** 订阅帧/事件/流错误；返回退订函数。 */
+  /** 订阅帧/事件/流错误/流停止；返回退订函数。 */
   subscribe(kind: DaemonMessageKind, cb: (message: unknown) => void): () => void
   stats(): { calls: number; restarts: number; alive: boolean; pid: number | null; daemonPath: string }
   /** 停流 + 断开 + 结束子进程。 */
@@ -149,6 +154,11 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
       } else if (kind === 'stream_error') {
         push(events.errors, String(m.error ?? ''), CAP.logs)
         emit('stream_error', m.error)
+      } else if (kind === 'stream_stopped') {
+        /* daemon 在控制器被销毁（connect 会重建）时主动停流并推这条：它是"你盯着的流没了"的通知，
+         * 必须进错误环 + 推给订阅者。曾经只发了不收，调用方只能从 connect 回执间接推断。 */
+        push(events.errors, '帧流已停止：' + String(m.reason ?? ''), CAP.logs)
+        emit('stream_stopped', m.reason)
       }
     })
     c.stderr?.on('data', (d: Buffer) => push(events.logs, String(d), CAP.logs))
