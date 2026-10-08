@@ -1,10 +1,15 @@
 /**
  * 容错 JSON：真实项目的 interface.json 带 `//` 注释（官方解析器基于 meojson），
  * strict JSON.parse 会直接拒绝，因此先做最小脱敏——字符串外的注释与尾随逗号去掉。
+ *
+ * 取舍：只做这两件**最小**的事，不做单引号 / 无引号键 / 多行字符串那类扩展——
+ * 越是"看起来像 JSON"的输入，越容易被静默改写成作者没写的意思。
+ * 另：开头的 BOM（Windows 记事本等会写）先剥掉，它会让 JSON.parse 报 "Unexpected token"。
  */
 
 export function parseJsonc(text: string): unknown {
-  return JSON.parse(stripTrailingCommas(stripComments(text)))
+  const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text
+  return JSON.parse(stripTrailingCommas(stripComments(noBom)))
 }
 
 function stripComments(s: string): string {

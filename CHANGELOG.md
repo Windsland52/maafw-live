@@ -204,6 +204,15 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **`reco_test` 写出的工作图从不回收**：会话缓冲帧路径（`--seq`）与新的库帧路径都会把工作图写到
   `%TEMP%/maa_reco_*.png` 却不管了。现在用完即删（A/B：关掉清理时真机实测 `0 → 1`，开着时 `0 → 0`）。
   与 CLI 侧截帧泄漏同一类，只是位置在 daemon。
+- **`frame_get` / `color_probe` 的 `roi` 非数字会一路变成 NaN 框**：与 `tpl_crop` 同一类问题——
+  `Math.max(0, Math.floor(NaN))` 还是 NaN，于是要么静默错剪一块、要么在下游报一个跟病因无关的错
+  （"越界"/"参数类型"）。现在收口成 `readRoi()`：只接受 4 个有限数字，长度/类型不对直接给明确错误。
+  **拦 NaN 不拦 0**：`null` 经 `Number(null)` 是 0，属"合法退化框"、由下游夹取兜住（与 `tpl_crop`
+  的 roi/point/pad 同一口径）。真机实测：`["x",0,10,10]` / `[1,2,3]` / `"nope"` 都被明确拒绝，
+  `[0,0,null,10]` 与合法 roi、不给 roi 三条照旧。
+- **`parseJsonc` 不吃 BOM**：Windows 记事本等写出的 `interface.json` 开头带 BOM 时 `JSON.parse` 直接抛
+  "Unexpected token"，而这个模块的定位就是"容错 JSON"。现在开头 BOM 先剥掉；单引号 / 无引号键 /
+  多行字符串那类扩展**仍然不做**——越像 JSON 的输入越容易被静默改写成作者没写的意思。
 - **`--resource <名|路径>` 会丢掉 `controller.attach_resource_path`**：不传 `--resource` 时附加路径
   会追加（v2.2.0："在 `resource.path` 加载完成后，额外加载"），可传了就走进两条**提前 return** 的分支，
   附加路径直接消失。它是**控制器的属性**、与选中哪个资源条目无关，所以三条分支都该追加。真实项目实测
@@ -265,6 +274,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （本仓对 CLI 有同样的硬要求，`verify-cli` 里"无多余前后缀"那条检查此前没覆盖 survey 脚本，
   于是 `--json | jq` 会炸）；逐例记录带上 `tighten` 原样字段，并新增 `--edge`/`--edge-z`/`--edge-min`/
   `--edge-frac` 旋钮——"哪一路收紧赢了、两路各给出多大的框"现在可以直接从 JSON 读出来做 A/B。
+- **`parseJsonc` 补 9 条单测**（此前零直接覆盖）：注释里的引号、字符串里的 `//` 与 `/*`、转义引号不会让
+  字符串提前结束、**"先去注释再去尾随逗号"的顺序**（`, // 注释\n}` 这种）、CRLF、BOM、以及"超出容错范围的
+  如实抛"（无引号键 / 单引号 / 截断 JSON 都不猜）。
+- **`readRoi` 1 条**：只收 4 个有限数字，长度/类型不对给明确错，并把 `null` → 0 那个边界钉住
+  （"拦 NaN 不拦 0"的口径）——单测总数 118 → 128。
 - **`unit-client-protocol` 的一条断言是时序竞态**（CI 在 Node 24 · ubuntu 上第一次抓到）：桩 daemon 在
   init 回执之后紧接着会推 `stream_stopped`，那条**按设计**会进错误环，于是"握手成功时错误环必须为空"
   这条断言本身不成立——本机（Node 22 / Windows）恰好每次都排在它后面。改成只钉"握手没被记成失败"
@@ -318,6 +332,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `kf status`、`calibrate` 是一次性 CLI 命令——改成实际可用的形态。
 - `kf promote` 的 usage 写 `[--seq n]`，实际只吃位置参数（strict 解析下 `--seq 42` 直接退 2）——改为
   `<seq>|latest`。
+- **`load.ts` 的 import 合并处写明上游口径与我们的取舍**（MaaFW 5.14.2 @ `8061d5b`）：被 import 的文件由
+  `tools/interface_import.schema.json` 约束（顶层无 `import` → **不可嵌套**、无 `agent`、
+  `additionalProperties: false`），而协议文档 3.3 的 import 节却把 **`group`** 列为可导入字段、合并表里
+  还有 group 行——**上游文档与 schema 打架**。我们按 schema 走（`group` 既不消费也不报错；`agent` 是
+  超出协议的宽容读取，已在注释里标明）。这份不一致已整理成**可直接提交的 issue 草稿**，存在
+  `roadmap.local.md` 的"待提交的上游 issue"一节（本地文件，不入包）。
 
 ## [0.1.1] - 2026-10-08
 

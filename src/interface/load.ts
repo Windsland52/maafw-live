@@ -347,7 +347,17 @@ export function loadInterface(dir: string): LoadedInterface {
   }
 
   /* import 合并（v2.2.0）：只合 task/option/preset/global_option/pretask（及 group/setting，本工具不消费）。
-   * controller/resource 不可导入——子文件声明了也忽略并记 problems。循环导入用 visited 集合挡住。 */
+   * controller/resource 不可导入——子文件声明了也忽略并记 problems。循环导入用 visited 集合挡住。
+   *
+   * 上游口径（MaaFW 5.14.2 @ 8061d5b，逐条核过）：
+   *  - 被 import 的文件由 tools/interface_import.schema.json 约束（描述原文："用于 interface.json 的
+   *    import 字段引用的文件"），顶层只有 task/option/pretask/global_option/setting/preset，且
+   *    `additionalProperties: false` → **`import` 不可嵌套**、`agent` 也不在其中；
+   *  - 协议文档 3.3 的 import 节却把 `group` 列进可导入字段（v2.4.0，合并表里也有 group 行），
+   *    而 5.14.2 的 import schema 顶层**没有 group** → 文档与 schema 打架（上游漂移）。
+   *    我们按 schema 走：group 本工具不消费、也不报错（schema 合法的文件里它本来就不会出现）；
+   *  - `agent` 不在 import schema 里，但本工具**宽容读取**（下面的 readAgents）：这是超出协议的扩展，
+   *    只影响"文件结构校验收紧的工具"与我们的行为差异，实现上进 candidates 前仍会如实报 problems。 */
   const seen = new Set([file])
   const imports = strList(o.import)
   for (const rel of imports) {

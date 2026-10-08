@@ -14,7 +14,7 @@ import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, downscale, blockAnalyze, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
-  l0EvictToBudget, S } = __test
+  l0EvictToBudget, readRoi, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
 /** 纯色图 */
@@ -418,6 +418,20 @@ test('tightenBoundsByEdges：纹理背景上收出元素框；均匀图返回 nu
   assert.ok(Math.abs(t.x - 20) <= 2 && Math.abs(t.y - 15) <= 2, JSON.stringify(t))
   assert.ok(Math.abs(t.w - 35) <= 4 && Math.abs(t.h - 25) <= 4, JSON.stringify(t))
   assert.equal(tightenBoundsByEdges(solid(w, h, [128, 128, 128]), w, h), null, '均匀图没有内容可收 → null')
+})
+
+/* ────────────────────────── readRoi（roi 参数校验） ────────────────────────── */
+test('readRoi：只接受 4 个有限数字；没给 = null；非数字/长度不对 → 明确的错', () => {
+  assert.deepEqual(readRoi(undefined), { roi: null })
+  assert.deepEqual(readRoi(null), { roi: null })
+  assert.deepEqual(readRoi([1, 2, 3, 4]), { roi: [1, 2, 3, 4] })
+  assert.deepEqual(readRoi(['1', '2', '3', '4']), { roi: [1, 2, 3, 4] }, '数字字符串按数字收（CLI 就是这么传的）')
+  /* 拦 NaN、不拦 0：`null` 经 Number(null) 是 0，属"合法退化框"，由下游夹取兜住——
+   * 与 tpl_crop 的 roi/point/pad 校验同一口径（那条决定在 review 里确认过）。 */
+  assert.deepEqual(readRoi([0, 0, null, 10]), { roi: [0, 0, 0, 10] })
+  assert.match(readRoi([1, 2, 3]).error, /4 个数字/)
+  assert.match(readRoi([0, 0, 'x', 10]).error, /必须是数字/)
+  assert.match(readRoi([0, 0, {}, 10]).error, /必须是数字/)
 })
 
 /* ────────────────────────── l0EvictToBudget（L0 字节预算淘汰） ────────────────────────── */

@@ -703,16 +703,38 @@ function cmdStreamStatus() {
 }
 
 /* ────────────────────────── 历史帧取用（ROI 裁剪，像素按需出 worker） ────────────────────────── */
+/**
+ * roi 参数校验：只接受 4 个**有限数字**。
+ * 非数字会一路传成 NaN 框——`Math.max(0, Math.floor(NaN))` 还是 NaN，于是要么静默错剪一块、
+ * 要么在下游报一个跟病因无关的错（"越界"/"参数类型"）。与 tpl_crop 的 `roi/point/pad` 校验同一口径。
+ * 返回 `{ roi: null }` 表示"没给 roi"（调用方按整帧处理）。
+ */
+function readRoi(raw) {
+  if (raw === undefined || raw === null) return { roi: null }
+  if (!Array.isArray(raw) || raw.length !== 4) {
+    return { error: 'roi 必须是 4 个数字 [x,y,w,h]，收到 ' + JSON.stringify(raw) }
+  }
+  const roi = raw.map(Number)
+  if (!roi.every((v) => Number.isFinite(v))) {
+    /* 只拦 NaN（非数字字符串、对象等）。**`null` 会被 Number(null) 收成 0**，那是"合法的退化框"，
+     * 由下游夹取兜住——与 tpl_crop 的 roi/point/pad 校验同一口径（拦 NaN，不拦 0）。 */
+    return { error: 'roi 必须是数字（非数字字符串这类会退化成 NaN）：' + JSON.stringify(raw) }
+  }
+  return { roi }
+}
+
 function cmdFrameGet(args) {
   let fr = null
   if (args.seq === undefined || args.seq === null) fr = S.ring[S.ring.length - 1]
   else fr = S.ring.find((r) => r.seq === Number(args.seq))
   if (!fr) return { ok: false, error: '帧不在缓冲中（seq=' + args.seq + '，范围 ' + (S.ring[0] ? S.ring[0].seq : 0) + '..' + S.seq + '）' }
   const outFile = args.out || defaultOutFile(S.runDir, 'frame-' + fr.seq).file
-  if (args.roi && Array.isArray(args.roi) && args.roi.length === 4) {
+  const roiIn = readRoi(args.roi)
+  if (roiIn.error) return { ok: false, error: roiIn.error }
+  if (roiIn.roi) {
     /* ROI 为控制器分辨率坐标（默认短边 720p，与 pipeline 里写的 roi 同空间）→ 映射到降采样缓冲。
      * 换算必须用该帧捕获时的尺寸（fr.fw/fr.fh），不能用当前全局尺寸——重连/改分辨率后旧帧会被错剪。 */
-    const [x, y, w, h] = args.roi.map(Number)
+    const [x, y, w, h] = roiIn.roi
     const sx = fr.fw > 0 ? fr.w / fr.fw : 1
     const sy = fr.fh > 0 ? fr.h / fr.fh : 1
     const rx = Math.max(0, Math.floor(x * sx))
@@ -1963,8 +1985,10 @@ function cmdColorProbe(args) {
   }
   let rx = 0, ry = 0, rw = fr.w, rh = fr.h
   let ctrlRoi = null
-  if (args.roi && Array.isArray(args.roi) && args.roi.length === 4) {
-    const [x, y, w, h] = args.roi.map(Number)
+  const roiIn = readRoi(args.roi)
+  if (roiIn.error) return { ok: false, error: roiIn.error }
+  if (roiIn.roi) {
+    const [x, y, w, h] = roiIn.roi
     const sx = fr.fw > 0 ? fr.w / fr.fw : 1
     const sy = fr.fh > 0 ? fr.h / fr.fh : 1
     rx = Math.max(0, Math.floor(x * sx))
@@ -2420,6 +2444,6 @@ if (CHILD) {
 export const __test = {
   pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
-  readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName,
+  readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, S,
 }
