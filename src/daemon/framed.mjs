@@ -723,6 +723,12 @@ function readRoi(raw) {
   return { roi }
 }
 
+/** L0（滚动区 + 锚区）里按 seq 找全分辨率原图；命中即拿到控制器分辨率的 1:1 像素。
+ * 两条区共用同一份 Buffer 时按 seq 去重，所以先滚后锚即可。 */
+function findL0(seq) {
+  return S.l0.roll.find((e) => e.seq === seq) || S.l0.anchor.find((e) => e.seq === seq) || null
+}
+
 function cmdFrameGet(args) {
   let fr = null
   if (args.seq === undefined || args.seq === null) fr = S.ring[S.ring.length - 1]
@@ -731,10 +737,57 @@ function cmdFrameGet(args) {
   const outFile = args.out || defaultOutFile(S.runDir, 'frame-' + fr.seq).file
   const roiIn = readRoi(args.roi)
   if (roiIn.error) return { ok: false, error: roiIn.error }
+
+  /* `src` 决定像素从哪来——**降采样必须是显式选择，不能是静默降级**：
+   *   auto(缺省) ROI 先试 L0 全分辨率原图，淘汰了才退环形缓冲并如实标注；
+   *   full       只要全分辨率；L0 已淘汰就报错，绝不给一张缩小图冒充；
+   *   ring       强制走环形缓冲小图（旧行为，供面板等已知消费方）。
+   * 回执一律带 source / sourceResolution：调用方不必猜手里这张图是什么分辨率。 */
+  const src = String(args.src ?? 'auto').toLowerCase()
+  const wantRing = src === 'ring' || src === 'l1'
+  const wantFull = src === 'full' || src === 'l0'
+  if (!wantRing && !wantFull && src !== 'auto') {
+    return { ok: false, error: 'src 只支持 auto | full | ring，收到 ' + JSON.stringify(args.src) }
+  }
+  const l0hit = wantRing ? null : findL0(fr.seq)
+  let full = null
+  if (l0hit) {
+    try {
+      const dec = pngDecode(l0hit.png)
+      full = { dec, w: dec.w, h: dec.h }
+    } catch (e) { full = null }
+  }
+  const l0Gone = () => 'L0 全分辨率原图已淘汰（seq=' + fr.seq + '）：滚动区 ' + S.l0.roll.length
+    + ' 帧 / 锚区 ' + S.l0.anchor.length + ' 帧，实测 10fps 下滚动窗口约 1.6 秒。'
+    + '要全分辨率就在截图后立刻取 ROI，或先 kf promote 留存该帧再从库帧裁。'
+
   if (roiIn.roi) {
-    /* ROI 为控制器分辨率坐标（默认短边 720p，与 pipeline 里写的 roi 同空间）→ 映射到降采样缓冲。
-     * 换算必须用该帧捕获时的尺寸（fr.fw/fr.fh），不能用当前全局尺寸——重连/改分辨率后旧帧会被错剪。 */
     const [x, y, w, h] = roiIn.roi
+    if (full) {
+      /* 控制器分辨率 1:1 裁剪：roi 本来就是控制器空间坐标，无需换算。 */
+      const rx = Math.max(0, Math.floor(x))
+      const ry = Math.max(0, Math.floor(y))
+      const rw = Math.min(full.w - rx, Math.max(1, Math.round(w)))
+      const rh = Math.min(full.h - ry, Math.max(1, Math.round(h)))
+      if (rx >= full.w || ry >= full.h || rw <= 0 || rh <= 0) {
+        return { ok: false, error: 'ROI 完全越界（' + JSON.stringify(args.roi) + ' vs 捕获时 ' + full.w + 'x' + full.h + '）' }
+      }
+      const src0 = toRgb(full.dec)
+      const crop = Buffer.alloc(rw * rh * 3)
+      for (let yy = 0; yy < rh; yy++) {
+        src0.copy(crop, yy * rw * 3, ((ry + yy) * full.w + rx) * 3, ((ry + yy) * full.w + rx + rw) * 3)
+      }
+      fs.mkdirSync(path.dirname(outFile), { recursive: true })
+      fs.writeFileSync(outFile, pngEncodeRGB(crop, rw, rh))
+      return {
+        ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh,
+        seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: full.w, ctrlH: full.h,
+        source: 'l0-full', sourceResolution: 1, degraded: false,
+        requested: { w, h },
+      }
+    }
+    if (wantFull) return { ok: false, error: l0Gone() }
+    /* 降级：环形缓冲小图。按**该帧捕获时**尺寸换算（重连/改分辨率后旧帧会被错剪）。 */
     const sx = fr.fw > 0 ? fr.w / fr.fw : 1
     const sy = fr.fh > 0 ? fr.h / fr.fh : 1
     const rx = Math.max(0, Math.floor(x * sx))
@@ -750,11 +803,168 @@ function cmdFrameGet(args) {
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true })
     fs.writeFileSync(outFile, pngEncodeRGB(crop, rw, rh))
-    return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh, seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh }
+    return {
+      ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh,
+      seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh,
+      source: 'l1-ring', sourceResolution: sx,
+      requested: { w, h },
+      /* `degraded` 是**相对"调用方要什么"**的判断，不是"分辨率是否小于 1"：
+       * 带 roi 且 auto 时，调用方要的是控制器空间的 ROI，退成小图就是真降级（附 warn、判 findings）；
+       * 显式 ring 是小图预期，不算降级。整帧路径另有约定（见下）。 */
+      degraded: !wantRing,
+      ...(wantRing ? {} : {
+        warn: 'L0 全分辨率原图不可用，本图由环形缓冲小图裁出，有效分辨率 ' + (1 / sx).toFixed(3) + '×'
+          + '（请求 ' + w + 'x' + h + '，实得 ' + rw + 'x' + rh + '）。' + l0Gone(),
+      }),
+    }
   }
+
+  /* 整帧导出：**只有显式 `full` 才导 L0 原图**。
+   * 为什么不给 auto 也导原图：整帧 `auto` 的既有契约就是"环形缓冲那一帧"，把它悄悄换成
+   * 1280×720 既改了这个最常见调用的产物尺寸（消费方按小图写的代码会突然拿到大图），
+   * 也与协议文档的迁移承诺冲突——本次行为变更**只限带 `roi` 的缺省路径**。
+   * 要整帧原图就显式 `--src full`（L0 淘汰则报错，不冒充）。 */
+  if (full && wantFull) {
+    fs.mkdirSync(path.dirname(outFile), { recursive: true })
+    fs.writeFileSync(outFile, pngEncodeRGB(toRgb(full.dec), full.w, full.h))
+    return {
+      ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: full.w, h: full.h,
+      seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: full.w, ctrlH: full.h,
+      source: 'l0-full', sourceResolution: 1,
+    }
+  }
+  if (wantFull) return { ok: false, error: l0Gone() }
   fs.mkdirSync(path.dirname(outFile), { recursive: true })
   fs.writeFileSync(outFile, pngEncodeRGB(fr.rgb, fr.w, fr.h))
-  return { ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: fr.w, h: fr.h, seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh }
+  const sx0 = fr.fw > 0 ? fr.w / fr.fw : 1
+  return {
+    ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: fr.w, h: fr.h,
+    seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh,
+    source: 'l1-ring', sourceResolution: sx0,
+    /* 整帧小图是**文档写明的缺省行为**，不是降级：只标注来源与分辨率，不警告、不判 findings——
+     * 否则最普通的 `frame get`（不带 roi）会时不时退 3。要原图就显式 `--src full`。 */
+    degraded: false,
+  }
+}
+
+/* ────────────────────────── 状态谓词：等到条件成立，而不是让调用方睡死 ──────────────────────────
+ * 为什么要有它：没有"什么时候可以读了"的可查询谓词，调用方只能用时钟猜。本案实测代价：
+ * 硬睡 39 次共 155 秒，而且**等了也不保证对**——抓到过渡帧并据此误判"还在大厅"。
+ * 判据复用帧流同一套（最近 quietMs 内有无 change 事件 + 可选 ROI 内逐帧均值差），不另立阈值口径。 */
+
+/** ROI（控制器空间）内两帧的平均亮度差；坐标按该帧捕获时尺寸换算。 */
+function roiMeanDiff(a, b, roi) {
+  if (!a || !b || a.w !== b.w || a.h !== b.h) return null
+  const sx = a.fw > 0 ? a.w / a.fw : 1
+  const sy = a.fh > 0 ? a.h / a.fh : 1
+  const x0 = Math.max(0, Math.floor(roi[0] * sx))
+  const y0 = Math.max(0, Math.floor(roi[1] * sy))
+  const x1 = Math.min(a.w, Math.ceil((roi[0] + roi[2]) * sx))
+  const y1 = Math.min(a.h, Math.ceil((roi[1] + roi[3]) * sy))
+  if (x1 <= x0 || y1 <= y0) return null
+  let sum = 0, n = 0
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * a.w + x) * 3
+      sum += Math.abs(a.rgb[i] - b.rgb[i]) + Math.abs(a.rgb[i + 1] - b.rgb[i + 1]) + Math.abs(a.rgb[i + 2] - b.rgb[i + 2])
+      n += 3
+    }
+  }
+  return n > 0 ? sum / n : null
+}
+
+async function cmdWait(args) {
+  const mode = String(args.mode ?? 'stable') === 'change' ? 'change' : 'stable'
+  const timeout = Math.min(120000, Math.max(200, Number(args.timeout ?? 10000)))
+  const quietMs = Math.min(10000, Math.max(100, Number(args.quiet ?? 600)))
+  const thr = Number(args.threshold ?? 3)
+  const roiIn = readRoi(args.roi)
+  if (roiIn.error) return { ok: false, error: roiIn.error }
+  /* 一帧都没有就别空转到超时再报"画面持续变化"——那是**假原因**，会让人去调阈值。
+   * 与 frame_get 同一口径：先要观测。 */
+  if (!S.ring.length) {
+    return {
+      ok: false,
+      error: '缓冲无任何帧：wait 判的是帧流（变化事件 / ROI 逐帧均值差），没有帧就无从判断稳定与否。先 screencap 或 stream start 产生观测。',
+    }
+  }
+  const t0 = Date.now()
+  let lastPairSeq = null
+  let lastDiff = null
+  while (Date.now() - t0 < timeout) {
+    const n = S.ring.length
+    const cur = n ? S.ring[n - 1] : null
+    const prev = n > 1 ? S.ring[n - 2] : null
+    if (!cur) { await sleep(80); continue }
+    if (roiIn.roi && prev && prev.seq !== lastPairSeq) {
+      lastPairSeq = prev.seq
+      const d = roiMeanDiff(prev, cur, roiIn.roi)
+      if (d !== null) lastDiff = d
+    }
+    const recentChange = S.events.some((e) => e.type === 'change' && Date.now() - e.t < quietMs)
+    const roiMoving = roiIn.roi ? (lastDiff !== null && lastDiff >= thr) : false
+    const moving = recentChange || roiMoving
+    if (mode === 'stable' ? !moving : moving) {
+      return {
+        ok: true, mode, satisfied: true, waitedMs: Date.now() - t0, seq: cur.seq, quietMs,
+        ...(roiIn.roi ? { roi: roiIn.roi, threshold: thr, lastRoiMeanDiff: lastDiff } : {}),
+        ...(mode === 'change' ? { note: '画面已动（change 事件或 ROI 均值差超阈）——注意这只说明"动了"，不说明"到了目标界面"；到了哪一屏要用识别或留存帧复核' } : {}),
+      }
+    }
+    await sleep(100)
+  }
+  const cur = S.ring.length ? S.ring[S.ring.length - 1] : null
+  return {
+    ok: true, mode, satisfied: false, waitedMs: Date.now() - t0, timeout, seq: cur ? cur.seq : null,
+    ...(roiIn.roi ? { roi: roiIn.roi, threshold: thr, lastRoiMeanDiff: lastDiff } : {}),
+    warn: mode === 'stable'
+      ? '超时仍未稳定（' + timeout + 'ms 内持续变化）：目标界面可能本来就在动（动画/加载/字幕），或阈值偏严——先 calibrate 定噪声地板再起流。'
+      : '超时仍未见变化：画面在这段时间内没动过。先确认目标是否已经在该界面，或动作是否真的生效（比对动作回执的 retention.before/after）。',
+  }
+}
+
+/** 两帧在若干 ROI 上的差分：回答"这一步究竟改了哪几格 / 哪几块"。
+ * 帧流事件给的是"整帧哪里变了"，而离散网格（棋盘 / 背包 / 技能格）要的是"每格变了多少"——
+ * 本案要用它判断"一次拖动选中了哪几格"，当时只能自己写脚本逐格比对。 */
+function cmdFrameDiff(args) {
+  const a = S.ring.find((r) => r.seq === Number(args.a))
+  const b = S.ring.find((r) => r.seq === Number(args.b))
+  if (!a || !b) {
+    return { ok: false, error: '帧不在缓冲中（a=' + args.a + ' b=' + args.b + '，范围 ' + (S.ring[0] ? S.ring[0].seq : 0) + '..' + S.seq + '）' }
+  }
+  if (a.w !== b.w || a.h !== b.h) {
+    return { ok: false, error: '两帧尺寸不同（' + a.w + 'x' + a.h + ' vs ' + b.w + 'x' + b.h + '）：不能直接比' }
+  }
+  const rois = Array.isArray(args.rois) ? args.rois : []
+  if (!rois.length) return { ok: false, error: 'rois 要给数组：[[x,y,w,h],...]（控制器空间坐标）' }
+  const sx = a.fw > 0 ? a.w / a.fw : 1
+  const sy = a.fh > 0 ? a.h / a.fh : 1
+  const out = []
+  for (const r of rois) {
+    const roi = (Array.isArray(r) ? r : [r.x, r.y, r.w, r.h]).map(Number)
+    if (roi.length !== 4 || !roi.every(Number.isFinite)) { out.push({ roi: r, error: 'roi 必须是 4 个数字' }); continue }
+    const x0 = Math.max(0, Math.floor(roi[0] * sx))
+    const y0 = Math.max(0, Math.floor(roi[1] * sy))
+    const x1 = Math.min(a.w, Math.ceil((roi[0] + roi[2]) * sx))
+    const y1 = Math.min(a.h, Math.ceil((roi[1] + roi[3]) * sy))
+    if (x1 <= x0 || y1 <= y0) { out.push({ roi, error: '完全越界' }); continue }
+    let sum = 0, n = 0, mx = 0
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * a.w + x) * 3
+        const d = (Math.abs(a.rgb[i] - b.rgb[i]) + Math.abs(a.rgb[i + 1] - b.rgb[i + 1]) + Math.abs(a.rgb[i + 2] - b.rgb[i + 2])) / 3
+        sum += d; n++
+        if (d > mx) mx = d
+      }
+    }
+    out.push({ roi, meanDiff: n ? Math.round((sum / n) * 100) / 100 : null, maxDiff: Math.round(mx * 100) / 100, pixels: n })
+  }
+  const rank = out.filter((o) => typeof o.meanDiff === 'number').slice().sort((p, q) => q.meanDiff - p.meanDiff)
+  return {
+    ok: true, a: a.seq, b: b.seq, dtMs: Math.abs((b.t || 0) - (a.t || 0)),
+    rois: out, ranked: rank.map((o) => o.roi), sourceResolution: sx,
+    note: 'meanDiff 是 0..255 的平均亮度差，量级随画面内容变；判"变了/没变"的闸门请先用静止画面实测（同 calibrate 的思路）。',
+  }
 }
 
 /* ────────────────────────── 资源 / 运行 / 识别 ────────────────────────── */
@@ -1071,8 +1281,58 @@ async function cmdInput(args) {
     await sleep(Math.max(50, Number(args.duration ?? 800)))
     job = S.ctrl.post_touch_up(contact)
   } else if (k === 'swipe') {
+    /* `via` 给中途路径点（`[[x,y],...]` 或 `"x,y;x,y"`）：走 touch_down → 逐点 touch_move → touch_up，
+     * 也就是**一条笔画画出折线**。为什么需要：`post_swipe` 只有两个端点，只能画直线；
+     * 而连线/谱曲/拖拽排序这类玩法要求"按住 → 经过若干点 → 抬起"，且**中途不能抬手**
+     * （一旦抬手就是新笔画，很多玩法会把新笔画当成另一次操作或直接忽略）。
+     * 不给 `via` 时走原生 post_swipe（保持旧行为与旧性能）。 */
+    const viaRaw = args.via
+    let via = []
+    if (Array.isArray(viaRaw)) {
+      via = viaRaw.map((p) => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : null))
+    } else if (typeof viaRaw === 'string' && viaRaw.trim()) {
+      via = viaRaw.split(';').map((s) => s.split(',').map(Number))
+    }
+    if (via.length) {
+      if (via.some((p) => !p || p.length !== 2 || !p.every(Number.isFinite))) {
+        return { ok: false, error: 'via 路径点格式错：要 [[x,y],...] 或 "x,y;x,y"（收到 ' + JSON.stringify(viaRaw) + '）' }
+      }
+      const contact = Number(args.contact ?? 0)
+      const pressure = Number(args.pressure ?? 1)
+      const pts = [[Number(args.x1), Number(args.y1)], ...via, [Number(args.x2), Number(args.y2)]]
+      if (!pts.flat().every(Number.isFinite)) return { ok: false, error: 'swipe 端点或 via 含非数字' }
+      const duration = Math.max(0, Number(args.duration ?? 300))
+      const step = pts.length > 1 ? Math.max(8, Math.round(duration / (pts.length - 1))) : 8
+      await S.ctrl.post_touch_down(contact, pts[0][0], pts[0][1], pressure).wait()
+      for (const p of pts.slice(1)) {
+        await S.ctrl.post_touch_move(contact, p[0], p[1], pressure).wait()
+        await sleep(step)
+      }
+      job = S.ctrl.post_touch_up(contact)
+      /* 与共享尾同一口径：**先 wait 再抓 after**。抓早了可能截在抬手落地之前，
+       * 而手势类动作恰恰要验证"抬手之后画面变成什么样"。 */
+      await job.wait()
+      retention.after = await captureNow('action-after')
+      return { ...done(null), path: pts, viaCount: via.length, stepMs: step }
+    }
     job = S.ctrl.post_swipe(Number(args.x1), Number(args.y1), Number(args.x2), Number(args.y2),
       Number(args.duration ?? 300), Number(args.contact ?? 0), Number(args.pressure ?? 1))
+  } else if (k === 'touch_move') {
+    /* 裸的移动原语：与 touch_down / touch_up 配对，供调用方自己拼任意手势序列
+     * （跨多个命令维持同一次按压——联系列动作之间不抬手）。 */
+    const contact = Number(args.contact ?? 0)
+    job = S.ctrl.post_touch_move(contact, Number(args.x), Number(args.y), Number(args.pressure ?? 1))
+    await job.wait()
+    retention.after = await captureNow('action-after')
+    return done(null)
+  } else if (k === 'touch_down' || k === 'touch_up') {
+    const contact = Number(args.contact ?? 0)
+    job = k === 'touch_down'
+      ? S.ctrl.post_touch_down(contact, Number(args.x), Number(args.y), Number(args.pressure ?? 1))
+      : S.ctrl.post_touch_up(contact)
+    await job.wait()
+    retention.after = await captureNow('action-after')
+    return done(null)
   } else if (k === 'key') {
     job = S.ctrl.post_click_key(Number(args.code))
   } else if (k === 'keys') {
@@ -2211,10 +2471,29 @@ function pickBalancedCandidates(list, limit, h) {
     const cy = c.box[1] + c.box[3] / 2
     bands[cy < h / 3 ? 0 : (cy < (2 * h) / 3 ? 1 : 2)].push(c)
   }
+  /* 带内再按**来源轮转**。为什么：合并池是按源优先级（ocr > diff > conn > edge）排的，
+   * 而一个带里 OCR 常有几十条——直接把 conn / edge 挤光。偏偏**图标类目标多来自 conn / edge**
+   * （实测：主页面顶部那个图标在合并池里排 #55，默认上限 30 时永远进不了表，覆盖率 0%；
+   * 上限放开到 200 才出现，覆盖 62%）。来源轮转保证每带每一路都有代表，源优先级只决定同轮先后。 */
+  const interleave = (b) => {
+    const groups = {}
+    for (const c of b) (groups[c.source] = groups[c.source] || []).push(c)
+    const srcs = Object.keys(groups).sort((x, y) => (SOM_PRIORITY[x] ?? 9) - (SOM_PRIORITY[y] ?? 9))
+    const res = []
+    for (let i = 0; ; i++) {
+      let any = false
+      for (const s of srcs) {
+        if (groups[s][i]) { res.push(groups[s][i]); any = true }
+      }
+      if (!any) break
+    }
+    return res
+  }
+  const ordered = bands.map(interleave)
   const out = []
   for (let i = 0; out.length < limit; i++) {
     let taken = false
-    for (const b of bands) {
+    for (const b of ordered) {
       if (!b[i]) continue
       out.push(b[i])
       taken = true
@@ -2232,19 +2511,48 @@ async function cmdAnnotate(args) {
   let work = null
   let seq = null
   let source = null
+  let detectionSource = null
   if (args.kfSource) {
     const kf = readKfCropSource(args.kfSource)
     if (kf.error) return { ok: false, error: kf.error }
     work = { rgb: toRgb(kf.dec), w: kf.dec.w, h: kf.dec.h, fw: 0, fh: 0 }
     source = kf.source
+    detectionSource = 'kf-frame'
   } else {
     const fr = args.seq !== undefined && args.seq !== null
       ? S.ring.find((r) => r.seq === Number(args.seq))
       : S.ring[S.ring.length - 1]
     if (!fr) return { ok: false, error: '缓冲无可用帧（seq=' + args.seq + '）：先 screencap / stream 产生观测' }
-    work = { rgb: fr.rgb, w: fr.w, h: fr.h, fw: fr.fw, fh: fr.fh }
+    /* 检测面分辨率：有同一 seq 的 L0 全分辨率原图就**优先用它**。
+     * 为什么：候选检测的分辨率下限直接决定"小图标能不能被找到"。实测大厅顶部那个 42×55 的图标，
+     * 在 480 宽的 L1 上四个源一个都没探到（合并池仅 30 条、无截断，却仍然没有它），
+     * 在 1280 宽的原图上 conn 一次就命中（527,36,42,55）——漏报的根因是分辨率，不是上限。
+     * L1 只作降级（L0 已淘汰时），且回执里如实标注，别让人以为降级图和原图同源。
+     * `somScale: 'small'` 可强制走小图（要快、且只关心大目标时）。 */
+    let det = null
+    if (String(args.somScale ?? 'full') !== 'small') {
+      const l0 = findL0(fr.seq)
+      if (l0) {
+        try {
+          const dec = pngDecode(l0.png)
+          det = { rgb: toRgb(dec), w: dec.w, h: dec.h }
+        } catch (e) { det = null }
+      }
+    }
+    work = det
+      ? { rgb: det.rgb, w: det.w, h: det.h, fw: det.w, fh: det.h }
+      : { rgb: fr.rgb, w: fr.w, h: fr.h, fw: fr.fw, fh: fr.fh }
     seq = fr.seq
-    source = { kind: 'l1-ring', seq: fr.seq, ctrlW: fr.fw, ctrlH: fr.fh }
+    detectionSource = det ? 'l0-full' : 'l1-ring'
+    source = {
+      kind: detectionSource, seq: fr.seq, ctrlW: fr.fw, ctrlH: fr.fh,
+      ...(det ? {} : {
+        degraded: true,
+        note: 'L0 全分辨率原图已淘汰，检测在降采样图上进行（' + fr.w + 'x' + fr.h
+          + '，有效 ' + (fr.w / Math.max(1, fr.fw)).toFixed(3) + '×）：小目标可能根本探不到。'
+          + '要全分辨率就在截图后立刻跑 annotate，或先 kf promote 留存该帧再 --from-kf。',
+      }),
+    }
   }
   const sx = work.fw > 0 ? work.fw / work.w : 1
   const sy = work.fh > 0 ? work.fh / work.h : 1
@@ -2300,29 +2608,103 @@ async function cmdAnnotate(args) {
     const uni = a[2] * a[3] + b[2] * b[3] - inter
     return uni > 0 ? inter / uni : 0
   }
-  /* 去重合并（IoU>0.6 对**全部**候选做，与上限无关），再按上限截断——
-   * 这样 mergedTotal 才是"截断前"的真实规模；上限 30 是绑定约束时，它才是候选规模。 */
+  /* 巨框剔除：面积占画面比例过大的候选几乎必是背景 / 立绘 / 整屏变化区——对"找可点目标"是纯噪音，
+   * 而且因为面积大反而**遮住真目标**（实测每帧稳定 2 个，含一次 1280×720 全屏）。
+   * OCR 框不参与：文本包围盒天然有界，且是全表里最可信的一路。 */
+  const frameArea = work.w * work.h
+  const maxRatio = Number(args.somMaxAreaRatio) > 0 ? Number(args.somMaxAreaRatio) : 0.12
+  const dropped = { tooSmall: 0, tooBig: 0, duplicated: 0 }
   const merged = []
   const IOU = Number(args.somIoU) > 0 ? Math.min(0.99, Number(args.somIoU)) : 0.6
   for (const c of raw) {
-    if (c.box[2] < 8 || c.box[3] < 8) continue
-    if (merged.some((x) => iou(x.box, c.box) > IOU)) continue
+    if (c.box[2] < 8 || c.box[3] < 8) { dropped.tooSmall++; continue }
+    const ratio = (c.box[2] * c.box[3]) / frameArea
+    if (c.source !== 'ocr' && ratio > maxRatio) { dropped.tooBig++; continue }
+    if (merged.some((x) => iou(x.box, c.box) > IOU)) { dropped.duplicated++; continue }
     merged.push(c)
   }
-  const cands = pickBalancedCandidates(merged, LIMIT, work.h)
-  /* 回画：源配色边框 + 编号标签 */
-  const buf = Buffer.from(work.rgb)
+  /* ROI 收窄（可选）：只保留**落在给定区域**的候选，且这一步在**取上限之前**做——
+   * 于是这个区域里的候选只跟自己竞争，不会因为画面别处有 160 条而被挤掉。
+   * 这是"上限截断"的正解：不是把上限调大（那是把上下文成本推给调用方），而是把搜索面收小。 */
+  const roiIn = readRoi(args.roi)
+  if (roiIn.error) return { ok: false, error: roiIn.error }
+  const ctrlW0 = work.fw > 0 ? work.fw : work.w
+  const ctrlH0 = work.fh > 0 ? work.fh : work.h
+  let pool = merged
+  let roiApplied = null
+  if (roiIn.roi) {
+    const [rx, ry, rw, rh] = roiIn.roi
+    const sx0 = work.w / Math.max(1, ctrlW0)
+    const sy0 = work.h / Math.max(1, ctrlH0)
+    const inRoi = (box) => {
+      const cx = (box[0] + box[2] / 2) * (1 / sx0)
+      const cy = (box[1] + box[3] / 2) * (1 / sy0)
+      return cx >= rx && cx <= rx + rw && cy >= ry && cy <= ry + rh
+    }
+    pool = merged.filter((c) => inRoi(c.box))
+    roiApplied = { roi: [rx, ry, rw, rh], inPool: pool.length, outsideRoi: merged.length - pool.length }
+  }
+  const cands = pickBalancedCandidates(pool, LIMIT, work.h)  /* 分带可用性：三分带各自"进表多少 / 合并池里有多少"。上限截断是分带轮转的，
+   * 于是"这一带没有候选"要么是供给真没有、要么是被门槛拒了或被上限截了——三列一起读才可归因。 */
+  const bandOf = (cy, h) => (cy < h / 3 ? 0 : (cy < (2 * h) / 3 ? 1 : 2))
+  const bandCount = (arr, bi) => arr.filter((c) => bandOf(c.box[1] + c.box[3] / 2, work.h) === bi).length
+  const bands = [0, 1, 2].map((bi) => ({
+    band: bi, yFrom: Math.round((bi * work.h) / 3), yTo: Math.round(((bi + 1) * work.h) / 3),
+    inPool: bandCount(pool, bi), inTable: bandCount(cands, bi),
+  }))
+  /* 回画：源配色边框 + 编号标签。**优先全分辨率**（回画物的用途是"人照着框选"，
+   * 480 宽的图在小目标上根本框不准——本案例实测被用户退回）。
+   * 检测若已用 L0，`work` 就是那张原图：**直接复用**，省掉第二次 PNG 解码，
+   * 也避免"检测时命中、回画时已淘汰"让来源标签说谎——中间隔着最长 60 秒的 OCR await，
+   * 而 L0 滚动窗在 10fps 下只有约 1.6 秒，这个竞态是真会发生的。
+   * 检测若走了降级小图，这里再试一次 L0：命中就能给出全分辨率回画（框按 kx 放大）。 */
+  let draw = { rgb: work.rgb, w: work.w, h: work.h, kx: 1, ky: 1, source: detectionSource ?? 'l1-ring' }
+  if (detectionSource !== 'l0-full' && !args.kfSource && seq !== null) {
+    const l0 = findL0(seq)
+    if (l0) {
+      try {
+        const dec = pngDecode(l0.png)
+        draw = { rgb: toRgb(dec), w: dec.w, h: dec.h, kx: dec.w / work.w, ky: dec.h / work.h, source: 'l0-full' }
+      } catch (e) { /* 解码失败就退回工作图 */ }
+    }
+  }
+  const buf = Buffer.from(draw.rgb)
   cands.forEach((c, i) => {
     const color = SOM_COLORS[c.source] ?? [200, 200, 200]
-    drawRect(buf, work.w, work.h, c.box, color)
-    drawLabel(buf, work.w, work.h, c.box[0], c.box[1] - 8, i + 1, [20, 20, 20])
+    const sb = [
+      Math.round(c.box[0] * draw.kx), Math.round(c.box[1] * draw.ky),
+      Math.max(2, Math.round(c.box[2] * draw.kx)), Math.max(2, Math.round(c.box[3] * draw.ky)),
+    ]
+    drawRect(buf, draw.w, draw.h, sb, color)
+    drawLabel(buf, draw.w, draw.h, sb[0], Math.max(0, sb[1] - Math.round(8 * draw.ky)), i + 1, [20, 20, 20])
   })
   const out = args.out || defaultOutFile(S.runDir, 'som').file
   fs.mkdirSync(path.dirname(out), { recursive: true })
-  fs.writeFileSync(out, pngEncodeRGB(buf, work.w, work.h))
+  /* ROI 收窄时把范围画出来（白色双线框）：人看图时才知道"表里这些是这一小块里的"，
+   * 不会误以为整屏就这些候选。 */
+  if (roiApplied) {
+    const sxr = draw.w / Math.max(1, ctrlW0)
+    const syr = draw.h / Math.max(1, ctrlH0)
+    const rb = [
+      Math.round(roiApplied.roi[0] * sxr), Math.round(roiApplied.roi[1] * syr),
+      Math.max(2, Math.round(roiApplied.roi[2] * sxr)), Math.max(2, Math.round(roiApplied.roi[3] * syr)),
+    ]
+    drawRect(buf, draw.w, draw.h, rb, [255, 255, 255])
+    drawRect(buf, draw.w, draw.h, [rb[0] + 1, rb[1] + 1, Math.max(2, rb[2] - 2), Math.max(2, rb[3] - 2)], [255, 255, 255])
+  }
+  fs.writeFileSync(out, pngEncodeRGB(buf, draw.w, draw.h))
+  const ctrlW = work.fw > 0 ? work.fw : work.w
+  const ctrlH = work.fh > 0 ? work.fh : work.h
+  /* 候选框的面积占比（控制器空间，与画面同尺度）：调用方可据此再排一次序——
+   * 面积越大越可能是面板/背景而不是小按钮。 */
+  const feat = (c) => {
+    const cb = toCtrl(c.box)
+    const r = (cb[2] * cb[3]) / Math.max(1, ctrlW * ctrlH)
+    return { ctrlBox: cb, areaRatio: Math.round(r * 10000) / 10000 }
+  }
   return {
-    ok: true, out, seq, source,
-    small: [work.w, work.h], ctrl: [work.fw > 0 ? work.fw : work.w, work.fh > 0 ? work.fh : work.h],
+    ok: true, out, seq, source, detectionSource,
+    small: [work.w, work.h], ctrl: [ctrlW, ctrlH],
     count: cands.length,
     limit: LIMIT,
     mergedTotal: merged.length,
@@ -2330,9 +2712,26 @@ async function cmdAnnotate(args) {
     /* 被门槛拒掉的候选：conn 的面积窗/太扁、edge 的两道门槛/单块簇。
      * 与 sources 一起读，才知道"候选少"是内容如此还是被过滤掉了。 */
     filtered: { conn: connStats, edge: edgeStats },
+    /* 可用性指标：**"看起来有结果"不等于"有结果"**。上限截断、巨框剔除、去重合并各扣了多少，
+     * 以及每带的供给/进表——没有这三列，调用方会把"30 条候选"读成"画面就这些可点区域"。 */
+    availability: {
+      limit: LIMIT,
+      mergedTotal: merged.length,
+      truncated: Math.max(0, pool.length - cands.length),
+      dropped,
+      maxAreaRatio: maxRatio,
+      ...(roiApplied ? { roi: roiApplied } : {}),
+      byBand: bands,
+      outResolution: { w: draw.w, h: draw.h, source: draw.source },
+      detectionResolution: { w: work.w, h: work.h, source: detectionSource ?? (args.kfSource ? 'kf-frame' : '?') },
+    },
     ...(args.kfSource ? { sourcesUnavailable: { diff: '库帧路径无会话事件：diff 源不可用（不拿别的区域顶替）' } } : {}),
-    candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...(c.extra ?? {}) })),
+    candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...feat(c), ...(c.extra ?? {}) })),
     ...(cands.length === 0 ? { warn: '无候选：画面可能静止且低对比；换帧或走点选路径' } : {}),
+    ...(pool.length > LIMIT
+      ? { warn: '候选被上限截断：本区域池 ' + pool.length + ' 条，进表 ' + cands.length + ' 条。'
+          + (roiApplied ? '用更小的 roi 继续收窄' : '给 roi 把搜索面收小（这是正解），或给 somLimit 放开上限') }
+      : {}),
   }
 }
 
@@ -2406,6 +2805,8 @@ const handlers = {
   stream_stop: cmdStreamStop,
   stream_status: cmdStreamStatus,
   frame_get: cmdFrameGet,
+  frame_diff: cmdFrameDiff,
+  wait: cmdWait,
   tpl_crop: cmdTplCrop,
   annotate: cmdAnnotate,
   calibrate: cmdCalibrate,

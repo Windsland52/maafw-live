@@ -208,8 +208,9 @@ export const screencapCommand: Command = {
 export const frameCommand: Command = {
   name: 'frame',
   summary: '帧流状态与历史帧取用（环形缓冲只在 REPL 会话里才有内容）',
-  usage: 'maafw-live frame status | maafw-live frame get [seq] [--roi x,y,w,h] [--out <png>]',
-  options: { ...CONNECT_OPTIONS, roi: { type: 'string' }, out: { type: 'string' } },
+  usage: 'maafw-live frame status | maafw-live frame get [seq] [--roi x,y,w,h] [--out <png>] [--src auto|full|ring]\n' +
+    '        --src full 强制要控制器分辨率原图（L0 已淘汰则报错，绝不给缩小图冒充）',
+  options: { ...CONNECT_OPTIONS, roi: { type: 'string' }, out: { type: 'string' }, src: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
     const sub = ctx.positionals[0] ?? 'status'
@@ -241,19 +242,101 @@ export const frameCommand: Command = {
       return fail('BAD_ARGUMENTS', '--roi 需要 4 个数字：x,y,w,h（控制器分辨率坐标，与 pipeline 的 roi 同空间）', undefined, EXIT.USAGE)
     }
     const out = typeof ctx.values.out === 'string' ? ctx.values.out : undefined
+    const srcRaw = typeof ctx.values.src === 'string' ? ctx.values.src.toLowerCase() : 'auto'
+    if (!['auto', 'full', 'ring'].includes(srcRaw)) {
+      return fail('BAD_ARGUMENTS', '--src 只支持 auto | full | ring', undefined, EXIT.USAGE)
+    }
+    const src = srcRaw as 'auto' | 'full' | 'ring'
     try {
       return await withDaemon(async (client) => {
         await ensureSession(client, o)
-        const r = await act.frameGet(client, { seq, roi, out })
+        const r = await act.frameGet(client, { seq, roi, out, src })
         if (r.ok === false) {
           return fail('NO_FRAME', String(r.error ?? '取帧失败'),
             '帧流要先在 REPL 里 stream start；一次性命令的环形缓冲是空的', EXIT.FINDINGS)
         }
+        /* 降级是**发现**不是失败：图能用，但分辨率与预期不符必须让人看见（退出 3）。
+         * 判据取自 daemon 的 `degraded`——它按"调用方要什么"判（带 roi 的 auto 退小图才算降级；
+         * 显式 ring 与整帧小图都是预期行为），比在命令面拿 `sourceResolution < 1` 反推准确。 */
+        const degraded = r.degraded === true
         return {
-          exitCode: EXIT.OK,
-          human: ['帧 ' + String(r.seq) + ' → ' + String(r.path) + ' (' + r.w + 'x' + r.h + ')'],
+          exitCode: degraded ? EXIT.FINDINGS : EXIT.OK,
+          human: [
+            '帧 ' + String(r.seq) + ' → ' + String(r.path) + ' (' + r.w + 'x' + r.h + ')'
+              + '  来源 ' + String(r.source ?? '?') + '  有效分辨率 ' + String(r.sourceResolution ?? '?'),
+            ...(r.warn ? ['  警告：' + String(r.warn)] : []),
+          ],
           data: r,
+          warnings: r.warn ? [String(r.warn)] : [],
           written: [String(r.path)],
+        }
+      })
+    } catch (e) {
+      return daemonFail(e)
+    }
+  },
+}
+
+export const waitCommand: Command = {
+  name: 'wait',
+  summary: '等状态谓词成立：stable=画面静下来 / change=画面动了（取代硬睡时钟）',
+  usage: 'maafw-live wait stable|change [--timeout ms] [--quiet ms] [--roi x,y,w,h] [--threshold n]\n' +
+    '        超时不算命令失败（ok=true, satisfied=false, 退出码 3）——"没等到"是观测结果',
+  options: {
+    ...CONNECT_OPTIONS,
+    timeout: { type: 'string' }, quiet: { type: 'string' },
+    roi: { type: 'string' }, threshold: { type: 'string' },
+  },
+
+  async run(ctx): Promise<CommandResult> {
+    const modeRaw = ctx.positionals[0]
+    if (modeRaw !== 'stable' && modeRaw !== 'change') {
+      return fail('BAD_ARGUMENTS',
+        'wait 只认 stable | change' + (modeRaw ? '（收到 ' + JSON.stringify(modeRaw) + '）' : ''),
+        '用法：maafw-live wait stable|change [--timeout ms] [--quiet ms] [--roi x,y,w,h] [--threshold n]',
+        EXIT.USAGE)
+    }
+    const mode = modeRaw
+    const o = sessionOptions(ctx.values)
+    const timeout = ctx.values.timeout !== undefined ? Number(ctx.values.timeout) : undefined
+    if (timeout !== undefined && !Number.isFinite(timeout)) {
+      return fail('BAD_ARGUMENTS', '--timeout 必须是毫秒数', undefined, EXIT.USAGE)
+    }
+    const quiet = ctx.values.quiet !== undefined ? Number(ctx.values.quiet) : undefined
+    if (quiet !== undefined && !Number.isFinite(quiet)) {
+      return fail('BAD_ARGUMENTS', '--quiet 必须是毫秒数', undefined, EXIT.USAGE)
+    }
+    const threshold = ctx.values.threshold !== undefined ? Number(ctx.values.threshold) : undefined
+    if (threshold !== undefined && !Number.isFinite(threshold)) {
+      return fail('BAD_ARGUMENTS', '--threshold 必须是数字', undefined, EXIT.USAGE)
+    }
+    const roi = typeof ctx.values.roi === 'string'
+      ? ctx.values.roi.split(',').map((x) => Number(String(x).trim()))
+      : undefined
+    if (roi && (roi.length !== 4 || roi.some((n) => !Number.isFinite(n)))) {
+      return fail('BAD_ARGUMENTS', '--roi 需要 4 个数字：x,y,w,h', undefined, EXIT.USAGE)
+    }
+    try {
+      return await withDaemon(async (client) => {
+        await ensureSession(client, o)
+        const r = await act.waitState(client, {
+          mode,
+          ...(timeout !== undefined ? { timeout } : {}),
+          ...(quiet !== undefined ? { quiet } : {}),
+          ...(roi ? { roi } : {}),
+          ...(threshold !== undefined ? { threshold } : {}),
+        })
+        if (r.ok === false) return fail('WAIT', String(r.error ?? '等待失败'), undefined, EXIT.FINDINGS)
+        const ok = r.satisfied === true
+        return {
+          exitCode: ok ? EXIT.OK : EXIT.FINDINGS,
+          human: [
+            'wait ' + mode + '：' + (ok ? '已成立' : '超时未成立')
+              + '  等了 ' + String(r.waitedMs) + 'ms  当前帧 seq=' + String(r.seq),
+            ...(r.warn ? ['  警告：' + String(r.warn)] : []),
+          ],
+          data: r,
+          warnings: r.warn ? [String(r.warn)] : [],
         }
       })
     } catch (e) {
@@ -455,5 +538,5 @@ export const stopCommand: Command = {
 
 export const RUNTIME_COMMANDS: Command[] = [
   probeCommand, deviceCommand, connectCommand, disconnectCommand,
-  screencapCommand, frameCommand, runCommand, stopCommand,
+  screencapCommand, frameCommand, waitCommand, runCommand, stopCommand,
 ]

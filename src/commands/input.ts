@@ -68,9 +68,13 @@ export const clickCommand: Command = {
 
 export const swipeCommand: Command = {
   name: 'swipe',
-  summary: '滑动（起点到终点，控制器分辨率空间）',
-  usage: 'maafw-live swipe <x1> <y1> <x2> <y2> [--duration ms] [--project <dir>|--kind ...]',
-  options: { ...CONNECT_OPTIONS, duration: { type: 'string' }, contact: { type: 'string' }, pressure: { type: 'string' } },
+  summary: '滑动（起点到终点，控制器分辨率空间）；--via 给中途路径点 = 一条笔画画折线',
+  usage: 'maafw-live swipe <x1> <y1> <x2> <y2> [--duration ms] [--via "x,y;x,y"] [--project <dir>|--kind ...]\n' +
+    '       带 --via 时走 touch_down→逐点 touch_move→touch_up（中途不抬手）——连线/谱曲/拖拽排序要的就是这个',
+  options: {
+    ...CONNECT_OPTIONS, duration: { type: 'string' }, contact: { type: 'string' },
+    pressure: { type: 'string' }, via: { type: 'string' },
+  },
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx.values)
@@ -80,6 +84,14 @@ export const swipeCommand: Command = {
     if (![x1, y1, x2, y2].every((n) => Number.isFinite(n))) {
       return fail('BAD_ARGUMENTS', '用法：maafw-live swipe <x1> <y1> <x2> <y2>', undefined, EXIT.USAGE)
     }
+    const viaRaw = typeof ctx.values.via === 'string' ? ctx.values.via : undefined
+    let via: number[][] | undefined
+    if (viaRaw !== undefined) {
+      via = viaRaw.split(';').map((s) => s.split(',').map((x) => Number(String(x).trim())))
+      if (!via.length || via.some((p) => p.length !== 2 || p.some((n) => !Number.isFinite(n)))) {
+        return fail('BAD_ARGUMENTS', '--via 每段要 2 个数字（x,y），段间用 ; 分隔，例："100,200;150,250"', undefined, EXIT.USAGE)
+      }
+    }
     return inject(
       o,
       {
@@ -87,8 +99,12 @@ export const swipeCommand: Command = {
         duration: num(ctx.values, 'duration') ?? 300,
         contact: num(ctx.values, 'contact') ?? 0,
         pressure: num(ctx.values, 'pressure') ?? 1,
+        ...(via ? { via } : {}),
       },
-      (r) => ['已滑动 (' + x1 + ',' + y1 + ') → (' + x2 + ',' + y2 + ')，' + String(r.ms) + 'ms'],
+      (r) => [via
+        ? '已折线滑动 (' + x1 + ',' + y1 + ') → ' + via.map((p) => '(' + p.join(',') + ')').join(' → ')
+          + ' → (' + x2 + ',' + y2 + ')，' + String(r.ms) + 'ms（一条笔画，' + String(via.length) + ' 个路径点）'
+        : '已滑动 (' + x1 + ',' + y1 + ') → (' + x2 + ',' + y2 + ')，' + String(r.ms) + 'ms'],
     )
   },
 }

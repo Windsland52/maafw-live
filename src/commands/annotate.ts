@@ -21,7 +21,10 @@ export const annotateCommand: Command = {
   usage: 'maafw-live annotate [--seq n] [--out <png>] [--resource-dir <dir>] [--project <dir>|--kind ...]\n' +
     '       maafw-live annotate --from-kf <kf:库UUID:序号> [--frames-dir <dir>] [--out <png>] [--resource-dir <dir>|--project <dir>]\n' +
     '       OCR 候选需要资源目录（OCR 模型）；一次性命令自动截一帧；其余候选源无依赖\n' +
-    '       --from-kf 在库里留存帧上离线跑（不需要设备；该路径没有会话事件，diff 源不可用）',
+    '       --from-kf 在库里留存帧上离线跑（不需要设备；该路径没有会话事件，diff 源不可用）\n' +
+    '       --som-limit n            放开候选上限（缺省 30；网格/表格类界面必给）\n' +
+    '       --som-max-area-ratio r   巨框剔除阈值（缺省 0.12，按画面面积比；OCR 框不参与）\n' +
+    '       回画优先落在 L0 全分辨率原图上；回执带 availability（截断/剔除/分带），别把"30 条"读成"画面就这些"',
   options: {
     ...CONNECT_OPTIONS,
     seq: { type: 'string' },
@@ -29,6 +32,9 @@ export const annotateCommand: Command = {
     'resource-dir': { type: 'string' },
     'from-kf': { type: 'string' },
     'frames-dir': { type: 'string' },
+    'som-limit': { type: 'string' },
+    'som-max-area-ratio': { type: 'string' },
+    roi: { type: 'string' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -38,6 +44,26 @@ export const annotateCommand: Command = {
       return fail('BAD_ARGUMENTS', '--seq 必须是数字', undefined, EXIT.USAGE)
     }
     const out = typeof ctx.values.out === 'string' ? ctx.values.out : undefined
+    const roi = typeof ctx.values.roi === 'string'
+      ? ctx.values.roi.split(',').map((x) => Number(String(x).trim()))
+      : undefined
+    if (roi && (roi.length !== 4 || roi.some((n) => !Number.isFinite(n)))) {
+      return fail('BAD_ARGUMENTS', '--roi 需要 4 个数字：x,y,w,h（控制器分辨率坐标）', undefined, EXIT.USAGE)
+    }
+    /* 上限/阈值必须**显式拒绝**非法值，不能靠 daemon 的 `> 0` 守卫悄悄换回默认——
+     * `--som-limit 0` 被静默当成 30 时，调用方以为"不限量"，拿到的是截断表。 */
+    const somLimitRaw = ctx.values['som-limit']
+    const somLimit = typeof somLimitRaw === 'string' ? Number(somLimitRaw) : undefined
+    if (somLimitRaw !== undefined && (!Number.isFinite(somLimit) || somLimit! <= 0)) {
+      return fail('BAD_ARGUMENTS', '--som-limit 必须是正整数（收到 ' + JSON.stringify(somLimitRaw) + '）'
+        + '；0 不等于"不限量"', undefined, EXIT.USAGE)
+    }
+    const ratioRaw = ctx.values['som-max-area-ratio']
+    const ratio = typeof ratioRaw === 'string' ? Number(ratioRaw) : undefined
+    if (ratioRaw !== undefined && (!Number.isFinite(ratio) || ratio! <= 0 || ratio! >= 1)) {
+      return fail('BAD_ARGUMENTS', '--som-max-area-ratio 要在 (0,1) 之间（画面面积比，收到 ' + JSON.stringify(ratioRaw) + '）'
+        + '；0 不等于"关闭剔除"', undefined, EXIT.USAGE)
+    }
     const fromKf = typeof ctx.values['from-kf'] === 'string' ? ctx.values['from-kf'] : undefined
     if (fromKf !== undefined && seq !== undefined) {
       return fail('BAD_ARGUMENTS', '--from-kf 与 --seq 互斥：前者在库内留存帧上跑，后者在本会话缓冲帧上跑',
@@ -84,6 +110,9 @@ export const annotateCommand: Command = {
           ...(!offline && seq !== undefined ? { seq } : {}),
           ...(out ? { out } : {}),
           ...(resourceDir ? { resourceDir } : {}),
+          ...(roi ? { roi } : {}),
+          ...(somLimit !== undefined ? { somLimit } : {}),
+          ...(ratio !== undefined ? { somMaxAreaRatio: ratio } : {}),
         })
         if (r.ok === false) {
           return fail('ANNOTATE', String(r.error ?? '候选生成失败'),
@@ -92,15 +121,40 @@ export const annotateCommand: Command = {
               : '需要观测：REPL 里先 screencap / stream start；一次性命令会自动截一帧',
             EXIT.FINDINGS)
         }
-        const cands = (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string }>) ?? []
+        const cands = (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string; score?: number; areaRatio?: number }>) ?? []
         const sources = r.sources as Record<string, number> | undefined
         const src = r.source as { kind?: string; id?: string; captureSeq?: number | null; seq?: number } | undefined
         const unavailable = r.sourcesUnavailable as Record<string, string> | undefined
         const ctrl = Array.isArray(r.ctrl) ? (r.ctrl as number[]) : null
+        const avail = r.availability as {
+          limit?: number; mergedTotal?: number; truncated?: number
+          dropped?: { tooSmall?: number; tooBig?: number; duplicated?: number }
+          maxAreaRatio?: number
+          byBand?: Array<{ band: number; yFrom: number; yTo: number; inPool: number; inTable: number }>
+          outResolution?: { w: number; h: number; source: string }
+          detectionResolution?: { w: number; h: number; source: string }
+        } | undefined
         const srcLine = src?.kind === 'kf'
           ? '源帧 ' + String(src.id) + '（留存帧，捕获 seq=' + String(src.captureSeq) + '，' +
             String(ctrl?.[0] ?? '?') + 'x' + String(ctrl?.[1] ?? '?') + '，离线）'
           : '源帧 seq=' + String(r.seq) + '（小图 ' + JSON.stringify(r.small) + ' × ctrl ' + JSON.stringify(r.ctrl) + '）'
+        /* 可用性三列：**"看起来有结果"不等于"有结果"**。截断/剔除/分带一起读，
+         * 才分得清"这一带没东西"与"这一带的东西被上限或门槛拿掉了"。 */
+        const availLines = avail
+          ? [
+            '  可用性：合并池 ' + String(avail.mergedTotal ?? '?') + ' → 进表 ' + String(r.count)
+              + '（上限 ' + String(avail.limit ?? '?') + '，截断 ' + String(avail.truncated ?? 0) + '）'
+              + '；剔除 太小 ' + String(avail.dropped?.tooSmall ?? 0) + ' / 巨框 ' + String(avail.dropped?.tooBig ?? 0)
+              + '（阈值 ' + String(avail.maxAreaRatio ?? '?') + '）/ 重复 ' + String(avail.dropped?.duplicated ?? 0),
+            ...(avail.byBand ? ['  分带（上/中/下）：' + avail.byBand.map((b) =>
+              String(b.inTable) + '/' + String(b.inPool)).join('  ')] : []),
+            ...(avail.outResolution ? ['  回画分辨率：' + String(avail.outResolution.w) + 'x' + String(avail.outResolution.h)
+              + '（' + String(avail.outResolution.source) + '）'] : []),
+            ...(avail.detectionResolution ? ['  检测面分辨率：' + String(avail.detectionResolution.w) + 'x'
+              + String(avail.detectionResolution.h) + '（' + String(avail.detectionResolution.source)
+              + '）——检测面越小，小目标越可能探不到'] : []),
+          ]
+          : []
         return {
           exitCode: EXIT.OK,
           human: [
@@ -109,13 +163,18 @@ export const annotateCommand: Command = {
             'SoM 候选 ' + String(r.count) + ' 个（ocr ' + String(sources?.ocr ?? 0) + ' / diff ' + String(sources?.diff ?? 0) +
               ' / conn ' + String(sources?.conn ?? 0) + ' / edge ' + String(sources?.edge ?? 0) + '）→ ' + String(r.out),
             '  ' + srcLine,
+            ...availLines,
             ...(unavailable ? Object.entries(unavailable).map(([k, v]) => '  ' + k + ' 源不可用：' + v) : []),
-            '  坐标为控制器分辨率：',
-            ...cands.map((c) => '  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',') + (c.text ? '  "' + c.text + '"' : '')),
+            '  坐标为控制器分辨率（面积占比供排序：越小越像小按钮，越大越像面板/背景）：',
+            ...cands.map((c) => '  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',')
+              + (typeof c.areaRatio === 'number' ? ' 面积比=' + c.areaRatio : '')
+              + (typeof c.score === 'number' ? ' score=' + c.score : '')
+              + (c.text ? '  "' + c.text + '"' : '')),
             ...(r.warn ? ['  警告：' + String(r.warn)] : []),
             '选号后：click / reco --node（roi 用 ctrl 坐标）/ crop --roi（可再 crop --from-kf 于同一帧）',
           ],
           data: r,
+          warnings: r.warn ? [String(r.warn)] : [],
           written: [String(r.out)],
         }
       })

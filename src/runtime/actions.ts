@@ -80,8 +80,14 @@ export const streamStart = (c: DaemonClient, args: { fps?: number; scale?: numbe
   c.call<Record<string, unknown>>('stream_start', args, 15000)
 export const streamStop = (c: DaemonClient) => c.call<{ ok: boolean }>('stream_stop', {}, 10000)
 export const streamStatus = (c: DaemonClient) => c.call<Record<string, unknown>>('stream_status', {}, 10000)
-export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; out?: string }) =>
+export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; out?: string; src?: 'auto' | 'full' | 'ring' }) =>
   c.call<Record<string, unknown>>('frame_get', args, 30000)
+/** 等状态谓词成立：stable=画面静下来 / change=画面动了。取代调用方硬睡时钟。 */
+export const waitState = (c: DaemonClient, args: { mode?: 'stable' | 'change'; timeout?: number; quiet?: number; roi?: number[]; threshold?: number } = {}) =>
+  c.call<Record<string, unknown>>('wait', args, Math.min(120000, Number(args.timeout ?? 10000)) + 5000)
+/** 两帧在若干 ROI 上的差分：回答"这一步改了哪几格"。 */
+export const frameDiff = (c: DaemonClient, args: { a: number; b: number; rois: number[][] }) =>
+  c.call<Record<string, unknown>>('frame_diff', args, 30000)
 export const colorProbe = (c: DaemonClient, args: { seq?: number; roi?: number[] }) =>
   c.call<Record<string, unknown>>('color_probe', args, 15000)
 /** 裁剪源 = 关键帧库留存帧（离线解析出来的身份 + 路径；daemon 会复核 sha256 与像素尺寸）。 */
@@ -124,6 +130,13 @@ export const annotate = (c: DaemonClient, args: {
   somEdgeMin?: number
   /** 连通域合并 IoU 的测量用覆盖 */
   somIoU?: number
+  /** 巨框剔除阈值（画面面积比，缺省 0.12；OCR 框不参与）——背景/立绘/整屏变化区不该占表 */
+  somMaxAreaRatio?: number
+  /** 只保留落在该区域（控制器空间）内的候选，且在**取上限之前**过滤：
+   * 区域内的候选只跟自己竞争。上限截断的正解是收小搜索面，不是把上限调大。 */
+  roi?: number[]
+  /** 检测面：full(缺省，有 L0 时用控制器分辨率原图) | small（强制降采样小图，快但小目标会漏） */
+  somScale?: 'full' | 'small'
 }) => c.call<Record<string, unknown>>('annotate', args, 120000)
 export const calibrate = (c: DaemonClient, args: { frames?: number; interval?: number } = {}) =>
   c.call<Record<string, unknown>>('calibrate', args, 120000)

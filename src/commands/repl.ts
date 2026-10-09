@@ -23,25 +23,41 @@ const HELP = [
   '  connect project <dir> [hwnd|address]   按 interface.json 规划连接（推荐）',
   '  disconnect                     断开并销毁 Tasker/Controller',
   '  screencap [out.png]            截一帧落盘（同时进 L0，可升格）',
-  '  stream start [--fps n] [--scale n] | stream stop | stream status',
-  '  frame [seq] [--roi x,y,w,h] [--out f.png]   从环形缓冲取帧',
+  '  stream start [--fps n] [--scale n] [--l0-roll n] [--l0-anchor n] [--max-frames n] [--block-thresh n] [--change-global n] [--l0-bytes n]',
+  '  stream stop | stream status',
+  '  frame [seq] [--roi x,y,w,h] [--src auto|full|ring] [--out f.png]   取帧（--src full = 控制器分辨率原图）',
+  '  frame diff --a <seq> --b <seq> --rois "x,y,w,h;x,y,w,h"   两帧在若干 ROI 上的差分（判断"改了哪几格"）',
+  '  wait stable|change [--timeout ms] [--quiet ms] [--roi x,y,w,h] [--threshold n]   等状态谓词成立（别硬睡）',
   '  color [--roi x,y,w,h]        探色（均值/HSV/主色，最新缓冲帧）',
   '  crop --roi x,y,w,h | --point x,y [--pad n] [--out f.png] [--from-kf kf:...]   模板裁剪（原图 + 自匹配；--from-kf 走库内留存帧，离线）',
-  '  annotate [--out f.png] [--from-kf kf:...]   SoM 候选与编号回画（OCR/diff/连通域/边缘；库帧路径离线、diff 不可用）',
+  '  annotate [--out f.png] [--som-limit n] [--som-max-area-ratio r] [--from-kf kf:...]   SoM 候选与编号回画（回画优先全分辨率；库帧路径离线、diff 不可用）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
   '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
   '  stop                           停止运行中的任务',
-  '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] | key <code> | text <string>',
+  '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] [--via "x,y;x,y"] | key <code> | text <string>',
+  '       swipe --via 走 touch_down→逐点 touch_move→touch_up：**一条笔画画折线**（中途不抬手）',
   '  press <x> <y> [--duration ms] | dbclick <x> <y> | keys <c[,c+..]> | scroll <dx> <dy> | move <dx> <dy>',
+  '  touchdown <x> <y> | touchmove <x> <y> | touchup       裸触点原语（跨命令维持同一次按压）',
   '  reco <type> [k=v ...] [--sweep json]   识别单测（用缓冲最新帧）',
   '  kf status | kf promote [seq|latest] [--note s] | kf list | kf resolve <kf:...>',
   '  help | quit',
 ]
 
-/** 极简分词：空格分隔，支持 --flag value 与 key=value；text 用整行剩余内容。 */
+/** 极简分词：空格分隔，支持 --flag value 与 key=value；text 用整行剩余内容。
+ *
+ * **成对引号要剥掉**：脚本与 agent 习惯把带逗号的参数写进引号（`--roi "470,10,180,110"`），
+ * 不剥就整串当参数：`Number('"470')` = NaN → 走 JSON 变 null → daemon `Number(null)` = 0，
+ * 于是退化成一个**合法但错误**的框（实测 `--roi "400,20,200,60"` 变成 `w=200,h=0`）且不报错。
+ * 剥引号让"带引号"与"不带引号"等价——这是调用方最自然的写法。 */
 function tokenize(line: string): string[] {
-  return line.trim().split(/\s+/).filter((t) => t !== '')
+  return line.trim().split(/\s+/).filter((t) => t !== '').map((t) => {
+    if (t.length >= 2) {
+      const a = t[0], z = t[t.length - 1]
+      if ((a === '"' && z === '"') || (a === "'" && z === "'")) return t.slice(1, -1)
+    }
+    return t
+  })
 }
 
 function readFlag(tokens: string[], name: string): string | undefined {
@@ -77,6 +93,41 @@ function numFlag(tokens: string[], name: string, def: number): number | null {
 function short(v: unknown, max = 400): string {
   const s = typeof v === 'string' ? v : JSON.stringify(v)
   return s.length > max ? s.slice(0, max) + ' …' : s
+}
+
+/** REPL 自己的词表（与 CLI 命令集**不同**：stream/wait/events/logs 只在会话里）。
+ * 敲错时给最近的命令名——一次性 CLI 早有编辑距离建议，会话里没有，而会话里敲错更贵
+ * （要么重新起会话，要么对着"未知命令"猜半天）。 */
+const REPL_HEADS = [
+  'probe', 'device', 'connect', 'disconnect', 'screencap', 'stream', 'wait', 'frame',
+  'color', 'crop', 'annotate', 'events', 'logs', 'run', 'stop', 'click', 'swipe',
+  'key', 'keys', 'press', 'dbclick', 'scroll', 'move', 'text', 'touchdown', 'touchmove',
+  'touchup', 'reco', 'kf', 'help', 'quit',
+]
+
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length
+  if (!m) return n
+  if (!n) return m
+  let prev = Array.from({ length: n + 1 }, (_, i) => i)
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[n]!
+}
+
+function suggestHead(name: string, maxDistance = 3): string | undefined {
+  let best: string | undefined
+  let bestDist = maxDistance + 1
+  for (const h of REPL_HEADS) {
+    const d = editDistance(name, h)
+    if (d < bestDist) { bestDist = d; best = h }
+  }
+  return bestDist <= maxDistance ? best : undefined
 }
 
 export const replCommand: Command = {
@@ -175,24 +226,91 @@ export const replCommand: Command = {
                 const blockThresh = readFlag(tokens, '--block-thresh')
                 const changeGlobal = readFlag(tokens, '--change-global')
                 const l0Bytes = readFlag(tokens, '--l0-bytes')
+                /* 观测策略参数：l0-roll 决定"我有多久回看窗口"（默认 16 帧 ≈ 1.6s @10fps），
+                 * max-frames 决定环形缓冲长度。协议本就支持，命令面必须可达——
+                 * 不可达的参数会被调用方当成"没有"。 */
+                const maxFrames = readFlag(tokens, '--max-frames')
+                const l0Roll = readFlag(tokens, '--l0-roll')
+                const l0Anchor = readFlag(tokens, '--l0-anchor')
                 out(short(await act.streamStart(client, {
                   ...(fps ? { fps: Number(fps) } : {}),
                   ...(scale ? { scale: Number(scale) } : {}),
                   ...(blockThresh ? { blockThresh: Number(blockThresh) } : {}),
                   ...(changeGlobal ? { changeGlobal: Number(changeGlobal) } : {}),
                   ...(l0Bytes ? { l0Bytes: Number(l0Bytes) } : {}),
+                  ...(maxFrames ? { maxFrames: Number(maxFrames) } : {}),
+                  ...(l0Roll ? { l0Roll: Number(l0Roll) } : {}),
+                  ...(l0Anchor ? { l0Anchor: Number(l0Anchor) } : {}),
                 })))
               } else if (sub === 'stop') out(short(await act.streamStop(client)))
               else out(short(await act.streamStatus(client)))
               break
             }
+            case 'wait': {
+              /* 状态谓词：等到条件成立再往下读，取代硬睡时钟。超时不算错误（satisfied=false）。 */
+              const modeRaw = tokens[1]
+              if (modeRaw !== 'stable' && modeRaw !== 'change') {
+                out('用法：wait stable|change [--timeout ms] [--quiet ms] [--roi x,y,w,h] [--threshold n]'
+                  + '（模式只认 stable / change'
+                  + (modeRaw ? '；收到 ' + JSON.stringify(modeRaw)
+                    + (suggestHead(modeRaw) ? '，是想输入 ' + String(suggestHead(modeRaw)) + ' 吗' : '') : '')
+                  + '）')
+                break
+              }
+              /* 数值 flag 必须校验：`--timeout abc` 会变成 NaN 一路传下去，
+               * 客户端超时算成 NaN → 调用秒超时，看起来像"工具坏了"。 */
+              const numOr = (name: string): number | undefined | null => {
+                const raw = readFlag(tokens, name)
+                if (raw === undefined) return undefined
+                const n = Number(raw)
+                return Number.isFinite(n) ? n : null
+              }
+              const tmo = numOr('--timeout')
+              const qt = numOr('--quiet')
+              const thr = numOr('--threshold')
+              if (tmo === null || qt === null || thr === null) {
+                out('--timeout / --quiet / --threshold 必须是数字'
+                  + (tmo === null ? '（--timeout 收到 ' + JSON.stringify(readFlag(tokens, '--timeout')) + '）' : ''))
+                break
+              }
+              const roiRaw = readFlag(tokens, '--roi')
+              const r = await act.waitState(client, {
+                mode: modeRaw,
+                ...(tmo !== undefined ? { timeout: tmo } : {}),
+                ...(qt !== undefined ? { quiet: qt } : {}),
+                ...(thr !== undefined ? { threshold: thr } : {}),
+                ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
+              })
+              out(short(r, 500))
+              break
+            }
             case 'frame': {
               const roiRaw = readFlag(tokens, '--roi')
+              const srcRaw = readFlag(tokens, '--src')
               const seq = tokens[1] && !tokens[1].startsWith('--') ? Number(tokens[1]) : undefined
+              if (tokens[1] === 'diff') {
+                /* 两帧在若干 ROI 上的差分：离散网格要的是"哪几格变了"，不是整帧 bbox。 */
+                const a = readFlag(tokens, '--a')
+                const b = readFlag(tokens, '--b')
+                const roisRaw = readFlag(tokens, '--rois')
+                if (a === undefined || b === undefined || !roisRaw) {
+                  out('用法：frame diff --a <seq> --b <seq> --rois "x,y,w,h;x,y,w,h"')
+                  break
+                }
+                const rois = roisRaw.split(';').map((s) => s.split(',').map((x) => Number(x)))
+                if (rois.some((r) => r.length !== 4 || r.some((n) => !Number.isFinite(n)))) {
+                  out('--rois 每段要 4 个数字，段间用 ; 分隔')
+                  break
+                }
+                const d = await act.frameDiff(client, { a: Number(a), b: Number(b), rois })
+                out(short(d, 900))
+                break
+              }
               out(short(await act.frameGet(client, {
                 ...(seq !== undefined ? { seq } : {}),
                 ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
+                ...(srcRaw ? { src: srcRaw as 'auto' | 'full' | 'ring' } : {}),
               })))
               break
             }
@@ -254,17 +372,49 @@ export const replCommand: Command = {
                   captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
                 }
               }
+              const somLimitRaw = readFlag(tokens, '--som-limit')
+              const somLimit = somLimitRaw === undefined ? undefined : Number(somLimitRaw)
+              if (somLimitRaw !== undefined && (!Number.isFinite(somLimit) || somLimit! <= 0)) {
+                out('--som-limit 必须是正整数（收到 ' + JSON.stringify(somLimitRaw) + '）；0 不等于"不限量"')
+                break
+              }
+              const somRatioRaw = readFlag(tokens, '--som-max-area-ratio')
+              const somRatio = somRatioRaw === undefined ? undefined : Number(somRatioRaw)
+              if (somRatioRaw !== undefined && (!Number.isFinite(somRatio) || somRatio! <= 0 || somRatio! >= 1)) {
+                out('--som-max-area-ratio 要在 (0,1) 之间（收到 ' + JSON.stringify(somRatioRaw) + '）；0 不等于"关闭剔除"')
+                break
+              }
               const r = await act.annotate(client, {
                 ...(readFlag(tokens, '--out') ? { out: readFlag(tokens, '--out') } : {}),
                 ...(somKf ? { kfSource: somKf } : {}),
+                ...(somLimit !== undefined ? { somLimit } : {}),
+                ...(somRatio !== undefined ? { somMaxAreaRatio: somRatio } : {}),
+                ...(readFlag(tokens, '--roi') ? { roi: String(readFlag(tokens, '--roi')).split(',').map((x) => Number(x)) } : {}),
                 ...(readFlag(tokens, '--resource-dir')
                   ? { resourceDir: readFlag(tokens, '--resource-dir') }
                   : (state.plan?.resource?.paths.length ? { resourceDir: state.plan.resource.paths[0] } : {})),
               })
               if (r.ok === false) { out('annotate 失败：' + String(r.error)); break }
               out('SoM ' + String(r.count) + ' 候选 → ' + String(r.out) + (somKf ? '（源：留存帧）' : ''))
-              for (const c of (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string }>) ?? []) {
-                out('  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',') + (c.text ? '  "' + c.text + '"' : ''))
+              /* 可用性三列：不读它就会把"30 条"当成"画面就这些可点区域"。 */
+              const av = r.availability as {
+                limit?: number; mergedTotal?: number; truncated?: number
+                dropped?: { tooSmall?: number; tooBig?: number; duplicated?: number }
+                byBand?: Array<{ inPool: number; inTable: number }>
+                outResolution?: { w: number; h: number; source: string }
+              } | undefined
+              if (av) {
+                out('  可用性：合并池 ' + String(av.mergedTotal ?? '?') + ' → 进表 ' + String(r.count)
+                  + '（上限 ' + String(av.limit ?? '?') + '，截断 ' + String(av.truncated ?? 0) + '）'
+                  + '；剔除 巨框 ' + String(av.dropped?.tooBig ?? 0) + ' / 重复 ' + String(av.dropped?.duplicated ?? 0))
+                if (av.byBand) out('  分带（上/中/下）进表/池：' + av.byBand.map((b) => String(b.inTable) + '/' + String(b.inPool)).join('  '))
+                if (av.outResolution) out('  回画分辨率：' + String(av.outResolution.w) + 'x' + String(av.outResolution.h) + '（' + String(av.outResolution.source) + '）')
+              }
+              for (const c of (r.candidates as Array<{ id: number; source: string; ctrl: number[]; text?: string; score?: number; areaRatio?: number }>) ?? []) {
+                out('  #' + c.id + ' [' + c.source + '] ctrl=' + c.ctrl.join(',')
+                  + (typeof c.areaRatio === 'number' ? ' 面积比=' + c.areaRatio : '')
+                  + (typeof c.score === 'number' ? ' score=' + c.score : '')
+                  + (c.text ? '  "' + c.text + '"' : ''))
               }
               break
             }
@@ -332,12 +482,39 @@ export const replCommand: Command = {
             case 'swipe': {
               const a = nums(tokens, 1, 4)
               const duration = numFlag(tokens, '--duration', 300)
-              if (!a || duration === null) { out('用法：swipe <x1> <y1> <x2> <y2> [--duration ms]'); break }
+              if (!a || duration === null) { out('用法：swipe <x1> <y1> <x2> <y2> [--duration ms] [--via "x,y;x,y"]'); break }
+              /* --via：中途路径点。走的是 touch_down→逐点 touch_move→touch_up —— **一条笔画画折线**，
+               * 中途不抬手。连线/谱曲/拖拽排序这类玩法要的正是这个；只有两端点时走原生 post_swipe。 */
+              const viaRaw = readFlag(tokens, '--via')
+              let via: number[][] | undefined
+              if (viaRaw) {
+                via = viaRaw.split(';').map((s) => s.split(',').map((x) => Number(x)))
+                if (via.some((p) => p.length !== 2 || p.some((n) => !Number.isFinite(n)))) {
+                  out('--via 每段要 2 个数字（x,y），段间用 ; 分隔')
+                  break
+                }
+              }
               out(short(await act.input(client, {
                 kind: 'swipe', x1: a[0], y1: a[1], x2: a[2], y2: a[3], duration,
+                ...(via ? { via } : {}),
               })))
               break
             }
+            case 'touchdown': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：touchdown <x> <y>'); break }
+              out(short(await act.input(client, { kind: 'touch_down', x: a[0], y: a[1] })))
+              break
+            }
+            case 'touchmove': {
+              const a = nums(tokens, 1, 2)
+              if (!a) { out('用法：touchmove <x> <y>'); break }
+              out(short(await act.input(client, { kind: 'touch_move', x: a[0], y: a[1] })))
+              break
+            }
+            case 'touchup':
+              out(short(await act.input(client, { kind: 'touch_up' })))
+              break
             case 'key': {
               const a = nums(tokens, 1, 1)
               if (!a) { out('用法：key <code>（Android KeyEvent 码：3=Home、4=返回）'); break }
@@ -426,7 +603,9 @@ export const replCommand: Command = {
               break
             }
             default:
-              out('未知命令：' + head + '（输入 help）')
+              out('未知命令：' + head
+                + (suggestHead(head) ? '（是想输入 ' + String(suggestHead(head)) + ' 吗？）' : '')
+                + '（输入 help 看命令表）')
           }
         } catch (e) {
           if (e instanceof SessionError) out('会话错误 [' + e.code + ']：' + e.message)
