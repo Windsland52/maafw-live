@@ -52,7 +52,8 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live connect` | 连接设备（进程态；多步操作用 repl） |
 | `maafw-live disconnect` | 断开并销毁 Tasker / Controller |
 | `maafw-live screencap` | 截一帧并落盘（同时进 L0 缓存，有捕获身份可升格） |
-| `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI，按该帧捕获时尺寸换算） |
+| `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI，按该帧捕获时尺寸换算）；`--src full` 取控制器分辨率原图，降级为小图会明说并判 findings |
+| `maafw-live wait` | 状态谓词：`stable`（画面静下来）/ `change`（画面动了）——取代调用方硬睡时钟；**超时不是失败**，是观测结果（退出 3） |
 | `maafw-live run` | 运行 pipeline；项目模式合成 pipeline_override 四级链；`--timeout 0` 不自动停；退出码按任务级 `record.ok` |
 | `maafw-live stop` | 停止运行中的任务 |
 | `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
@@ -177,7 +178,7 @@ try {
 | 0 | 正常完成，未发现问题（run 的任务级 `record.ok=true`） |
 | 1 | 命令自身失败（未预期异常、IO 错误）；**run 的任务失败**（`record.ok=false`，含超时被停止） |
 | 2 | 参数 / 用法错误 |
-| 3 | 跑成了，但发现了问题：run 的**调用级**失败（未连接 / 资源缺失 / 已有任务在跑）、reco 识别未命中（含 `--act` 单测失败）、crop / color / annotate / calibrate 的失败或警告、kf manifest / promote 失败、device 未发现设备、frame 取不到帧（帧流未开 / 环形缓冲为空）、timing 采样未跑起来（资源缺失 / 任务没跑起来 / `--runs` 次全未成功）、`version --check` 查到新版、`skill --check` 检出已装副本漂移 |
+| 3 | 跑成了，但发现了问题：run 的**调用级**失败（未连接 / 资源缺失 / 已有任务在跑）、reco 识别未命中（含 `--act` 单测失败）、crop / color / annotate / calibrate 的失败或警告、kf manifest / promote 失败、device 未发现设备、frame 取不到帧（帧流未开 / 环形缓冲为空）与**带 `roi` 时帧降级为小图**（`--src auto/full` 下 L0 已淘汰；显式 `--src ring` 与不带 `roi` 的整帧小图都是预期行为，不算）、wait **超时未成立**（"没等到"是观测结果，不是命令失败）、timing 采样未跑起来（资源缺失 / 任务没跑起来 / `--runs` 次全未成功）、`version --check` 查到新版、`skill --check` 检出已装副本漂移 |
 | 4 | 前置环境缺失 |
 
 关键是 **1 与 3 的区分**：1 是「没跑成」（含任务失败），3 是「跑成了但有问题」。任务级结果看

@@ -5,6 +5,79 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+来源于《重返未来：1999》活动小游戏「众声的谱成」的从零实战压测（观测 → 定标 → 交互全链路）。
+下面每一条都对应那次案例里**实际卡住过**的位置，不是推演出来的需求。
+
+### 新增
+
+- **`wait stable|change`：状态谓词，取代调用方硬睡时钟**——判据复用帧流同一套（最近 `quiet` 内有无
+  `change` 事件 + 可选 ROI 内逐帧均值差），不另立阈值口径。**超时不是命令失败**：`ok:true` +
+  `satisfied:false`（退出 3）——"没等到"是观测结果。动机：没有这个原语时只能 `sleep`，实测硬睡
+  39 次共 155 秒，**而且等了也不保证对**（抓到过渡帧并据此误判当前界面）。
+- **`frame diff --a --b --rois`：两帧在若干 ROI 上的差分**——帧流事件只给整帧 bbox，而离散网格
+  （棋盘 / 背包 / 技能格）要的是"每格变了多少"。回执按 `meanDiff` 降序给 `ranked`。
+- **`swipe --via "x,y;x,y"` 与裸触点原语 `touch_down`/`touch_move`/`touch_up`**——`via` 走
+  `touch_down → 逐点 touch_move → touch_up`，即**一条笔画画出折线**（中途不抬手）。动机：连线 /
+  谱曲 / 拖拽排序这类玩法要求"按住 → 经过若干点 → 抬起"，而 `post_swipe` 只有两个端点；绑子里
+  `post_touch_move` 一直存在，只是 daemon 从没调用过。
+- **`frame_get --src auto|full|ring`**：`full` 从 L0 全分辨率原图 1:1 裁，淘汰即报错——**绝不拿
+  缩小图冒充**；回执恒带 `source` / `sourceResolution`。动机：`frame get --roi` 以前恒返回 0.375× 的
+  L1 小图，**坐标空间对、分辨率错**，而且没有任何提示——读小字号全部失败却看不出原因。
+- **`annotate --roi` / `--som-limit` / `--som-max-area-ratio` / `somScale`，以及 `availability` 回执**：
+  - **检测面升到 L0 全分辨率原图**（缺省；`somScale:"small"` 可退旧行为）。动机是本轮最反直觉的一条：
+    主页面一个 42×55 的图标在 480 宽的 L1 上**四个源一个都没探到**（合并池仅 30 条、零截断却仍然没有它），
+    在 1280 宽原图上连通域一次就命中——**漏报的根因是分辨率，不是候选上限**。
+  - **`--roi` 收窄且在上限之前过滤**：区域内的候选只跟自己竞争。这是截断的正解，不是把上限调大
+    把上下文成本推给调用方。实测同一帧同一目标：整帧默认覆盖率 **0%**，加 `--roi` 后 **62.1%**（目标成了 1 号）。
+  - **巨框剔除**（面积比 > `somMaxAreaRatio`，默认 0.12，OCR 框不参与）：背景 / 立绘 / 整屏变化区
+    以前稳定占 2 个位置，还因为面积大反而**遮住真目标**。
+  - **带内改按来源轮转**（旧行为是带内保持源优先级）：OCR 常有几十条，会把 conn/edge 挤光，
+    而图标类目标恰多来自 conn/edge。
+  - **`availability` 是"看起来有结果 ≠ 有结果"的护栏**：截断 / 剔除 / 分带三列 / 两种分辨率一起给，
+    候选另带 `areaRatio` 与 OCR `score`。没有它，"30 条候选"会被读成"画面就这些可点区域"。
+- **REPL 命令拼错给编辑距离建议**；**REPL 分词剥成对引号**——不剥时 `--roi "400,20,200,60"` 整串进参数，
+  `Number('"400')`=NaN → JSON null → daemon `Number(null)`=0，**退化成 `w=200,h=0` 的"合法错框"且不报错**，
+  正是"数值看着正常、结论全错"那一类。
+- **REPL `stream start` 暴露 `--l0-roll`/`--l0-anchor`/`--max-frames`**：协议本就支持，命令面不可达时
+  调用方会把"我不知道"当成"没有"——`l0-roll` 恰好决定"我有多久回看窗口"（实测缺省 16 帧 ≈ 1.6 秒 @10fps）。
+
+### 修复
+
+- `frame_get` 显式 `src=ring` 不再附"L0 已淘汰"的降级警告（那是假话，L0 可能活得好好的），
+  也不再被判成 findings——显式要小图不是降级。
+- `wait` 在环形缓冲一帧都没有时**直接报错**，不再空转到超时后给"画面持续变化"这种假原因
+  （会把人引去调阈值，而事实是从头到尾没有帧）。
+- `annotate` 回画复用检测阶段的 L0 解码结果，不再二次 `findL0`：两次查找之间隔着最长 60 秒的
+  OCR await，而 L0 滚动窗只有约 1.6 秒——检测命中原图、回画时已淘汰的话，`outResolution.source`
+  会说谎（图是对的，标签是错的）。
+- `input` 的 `via` / `touch_*` 分支改为**先 `job.wait()` 再抓 `retention.after`**，与共享尾同一口径——
+  抓早了会截在抬手落地之前，而手势类动作恰恰要验证抬手后的画面。
+- CLI `wait` 与 REPL `wait` 都**显式校验模式**（`chnage` 之类拼错以前被静默当成 `stable`，
+  而同一轮刚给 REPL 加了拼写建议，口径不一致）；REPL 的 `--timeout/--quiet/--threshold` 也做数值校验
+  （NaN 会一路传进客户端超时，表现为"调用秒超时，看起来像工具坏了"）。
+- `--som-limit 0` / 负值、`--som-max-area-ratio` 越界改为**显式拒绝**，不再被 daemon 的 `> 0` 守卫
+  悄悄换回默认——`--som-limit 0` 被当成 30 时，调用方以为"不限量"，拿到的是截断表。REPL 侧同口径。
+- **整帧导出收窄回文档口径**：`frame get` 不带 `roi` 时**只有显式 `--src full` 才导 L0 原图**，
+  `auto` / `ring` 一律给环形缓冲那一帧。原先写成 `full && !wantRing`，等于让 `auto` 也悄悄换成
+  1280×720——既改了最常见调用的产物尺寸，又让"整帧小图"被当成降级而**动不动退 3**。
+  降级判据同时由"`sourceResolution < 1` 反推"改为 daemon 的显式 **`degraded`** 字段
+  （它按"调用方要什么"判：带 `roi` 的 `auto` 退小图才算降级）。
+
+### 构建
+
+- **`scripts/copy-daemon.mjs` 在复制前 `node --check`，语法错即让构建失败**。`.mjs` 既不过 tsc、
+  也不被其它任何环节检查，于是"daemon 里一个括号没配平"能一路通过 `npm run build` 与
+  `npm run typecheck`，直到**真去 spawn daemon** 时才炸成 `SyntaxError`——而调用方看到的只是一句
+  "daemon 已退出 (code=1)，会话失效"，与病因无关。实测踩过：一次编辑留下悬空的 `return {`，
+  构建通过、typecheck 通过，只有真机会话挂掉。
+
+### 文档
+
+- `docs/daemon-protocol.md`：`frame_get` 的 `src` 与新字段、`frame_diff` 与 `wait` 两行、
+  `input` 的 `via` 与 `touch_*`、`annotate` 的检测面 / `roi` / `availability` / 带内来源轮转全部补齐；
+  并显式公告**行为变更**：带 `roi` 的 `frame_get` 缺省路径由"必走 L1 小图"变为"有 L0 就用原图"。
+- `README.md`：命令表补 `wait`；退出码 3 补两个新生产者（frame 降级、wait 超时未成立）。
+
 ## [0.2.0] - 2026-10-09
 
 ### 新增
