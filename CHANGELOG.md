@@ -8,6 +8,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 来源于《重返未来：1999》活动小游戏「众声的谱成」的从零实战压测（观测 → 定标 → 交互全链路）。
 下面每一条都对应那次案例里**实际卡住过**的位置，不是推演出来的需求。
 
+> **新包名的首版是本地发布（无 provenance）**：trusted publisher 只能挂在**已存在**的包上——对不存在的
+> 包名，`POST /-/package/<pkg>/trust` 直接 404，所以 0.3.0 由本地 `npm publish` 发出，OIDC 留给下一版
+> （未经验证的 trust 配置 2 天后失效，下次发版前重建一次，见 RELEASING.md）。另：新包名下出现的
+> `0.0.0-stage` 是 npm 建包时自插的占位（`Temporary package placeholder for staged publishing`，
+> 2 文件 / 345 B），不是本仓发布的版本。
+
 ### 新增
 
 - **`wait stable|change`：状态谓词，取代调用方硬睡时钟**——判据复用帧流同一套（最近 `quiet` 内有无
