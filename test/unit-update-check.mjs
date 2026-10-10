@@ -42,7 +42,7 @@ test('限频：TTL 内不查，过期或缓存不可用则查', () => {
 })
 
 test('packument URL：scoped 名只编码斜杠', () => {
-  assert.equal(packumentUrl('@windsland52/maa-live'), 'https://registry.npmjs.org/@windsland52%2Fmaa-live')
+  assert.equal(packumentUrl('@windsland52/maafw-live'), 'https://registry.npmjs.org/@windsland52%2Fmaafw-live')
   assert.equal(packumentUrl('left-pad'), 'https://registry.npmjs.org/left-pad')
 })
 

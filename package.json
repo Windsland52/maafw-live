@@ -1,6 +1,6 @@
 {
-  "name": "@windsland52/maa-live",
-  "version": "0.2.0",
+  "name": "@windsland52/maafw-live",
+  "version": "0.3.0",
   "description": "MaaFramework 设备交互与实时观测底座：常驻 daemon + 可复用客户端 + 确定性 CLI。不绑定宿主。",
   "type": "module",
   "bin": {

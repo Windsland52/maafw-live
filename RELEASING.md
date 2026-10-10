@@ -50,7 +50,7 @@ tag 推送触发 `.github/workflows/release.yml`，任务链（`needs` 决定顺
 
 | 通道 | 身份 | 说明 |
 | --- | --- | --- |
-| npm registry `@windsland52/maa-live` | OIDC（`id-token: write`） | `--access public --provenance`。`publish-npm` 作业**刻意不写** `registry-url` / `NODE_AUTH_TOKEN`：setup-node 的 `registry-url` 会写一个带占位 token 的 `.npmrc`，遮蔽 OIDC 交换，而 npm 对任何认证失败都回报成掩码 E404（PUT 404） |
+| npm registry `@windsland52/maafw-live` | OIDC（`id-token: write`） | `--access public --provenance`。`publish-npm` 作业**刻意不写** `registry-url` / `NODE_AUTH_TOKEN`：setup-node 的 `registry-url` 会写一个带占位 token 的 `.npmrc`，遮蔽 OIDC 交换，而 npm 对任何认证失败都回报成掩码 E404（PUT 404） |
 | GitHub Packages（同名 scope） | `GITHUB_TOKEN`（`packages: write`） | 镜像/内部通道。GHCR 不支持 npm 的 trusted publishing，也不接受 provenance 证明，故**不带** `--provenance`；安装需带 PAT，匿名装不了。因此**公共安装通道是 npm registry** |
 
 两个发布作业都先查"该版本是否已存在"，存在即跳过——部分失败后重跑是安全的。
@@ -65,6 +65,11 @@ tag 推送触发 `.github/workflows/release.yml`，任务链（`needs` 决定顺
    再启用 OIDC——**以 npm 页面当时的口径为准**（本仓文档不预判它）。
 3. **GitHub Packages**：无需额外配置，`packages: write` 已在 workflow 里；包靠 `package.json` 的
    `repository` 字段关联到本仓（缺这个字段 GHCR 会拒绝发布）。
+4. **改包名时**（`@windsland52/maa-live` → `@windsland52/maafw-live`）：trusted publisher 按**包名**绑定，
+   新名要么在 npmjs.com 上新配一次 pending publisher，要么按第 2 条的口径先本地发一次再启用 OIDC。
+   旧名上仍有 0.0.0-stage / 0.1.0 / 0.1.1 / 0.2.0 四个版本，发布新名的同一轮执行
+   `npm deprecate @windsland52/maa-live "renamed to @windsland52/maafw-live"`——已发布版本仍可安装，
+   但不再引导用户去装。
 
 ## 已知事项
 

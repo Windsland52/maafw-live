@@ -3,7 +3,7 @@
 maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.3.0] - 2026-10-10
 
 来源于《重返未来：1999》活动小游戏「众声的谱成」的从零实战压测（观测 → 定标 → 交互全链路）。
 下面每一条都对应那次案例里**实际卡住过**的位置，不是推演出来的需求。
@@ -40,6 +40,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   正是"数值看着正常、结论全错"那一类。
 - **REPL `stream start` 暴露 `--l0-roll`/`--l0-anchor`/`--max-frames`**：协议本就支持，命令面不可达时
   调用方会把"我不知道"当成"没有"——`l0-roll` 恰好决定"我有多久回看窗口"（实测缺省 16 帧 ≈ 1.6 秒 @10fps）。
+
+### 变更
+
+- **包名改为 `@windsland52/maafw-live`**：与仓库名、命令名、skill 名同词。此前是 `@windsland52/maa-live`，
+  scoped 前缀之外还少了 `fw`——五处自我指称（仓库 / 命令 / skill / 文档标题 / 包名）里唯一的异类。
+  动机是已经兑现过的代价：0.2.0 文档节记着 README、协议、留存契约三处照抄 `maafw-live/client`，
+  包名不同形时这类错误只能靠人眼抓；同形后 `@windsland52/maafw-live/client` 与仓库里的写法一字不差。
+  **命令名不变**，安装行改为 `npm install --global @windsland52/maafw-live`。
+- **旧名 `@windsland52/maa-live` 的四个已发布版本留在原处可继续安装**，不再接收新版本；发布下一版时
+  用 `npm deprecate` 把它指向新名（一次性配置与命令见 RELEASING.md）。
 
 ### 修复
 
@@ -608,7 +618,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - 本地工作区文档移出 `docs/`（根目录 `roadmap.local.md`，入 `.gitignore`）：`files` 白名单目录
   会压过 ignore 规则，留在 `docs/` 内会进 npm 包
 
-[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.0

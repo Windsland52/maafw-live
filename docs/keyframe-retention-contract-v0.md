@@ -170,7 +170,7 @@
 
 新能力落地前，消费现有接口注意：
 
-- 优先接 `@windsland52/maa-live/client` 的 `spawnDaemon`、`call`、`subscribe`，不要解析会截断长结果的 REPL 文本。
+- 优先接 `@windsland52/maafw-live/client` 的 `spawnDaemon`、`call`、`subscribe`，不要解析会截断长结果的 REPL 文本。
 - frame 订阅回调拿到 `{seq, t, hash, diff, w, h}`；hash 是感知哈希，不是文件 SHA-256。
 - frame_get 返回 `{ok, path, bytes, w, h, seq, t, diff}`，导出的是小图或其裁剪。
 - reco_test 返回结果列表，每项有 param / ms / ok / detail；输入小图时 box 属于小图空间，不自动等于 pipeline 坐标。

@@ -1,5 +1,5 @@
 /**
- * `@windsland52/maa-live/image` 的单测（公开导出，宿主面板直接用它裁模板 / 缩放预览）。
+ * `@windsland52/maafw-live/image` 的单测（公开导出，宿主面板直接用它裁模板 / 缩放预览）。
  *
  * 这层是**契约面**：面板"看到的缩放"与识别"用的缩放"必须同源，所以它复用 daemon 的
  * pngDecode / downscale / pngEncodeRGB（`lib/image.js` 动态 import 同一个 .mjs，不做第二份实现）。
