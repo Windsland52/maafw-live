@@ -12,6 +12,7 @@ import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
 import { EXIT, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
+import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 
@@ -602,10 +603,20 @@ export const replCommand: Command = {
               const type = tokens[1] ?? 'TemplateMatch'
               const param = recoParam(tokens)
               const sweepRaw = readFlag(tokens, '--sweep')
-              const resourceDir = readFlag(tokens, '--resource-dir') ?? ''
+              /* 资源目录：--resource-dir 优先，其次 connect project 规划出的第一个资源路径
+               * （与 crop / annotate 同规则）。缺了它 daemon 只会给出零例数（模板/OCR 模型
+               * 都读不到）——这是 G16 证据里 `[]` 与 `ok:false` 两种签名并存的第三个混淆变量，
+               * 所以**前置拦下并说清**，不再让它静默。 */
+              const planRes = state.plan?.resource?.paths
+              const resourceDir = readFlag(tokens, '--resource-dir') ?? planRes?.[0] ?? ''
+              if (resourceDir === '') {
+                out('缺资源目录：reco 的模板/OCR 模型要靠它加载，不给只会得到零例数（看不出病因）。'
+                  + '先给 --resource-dir <dir>，或 connect project <dir>')
+                break
+              }
               /* --image / --seq / --from-kf：图像来源三条与一次性 CLI 一致，由 daemon 按
                * 「kfSource → image → 缓冲帧」的次序取（`--image` 优先于 `--seq`，不另行报错——
-               * 那会再造一套 repl/CLI 规则差）。缺了资源目录 daemon 只会给出零例数，见下条校验。 */
+               * 那会再造一套 repl/CLI 规则差）。 */
               const imageRaw = readFlag(tokens, '--image')
               const seqRaw = readFlag(tokens, '--seq')
               const kfId = readFlag(tokens, '--from-kf') ?? (imageRaw?.startsWith('kf:') ? imageRaw : undefined)
@@ -620,13 +631,19 @@ export const replCommand: Command = {
                 out('--seq 必须是数字（收到 ' + JSON.stringify(seqRaw) + '）')
                 break
               }
-              out(short(await act.recoTest(client, {
+              const r = await act.recoTest(client, {
                 resourceDir, type, param,
                 ...(imageRaw && !kfId ? { image: imageRaw } : {}),
                 ...(seqNum !== undefined ? { seq: seqNum } : {}),
                 ...(kfSource ? { kfSource } : {}),
                 ...(sweepRaw ? { sweep: JSON.parse(sweepRaw) } : {}),
-              }), 800))
+              })
+              /* roi 越界：repl 没有单命令退出码（末行统一 EXIT.OK），照本文件既有惯例
+               * 「打印显式错误 + break」；一次性 CLI 侧同一判据走 EXIT.FINDINGS。 */
+              const meta = r.meta as { w?: unknown; h?: unknown } | undefined
+              const oob = roiOutOfBounds(typeof param.roi === 'object' ? (param.roi as number[]) : undefined, meta?.w, meta?.h)
+              if (oob) { out(oob); break }
+              out(short(r, 800))
               break
             }
             case 'kf': {

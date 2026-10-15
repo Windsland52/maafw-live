@@ -52,6 +52,10 @@
       "types": "./lib/types/runtime/keyframes.d.ts",
       "default": "./lib/runtime/keyframes.js"
     },
+    "./reco-args": {
+      "types": "./lib/types/runtime/reco-args.d.ts",
+      "default": "./lib/runtime/reco-args.js"
+    },
     "./image": {
       "types": "./lib/types/image.d.ts",
       "default": "./lib/image.js"

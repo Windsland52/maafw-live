@@ -8,6 +8,7 @@
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import { recoTest, withDaemon, type CropKfSource } from '../runtime/actions.js'
 import { defaultFramesDir, resolveFrame, type KfRecord } from '../runtime/keyframes.js'
+import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
@@ -185,6 +186,16 @@ export const recoCommand: Command = {
           ...(!node && param.value ? { param: param.value } : {}),
           ...(!node && sweep.value ? { sweep: sweep.value } : {}),
         })
+        /* roi 越界 = 参数用错空间（repl 侧同一判据，见 runtime/reco-args）。
+         * 只有 daemon 回执带 w/h 时才判得动：`--image`（0.3.0 起补 w/h）与 kfSource 都有，
+         * 缓冲帧的 meta.seq 分支本来就有；判不动就如实不判，不猜。 */
+        const meta = r.meta as { w?: unknown; h?: unknown } | undefined
+        const oob = roiOutOfBounds(node ? undefined : (param.value?.roi as number[] | undefined), meta?.w, meta?.h)
+        if (oob) {
+          return fail('ROI_OUT_OF_BOUNDS', oob,
+            '把 roi 按所用图的尺寸给：--image 是控制器空间原图，缓冲帧是 L1 小图（差一个 scale）',
+            EXIT.FINDINGS)
+        }
         const results = (r.results as Array<{ param: Record<string, unknown>; ms: number; ok: boolean }> | undefined) ?? []
         const human = [
           ...describeSession(s),

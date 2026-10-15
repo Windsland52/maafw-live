@@ -125,6 +125,44 @@ test('repl reco：--image 与 --seq 透传（旧行为静默丢弃 --image）', 
   assert.match(out, /--seq 必须是数字/, out)
 })
 
+test('repl reco：缺 --resource-dir 时明确报错、不发请求（旧行为是静默零例数）', async () => {
+  const { out, requests, code } = await runRepl([
+    'reco TemplateMatch template=a/Leaders.png roi=558,68,140,43',
+    'quit',
+  ])
+  assert.equal(code, 0)
+  assert.match(out, /缺资源目录/, '要说清病因，而不是回一个 results: []：' + out)
+  assert.equal(recoReqs(requests).length, 0, '拦在前面的校验不该把请求发出去：' + JSON.stringify(requests))
+})
+
+test('repl reco：roi 越界（ctrl 坐标打在 L1 小图上）明确报错、不静默', async () => {
+  /* 桩装作 daemon：回执 meta 是 L1 小图 480x270，roi 却是 ctrl 空间的 558,68,140,43 */
+  const { out, requests, code } = await runRepl(
+    ['reco TemplateMatch template=a/Leaders.png roi=558,68,140,43 --resource-dir R', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: { meta: { seq: 2, w: 480, h: 270 }, results: [{ param: {}, ms: 5, ok: false }] },
+      }),
+    },
+  )
+  assert.equal(code, 0)
+  assert.equal(recoReqs(requests).length, 1, '请求本身该发出去（越界是拿回执判的）')
+  assert.match(out, /roi 越出图像/, '要明确指出用错空间：' + out)
+  assert.match(out, /480x270/, out)
+  assert.ok(!/"results"/.test(out), '越界时不该再把"未命中"的 JSON 当结论打出来：' + out)
+})
+
+test('unit: roiOutOfBounds 的边界口径（贴边不算越界，缺尺寸不判）', async () => {
+  const { roiOutOfBounds } = await import('../lib/runtime/reco-args.js')
+  assert.equal(roiOutOfBounds([0, 0, 1280, 720], 1280, 720), null, '正好铺满不算越界')
+  assert.equal(roiOutOfBounds([1000, 600, 280, 120], 1280, 720), null)
+  assert.match(String(roiOutOfBounds([558, 68, 140, 43], 480, 270)), /roi 越出图像/)
+  assert.match(String(roiOutOfBounds([0, 200, 100, 100], 480, 270)), /超出图像尺寸 480x270/)
+  assert.equal(roiOutOfBounds([1, 2, 3], 480, 270), null, '不是 4 元组不由这里判')
+  assert.equal(roiOutOfBounds([0, 0, 9999, 9999], undefined, undefined), null, '缺尺寸不判（不猜）')
+  assert.equal(roiOutOfBounds(undefined, 480, 270), null)
+})
+
 test('repl reco：--from-kf 传的是 kfSource 对象（daemon 收对象，不是 flag 字符串）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-kf-'))
   const png = Buffer.from(
