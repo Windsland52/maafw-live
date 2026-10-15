@@ -180,7 +180,7 @@ test('roi-check：两侧都无得分 → MISS（不是 AMBIGUOUS——"没证据
   } finally { cleanup() }
 })
 
-test('roi-check：本位置低分 + 对照无分 → MISS（旧算法算出 |Δ|=0.10 < 0.15 会误报 AMBIGUOUS）', async () => {
+test('roi-check：本位置低分 + 对照无分 → MISS，且文案不得说"本位置没有得分"', async () => {
   const { image, cleanup } = setup()
   try {
     const noScore = {
@@ -197,8 +197,67 @@ test('roi-check：本位置低分 + 对照无分 → MISS（旧算法算出 |Δ|
     ])
     assert.equal(code, 3, out)
     assert.match(out, /结论：MISS/, out)
-    assert.match(out, /本位置没有得分/, out)
+    assert.match(out, /本位置有分（score=0\.1/, out)
+    assert.match(out, /缺的是对照证据，不是本位置没分/, out)
+    assert.ok(!/本位置没有得分/.test(out), '文案自相矛盾（实测过：同屏 score=1 [命中] + "本位置没有得分"）：' + out)
     assert.ok(!/AMBIGUOUS/.test(out), out)
+  } finally { cleanup() }
+})
+
+test('roi-check：本位置高分 + 对照无分 → 如实说"缺的是对照证据"，也不甩锅模板同源性', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const noScore = {
+      meta: { source: 'stub', w: 1280, h: 720 },
+      results: [{
+        param: {}, ms: 12, ok: false,
+        detail: { name: '@reco/node', algorithm: 'TemplateMatch', hit: false, box: [0, 0, 0, 0], detail: { all: [], best: null, filtered: [] } },
+      }],
+    }
+    const { code, out } = await runCli(baseArgs(image), [
+      { cmd: 'reco_test', when: { 'param.roi.0': ROI[0] }, data: recognition(1.0, true) },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_LO[0] }, data: noScore },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_HI[0] }, data: noScore },
+    ])
+    assert.equal(code, 3, out)
+    assert.ok(!/本位置没有得分/.test(out), '评审实测的那条自相矛盾文案：' + out)
+    assert.match(out, /本位置有分（score=1 命中）/, out)
+    assert.match(out, /对照 roi 是否越界/, out)
+    assert.ok(!/模板与图像是否同源/.test(out), '这一族的真因是对照位置出界，不是模板同源性（G16 同类误导）：' + out)
+  } finally { cleanup() }
+})
+
+test('roi-check：±pitch/2 的对照位置越出图像 → 跳过对照并明说原因（不拿"出界"当判据）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    /* roi x=1130、pitch=4000 → 候选 -870 与 3130，两个都出界 → 不做对照（评审用 --pitch 4000 命中的正是这条） */
+    const { code, out } = await runCli(
+      ['roi-check', '--image', image, '--roi', '1130,300,100,50', '--target', 'T.png',
+        '--resource-dir', 'R', '--pitch', '4000', '--threshold', '0.8'],
+      [{ cmd: 'reco_test', when: { 'param.roi.0': 1130 }, data: recognition(0.95, true) }],
+    )
+    assert.equal(code, 0, out)
+    assert.match(out, /对照位置：未做（±pitch\/2 的对照位置越出图像/, out)
+    assert.match(out, /未做验真/, out)
+    assert.match(out, /结论：HIT/, out)
+  } finally { cleanup() }
+})
+
+test('roi-check：一个方向越界时只用界内的候选，并如实标出跳过的 roi', async () => {
+  const { image, cleanup } = setup()
+  try {
+    /* roi x=20、pitch=200 → 候选 -80（r[0] < 0，直接丢）与 120（界内）→ 只测 120 */
+    const { code, out } = await runCli(
+      ['roi-check', '--image', image, '--roi', '20,300,100,50', '--target', 'T.png',
+        '--resource-dir', 'R', '--pitch', '200', '--threshold', '0.8'],
+      [
+        { cmd: 'reco_test', when: { 'param.roi.0': 20 }, data: recognition(0.95, true) },
+        { cmd: 'reco_test', when: { 'param.roi.0': 120 }, data: recognition(0.30, false) },
+      ],
+    )
+    assert.equal(code, 0, out)
+    assert.match(out, /对照位置 score=0\.3/, out)
+    assert.match(out, /结论：HIT/, out)
   } finally { cleanup() }
 })
 

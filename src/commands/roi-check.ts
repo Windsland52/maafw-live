@@ -148,27 +148,39 @@ export const roiCheckCommand: Command = {
 
         let alt: Probe | null = null
         let altRoi: number[] | null = null
+        /* 未做对照的**原因**：直接写进回执，别让"没做"看起来像"做过了没差别" */
+        let whyNoCompare = ''
         if (pitch !== undefined) {
           const half = pitch / 2
-          const candidates = [-half, half]
+          const want = [-half, half]
             .map((d) => ({ d, r: [roi[0] + d, roi[1], roi[2], roi[3]] }))
             .filter((x) => x.r[0] >= 0)
-          if (!candidates.length) {
-            human.push('  对照位置：跳过（roi 左右都放不下 ±pitch/2）')
+          /* 越界的对照位置**不拿去打分**：daemon 是"roi 全在画面外就静默零例"，
+           * 拿它的 null 当"对照没有证据"会把"pitch 大到出界"混进判据——这类静默正是本命令存在的理由。 */
+          const valid = want.filter((x) => roiOutOfBounds(x.r, imgW, imgH) === null)
+          if (!want.length) {
+            whyNoCompare = 'roi 左右都放不下 ±pitch/2'
+          } else if (!valid.length) {
+            whyNoCompare = '±pitch/2 的对照位置越出图像（' + want.map((x) => x.r.join(',')).join(' / ') + '）'
           } else {
-            for (const cand of candidates) {
+            if (valid.length < want.length) {
+              human.push('  对照位置：' + (want.length - valid.length) + ' 个越出图像，已跳过（'
+                + want.filter((x) => !valid.includes(x)).map((x) => x.r.join(',')).join(' / ') + '）')
+            }
+            for (const cand of valid) {
               const p = await probe(c, cand.r)
               if (!alt || (p.score ?? -1) > (alt.score ?? -1)) { alt = p; altRoi = cand.r }
             }
           }
+        } else {
+          whyNoCompare = '未给 --pitch'
         }
 
         if (!alt || !altRoi) {
-          human.push('  对照位置：未做（' + (pitch === undefined ? '未给 --pitch' : '放不下 ±pitch/2')
-            + '）——**未做验真**，本回执只证明外来目标在此位置的分数，'
+          human.push('  对照位置：未做（' + whyNoCompare + '）——**未做验真**，本回执只证明外来目标在此位置的分数，'
             + '不能证明这个位置比"偏移半周期"更对（推测周期正是本命令拒绝做的事）')
-          /* 单边结论用与对照路径同一条门槛口径：给了 --threshold 就按它断言，
-           * 没给就按"有无得分"断言（未命中不是调低阈值的理由）。 */
+          /* 单边结论与双边共用一条门槛口径：给了 --threshold 就按它断言，没给就按"有无得分"断言
+           * （未命中不是调低阈值的理由）。这是单边，不据此声称"偏移半周期"不成立。 */
           const miss = base.score === null
             || (threshold !== undefined && base.score < threshold)
           const verdict = miss ? 'MISS' : 'HIT'
@@ -180,10 +192,12 @@ export const roiCheckCommand: Command = {
             exitCode: verdict === 'HIT' ? EXIT.OK : EXIT.FINDINGS,
             human,
             data: {
-              image, roi, target, type, pitch: null, threshold: threshold ?? null,
+              image, roi, target, type, pitch: pitch ?? null, threshold: threshold ?? null,
               imageSize: Number.isFinite(imgW) && Number.isFinite(imgH) ? { w: imgW, h: imgH } : null,
               scores: { base: { score: base.score, ok: base.ok, box: base.boxes }, alt: null },
               delta: null, gap: AMBIGUOUS_GAP, varied: false, verdict,
+              compare: 'none',
+              compareSkipped: whyNoCompare,
             },
           }
         }
@@ -191,7 +205,8 @@ export const roiCheckCommand: Command = {
         /* 分数为 null = **没有证据**，不是 0 分。先按"有没有证据"定结论，再谈歧义——
          * 反过来的话，两侧都无分（目标根本不存在）会算出 Δ=0 → 误报 AMBIGUOUS，
          * 而 AMBIGUOUS 是这条命令的灵魂信号（专门喊"该人工放大对比"），
-         * 被滥用到"什么都没匹配上"的场景就退化成噪声。单边路径本来就是这么判的。 */
+         * 被滥用到"什么都没匹配上"的场景就退化成噪声。参照位置越界的候选已在上面滤掉，
+         * 所以"对照 null"到这里是异常路径，不是常见输入。 */
         const bothScored = base.score !== null && alt.score !== null
         const failThreshold = threshold !== undefined && base.score !== null && base.score < threshold
         let verdict: 'HIT' | 'MISS' | 'AMBIGUOUS'
@@ -221,11 +236,19 @@ export const roiCheckCommand: Command = {
           human.push('  结论：HIT —— 外来目标在本位置明显优于偏移半周期（'
             + (threshold !== undefined ? '且 ≥ 门槛 ' + threshold : '未做门槛断言（未给 --threshold）') + '）')
         } else if (!bothScored) {
-          human.push('  结论：MISS —— ' + (base.score === null && alt.score === null
-            ? '两套候选都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"'
-            : '本位置没有得分'
-              + (alt.score !== null ? '，而对照位置有（' + fmt(alt.score) + '）' : ''))
-            + '；先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
+          /* 文案必须与上面打印的两侧分数逐字一致：漏分的那一侧是 base 还是 alt，
+           * 处置方向完全不同（目标有问题 vs 对照位置有问题）。 */
+          if (base.score === null && alt.score === null) {
+            human.push('  结论：MISS —— 两套候选都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"；'
+              + '先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
+          } else if (base.score === null) {
+            human.push('  结论：MISS —— 本位置没有得分，而对照位置有（' + fmt(alt.score) + '）；'
+              + '先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
+          } else {
+            human.push('  结论：MISS —— 本位置有分（score=' + fmt(base.score) + (base.ok ? ' 命中' : ' 未中')
+              + '）但对照位置没有得分：**缺的是对照证据，不是本位置没分**，所以不据此宣布胜出；'
+              + '对照位置无分多为它落在图像边界外或该处无内容——先看上面的对照 roi 是否越界，再看 pitch 是否合理')
+          }
         } else {
           human.push('  结论：MISS —— 对照位置更优'
             + (failThreshold ? '，且本位置得分 ' + fmt(base.score) + ' < 门槛 ' + threshold : '')
@@ -246,6 +269,7 @@ export const roiCheckCommand: Command = {
             gap: AMBIGUOUS_GAP,
             varied: true,
             verdict,
+            compare: bothScored ? 'both-scored' : (base.score === null ? 'base-missing' : 'alt-missing'),
           },
         }
       })
