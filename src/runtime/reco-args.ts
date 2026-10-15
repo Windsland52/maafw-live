@@ -10,6 +10,10 @@
  * roi（控制器/图像空间）是否越出图像尺寸。越界就是**参数用错空间**，不是"没识别到"：
  * 边界相等不算越界（`x+w === w` 是贴右边）。
  *
+ * **左上边界同样要判**：负坐标是最典型的"空间算错"（L1↔ctrl 换算时先减了偏移），
+ * 而它只比右下是看不出来的（`[-50,200,80,300]` 的右下 = 30/500，落在画面里）。
+ * 漏判的代价正是本判据要防的那件事：回落到"静默未中 + 指向模板/资源"。
+ *
  * 返回 null 表示在界内或无法判定（缺尺寸）。
  */
 export function roiOutOfBounds(roi: number[] | undefined, w: unknown, h: unknown): string | null {
@@ -20,9 +24,12 @@ export function roiOutOfBounds(roi: number[] | undefined, w: unknown, h: unknown
   const [x, y, rw, rh] = roi as [number, number, number, number]
   const right = x + rw
   const bottom = y + rh
-  if (right <= iw && bottom <= ih) return null
-  return 'roi 越出图像：roi=' + roi.join(',') + '（右 ' + right + ' / 下 ' + bottom + '）'
+  if (x >= 0 && y >= 0 && right <= iw && bottom <= ih) return null
+  const where = (x < 0 || y < 0)
+    ? '（左上 ' + x + ',' + y + ' 为负' + (right > iw || bottom > ih ? '，且右 ' + right + ' / 下 ' + bottom + ' 超出' : '') + '）'
+    : '（右 ' + right + ' / 下 ' + bottom + '）'
+  return 'roi 越出图像：roi=' + roi.join(',') + where
     + ' 超出图像尺寸 ' + iw + 'x' + ih
-    + ' —— 这是**参数用错空间**（roi 按图像像素给），不是识别未命中；'
+    + ' —— 这是**参数用错空间**（roi 按图像像素给；负值多半是换算时先减了偏移），不是识别未命中；'
     + '控制器的 roi 要按所用图的尺寸换算（L1 小图 vs 控制器原图差一个 scale）'
 }

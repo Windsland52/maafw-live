@@ -135,6 +135,22 @@ test('repl reco：缺 --resource-dir 时明确报错、不发请求（旧行为�
   assert.equal(recoReqs(requests).length, 0, '拦在前面的校验不该把请求发出去：' + JSON.stringify(requests))
 })
 
+test('repl reco：roi 负坐标也算越界（[−50,…] 的右下落在画面里，旧的只比右下会漏判）', async () => {
+  const { out, requests, code } = await runRepl(
+    ['reco TemplateMatch template=a/Leaders.png roi=-50,200,80,300 --resource-dir R', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: { meta: { seq: 2, w: 1280, h: 720 }, results: [{ param: {}, ms: 5, ok: false }] },
+      }),
+    },
+  )
+  assert.equal(code, 0)
+  assert.equal(recoReqs(requests).length, 1, '请求该发出去，越界是拿回执尺寸判的')
+  assert.match(out, /roi 越出图像/, out)
+  assert.match(out, /左上 -50,200 为负/, out)
+  assert.ok(!/"results"/.test(out), '越界时不该把"未命中"当结论打出来：' + out)
+})
+
 test('repl reco：roi 越界（ctrl 坐标打在 L1 小图上）明确报错、不静默', async () => {
   /* 桩装作 daemon：回执 meta 是 L1 小图 480x270，roi 却是 ctrl 空间的 558,68,140,43 */
   const { out, requests, code } = await runRepl(
@@ -161,6 +177,19 @@ test('unit: roiOutOfBounds 的边界口径（贴边不算越界，缺尺寸不�
   assert.equal(roiOutOfBounds([1, 2, 3], 480, 270), null, '不是 4 元组不由这里判')
   assert.equal(roiOutOfBounds([0, 0, 9999, 9999], undefined, undefined), null, '缺尺寸不判（不猜）')
   assert.equal(roiOutOfBounds(undefined, 480, 270), null)
+})
+
+test('unit: roiOutOfBounds 也判左上边界——负坐标是最典型的"空间算错"', async () => {
+  const { roiOutOfBounds } = await import('../lib/runtime/reco-args.js')
+  /* [-50,200,80,300] 的右下是 30/500（落在画面内），只比右下会漏判 */
+  const negX = roiOutOfBounds([-50, 200, 80, 300], 1280, 720)
+  assert.match(String(negX), /roi 越出图像/, '负 x 必须拦下：' + String(negX))
+  assert.match(String(negX), /左上 -50,200 为负/, String(negX))
+  const negY = roiOutOfBounds([940, -30, 160, 300], 1280, 720)
+  assert.match(String(negY), /左上 940,-30 为负/, String(negY))
+  /* 只负、不越右下 —— 上面的两个用例都是这种；这里再确认"既负又越右下"也如实说 */
+  assert.match(String(roiOutOfBounds([-50, 200, 2000, 300], 1280, 720)), /且右 1950 \/ 下 500 超出/)
+  assert.equal(roiOutOfBounds([0, 0, 10, 10], 1280, 720), null, '0 不是负')
 })
 
 test('repl reco：--from-kf 传的是 kfSource 对象（daemon 收对象，不是 flag 字符串）', async () => {

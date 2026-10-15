@@ -54,6 +54,17 @@ test('CLI reco：roi 越出图像尺寸 → FINDINGS(3) 且明确说"用错空�
   assert.match(err, /480x270/, err)
 })
 
+test('CLI reco：roi 负坐标 → FINDINGS(3)（右下落在画面里，旧判据漏判）', async () => {
+  const { code, err } = await runCli(
+    ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,
+      '--param', '{"template":"x.png","roi":[-50,200,80,300]}'],
+    { reco_test: { meta: { source: IMAGE, w: 1280, h: 720 }, results: [{ param: { roi: [-50, 200, 80, 300] }, ms: 9, ok: false }] } },
+  )
+  assert.equal(code, 3, 'FINDINGS。stderr：' + err)
+  assert.match(err, /roi 越出图像/, err)
+  assert.match(err, /左上 -50,200 为负/, err)
+})
+
 test('CLI reco：roi 在界内 → 不拦，照常给结果与阈值建议', async () => {
   const { code, out } = await runCli(
     ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,

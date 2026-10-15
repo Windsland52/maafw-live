@@ -152,20 +152,18 @@ export const roiCheckCommand: Command = {
         let whyNoCompare = ''
         if (pitch !== undefined) {
           const half = pitch / 2
-          const want = [-half, half]
-            .map((d) => ({ d, r: [roi[0] + d, roi[1], roi[2], roi[3]] }))
-            .filter((x) => x.r[0] >= 0)
-          /* 越界的对照位置**不拿去打分**：daemon 是"roi 全在画面外就静默零例"，
-           * 拿它的 null 当"对照没有证据"会把"pitch 大到出界"混进判据——这类静默正是本命令存在的理由。 */
-          const valid = want.filter((x) => roiOutOfBounds(x.r, imgW, imgH) === null)
-          if (!want.length) {
-            whyNoCompare = 'roi 左右都放不下 ±pitch/2'
-          } else if (!valid.length) {
+          /* 候选**不预过滤**：左右都交给 roiOutOfBounds 判，出界的一律进"已跳过"计数。
+           * 旧代码在这里 `.filter(r[0] >= 0)` 把负候选悄悄丢掉，于是"左边出界"不报、
+           * "右边出界"才报——同一条判据不能有两套口径，左右不对称正是空间错的一种。 */
+          const want = [-half, half].map((d) => ({ d, r: [roi[0] + d, roi[1], roi[2], roi[3]] }))
+          const checks = want.map((x) => ({ ...x, oob: roiOutOfBounds(x.r, imgW, imgH) }))
+          const valid = checks.filter((x) => x.oob === null)
+          if (!valid.length) {
             whyNoCompare = '±pitch/2 的对照位置越出图像（' + want.map((x) => x.r.join(',')).join(' / ') + '）'
           } else {
             if (valid.length < want.length) {
               human.push('  对照位置：' + (want.length - valid.length) + ' 个越出图像，已跳过（'
-                + want.filter((x) => !valid.includes(x)).map((x) => x.r.join(',')).join(' / ') + '）')
+                + checks.filter((x) => x.oob !== null).map((x) => x.r.join(',')).join(' / ') + '）')
             }
             for (const cand of valid) {
               const p = await probe(c, cand.r)
@@ -239,8 +237,10 @@ export const roiCheckCommand: Command = {
           /* 文案必须与上面打印的两侧分数逐字一致：漏分的那一侧是 base 还是 alt，
            * 处置方向完全不同（目标有问题 vs 对照位置有问题）。 */
           if (base.score === null && alt.score === null) {
-            human.push('  结论：MISS —— 两套候选都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"；'
-              + '先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
+            human.push('  结论：MISS —— ' + (altRoi ? '本位置与对照位置' : '两套候选')
+              + '都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"；'
+              + '先核对目标模板与图像是否同源、roi 是否用错空间'
+              + (altRoi ? '' : '，别当成歧义去人工对比'))
           } else if (base.score === null) {
             human.push('  结论：MISS —— 本位置没有得分，而对照位置有（' + fmt(alt.score) + '）；'
               + '先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
