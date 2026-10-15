@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import zlib from 'node:zlib'
 import { __test } from '../src/daemon/framed.mjs'
 
-const { pngDecode, pngEncodeRGB, downscale, blockAnalyze, hashDist,
+const { pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
   l0EvictToBudget, readRoi, S } = __test
 
@@ -47,6 +47,22 @@ test('png 编解码往返保持像素与尺寸', () => {
 
 test('pngDecode 拒绝非 PNG', () => {
   assert.throws(() => pngDecode(Buffer.from('not a png at all....')), /not a png/)
+})
+
+/**
+ * pngHeaderSize 只读 IHDR：让 `--image` 分支的回执能带上图的实际尺寸。
+ * 没有它，调用方拿着 ctrl 空间的 roi 打在 L1 小图上也无从判断（G16 的静默零例）。
+ */
+test('pngHeaderSize 从 IHDR 取尺寸，且不因像素数据不足而失败（那不是它的职责）', () => {
+  assert.deepEqual(pngHeaderSize(pngEncodeRGB(solid(1280, 720, [9, 9, 9]), 1280, 720)), { w: 1280, h: 720 })
+  /* 截断的 IDAT 照样能报尺寸：尺寸来自 IHDR，解码失败留给 pngDecode 报 */
+  assert.deepEqual(pngHeaderSize(shortIdatPng(31, 17, 4)), { w: 31, h: 17 })
+})
+
+test('pngHeaderSize 对非 PNG / 截断头返回 null（不抛——调用方只要尺寸，失败留给子进程报）', () => {
+  assert.equal(pngHeaderSize(Buffer.from('not a png at all....')), null)
+  assert.equal(pngHeaderSize(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), null)
+  assert.equal(pngHeaderSize(Buffer.alloc(0)), null)
 })
 
 /** 结构合法、但 IDAT 解压后字节不足的 PNG。CRC 随便填：这个最小解码器只按 chunk 长度切，不校 CRC */

@@ -116,6 +116,21 @@ function pngDecode(buf) {
   }
   return { w, h, ch, data: out }
 }
+/** PNG 声明尺寸（只读 IHDR，不解像素）。
+ *
+ * 为什么要有这个：`--image` 分支的回执只带 `{source}`，调用方拿到图却不知道它多大，
+ * 于是 **roi 空间错了也无从判断**（ctrl 空间 roi 打到 L1 小图上，静默零例）。
+ * 与 pngDecode 的第二层同为「读 IHDR 才拿到 w/h」，但**不做解码**——这里只要尺寸，
+ * 真解码交给 reco 子进程；文件不可读 / 不是 PNG 时返回 null，让子进程去报真正的读取错误。
+ * 名字带 Header 以区别于 image.ts 里那个会完整解码的异步 pngSize。 */
+function pngHeaderSize(buf) {
+  try {
+    if (buf[0] !== 0x89 || buf[1] !== 0x50) return null
+    const len = buf.readUInt32BE(8)
+    if (buf.toString('ascii', 12, 16) !== 'IHDR' || len < 8) return null
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  } catch (e) { return null }
+}
 /** 归一化为 RGB（丢弃 alpha），返回新 Buffer */
 function toRgb(dec) {
   if (dec.ch === 3) return dec.data
@@ -1488,7 +1503,10 @@ async function cmdRecoTest(args) {
     meta = { source: kf.source.id, sha256: kf.source.sha256, w: kf.dec.w, h: kf.dec.h, ctrlW: kf.dec.w, ctrlH: kf.dec.h }
   } else if (args.image) {
     imageFile = String(args.image)
-    meta = { source: args.image }
+    /* 补 w/h：没有它，调用方无法判断 roi 用的是哪个空间（信息补齐，不改取图行为） */
+    let size = null
+    try { size = pngHeaderSize(fs.readFileSync(imageFile)) } catch (e) { /* 读不到留给子进程报错 */ }
+    meta = { source: args.image, ...(size ? { w: size.w, h: size.h } : {}) }
   } else {
     const fr = args.seq !== undefined && args.seq !== null
       ? S.ring.find((r) => r.seq === Number(args.seq))
@@ -2843,7 +2861,7 @@ if (CHILD) {
 /* 纯函数导出（供 headless 验证直接断言，子进程运行中不使用）。
  * S 一并导出：l0EvictToBudget 等维护函数作用于模块态，单测需直改后还原。 */
 export const __test = {
-  pngDecode, pngEncodeRGB, downscale, blockAnalyze, blockHash, hashDist,
+  pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, S,
