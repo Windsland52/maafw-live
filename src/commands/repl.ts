@@ -8,6 +8,7 @@
  * 既能交互用，也能被脚本/agent 用管道驱动：printf 'probe\nquit\n' | maafw-live repl
  */
 import readline from 'node:readline'
+import { resolve } from 'node:path'
 import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
 import { EXIT, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
@@ -23,7 +24,7 @@ const HELP = [
   '  connect <win32|adb|gamepad> [target]   手动连接',
   '  connect project <dir> [hwnd|address]   按 interface.json 规划连接（推荐）',
   '  disconnect                     断开并销毁 Tasker/Controller',
-  '  screencap [out.png]            截一帧落盘（同时进 L0，可升格）',
+  '  screencap [out.png] | screencap --out out.png    截一帧落盘（同时进 L0，可升格）',
   '  stream start [--fps n] [--scale n] [--l0-roll n] [--l0-anchor n] [--max-frames n] [--block-thresh n] [--change-global n] [--l0-bytes n]',
   '  stream stop | stream status',
   '  frame [seq] [--roi x,y,w,h] [--src auto|full|ring] [--out f.png]   取帧（--src full = 控制器分辨率原图）',
@@ -146,6 +147,26 @@ function kfSourceFrom(id: string, tokens: string[]): { source?: act.CropKfSource
       captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
     },
   }
+}
+
+/** `screencap` 的参数面：**只认 `--out`**。
+ *
+ * 为什么在这里单独做白名单、而不是全局"位置参数不许以 -- 开头"：本文件的 `text` 吃整行剩余，
+ * `frame`/`crop`/`wait`/`swipe --via` 各有自己的旗标表，全局规则会误伤。而 screencap 的坏参数
+ * 特别贵：旧写法把 `--out` 当**位置参数**，于是真写出一个名为 `--out` 的文件（`ok:true` 掩盖），
+ * 而 CLI 的 `screencap --out x.png` 是对的——同一条链路上两套规则，谁都记不住哪边对。 */
+function screencapArgs(tokens: string[]): { out?: string; error?: string } {
+  const out = readFlag(tokens, '--out')
+  const positionals = tokens.slice(1).filter((t) => !t.startsWith('--') && t !== out)
+  const unknown = tokens.slice(1).filter((t) => t.startsWith('--') && t !== '--out')
+  if (unknown.length) {
+    return { error: 'screencap 只认 --out <png>（收到未知选项 ' + unknown.join(' ') + '）；位置参数写法同样可用' }
+  }
+  if (positionals.length > 1) {
+    return { error: 'screencap 只写一个文件（收到 ' + positionals.length + ' 个位置参数：' + positionals.join(' ') + '）' }
+  }
+  const path = out ?? positionals[0]
+  return path === undefined ? {} : { out: path }
 }
 
 function short(v: unknown, max = 400): string {
@@ -273,9 +294,18 @@ export const replCommand: Command = {
               out(short(await act.disconnect(client)))
               state.session = '(未连接)'
               break
-            case 'screencap':
-              out(short(await act.screencap(client, tokens[1])))
+            case 'screencap': {
+              /* --out 与位置参数都收（与 CLI 一致）；未知选项按上面白名单报错，不再写脏文件。 */
+              const a = screencapArgs(tokens)
+              if (a.error) { out(a.error); break }
+              const r = await act.screencap(client, a.out)
+              out(short(r))
+              /* 回执路径与请求路径不一致要说：调用方拿到的"写到哪了"必须可信 */
+              if (a.out && r.path && resolve(String(r.path)) !== resolve(a.out)) {
+                out('警告：实际写入 ' + String(r.path) + '，与请求的 ' + a.out + ' 不一致')
+              }
               break
+            }
             case 'stream': {
               const sub = tokens[1] ?? 'status'
               if (sub === 'start') {
