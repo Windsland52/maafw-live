@@ -188,24 +188,44 @@ export const roiCheckCommand: Command = {
           }
         }
 
-        const delta = (base.score ?? 0) - (alt.score ?? 0)
+        /* 分数为 null = **没有证据**，不是 0 分。先按"有没有证据"定结论，再谈歧义——
+         * 反过来的话，两侧都无分（目标根本不存在）会算出 Δ=0 → 误报 AMBIGUOUS，
+         * 而 AMBIGUOUS 是这条命令的灵魂信号（专门喊"该人工放大对比"），
+         * 被滥用到"什么都没匹配上"的场景就退化成噪声。单边路径本来就是这么判的。 */
+        const bothScored = base.score !== null && alt.score !== null
         const failThreshold = threshold !== undefined && base.score !== null && base.score < threshold
         let verdict: 'HIT' | 'MISS' | 'AMBIGUOUS'
-        if (Math.abs(delta) < AMBIGUOUS_GAP) verdict = 'AMBIGUOUS'
-        else if (failThreshold) verdict = 'MISS'
-        else verdict = delta > 0 ? 'HIT' : 'MISS'
+        if (!bothScored) {
+          /* 任一位置无证据 → 谈不上"分不出来"：最多只能说某一边有分。 */
+          verdict = 'MISS'
+        } else if (Math.abs(base.score! - alt.score!) < AMBIGUOUS_GAP) {
+          verdict = 'AMBIGUOUS'
+        } else if (failThreshold) {
+          verdict = 'MISS'
+        } else {
+          verdict = base.score! > alt.score! ? 'HIT' : 'MISS'
+        }
+        const delta = bothScored ? base.score! - alt.score! : null
 
         human.push('  对照位置 score=' + fmt(alt.score) + (alt.ok ? '  [命中]' : '  [未中]')
           + '  roi=' + altRoi.join(',')
           + (alt.boxes.length ? '  box=' + JSON.stringify(alt.boxes) : ''))
-        human.push('  差值（本位置 − 对照）= ' + (Math.round(delta * 1000) / 1000) + '，判定门槛 |Δ| ≥ ' + AMBIGUOUS_GAP)
+        human.push(delta === null
+          ? '  差值：不适用（有一侧无得分 —— 无证据不等于 0 分）'
+          : '  差值（本位置 − 对照）= ' + (Math.round(delta * 1000) / 1000) + '，判定门槛 |Δ| ≥ ' + AMBIGUOUS_GAP)
         if (verdict === 'AMBIGUOUS') {
           human.push('  AMBIGUOUS：无法区分，需人工放大对比'
-            + '（两侧分差 ' + (Math.round(Math.abs(delta) * 1000) / 1000) + ' < ' + AMBIGUOUS_GAP
+            + '（两侧分差 ' + (Math.round(Math.abs(delta!) * 1000) / 1000) + ' < ' + AMBIGUOUS_GAP
             + '；本案例的判据正是 4× 放大 A/B 四联图，不是分数）')
         } else if (verdict === 'HIT') {
           human.push('  结论：HIT —— 外来目标在本位置明显优于偏移半周期（'
             + (threshold !== undefined ? '且 ≥ 门槛 ' + threshold : '未做门槛断言（未给 --threshold）') + '）')
+        } else if (!bothScored) {
+          human.push('  结论：MISS —— ' + (base.score === null && alt.score === null
+            ? '两套候选都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"'
+            : '本位置没有得分'
+              + (alt.score !== null ? '，而对照位置有（' + fmt(alt.score) + '）' : ''))
+            + '；先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
         } else {
           human.push('  结论：MISS —— 对照位置更优'
             + (failThreshold ? '，且本位置得分 ' + fmt(base.score) + ' < 门槛 ' + threshold : '')
@@ -222,7 +242,7 @@ export const roiCheckCommand: Command = {
               base: { score: base.score, ok: base.ok, box: base.boxes },
               alt: { score: alt.score, ok: alt.ok, box: alt.boxes, roi: altRoi },
             },
-            delta: Math.round(delta * 1000) / 1000,
+            delta: delta === null ? null : Math.round(delta * 1000) / 1000,
             gap: AMBIGUOUS_GAP,
             varied: true,
             verdict,

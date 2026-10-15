@@ -157,6 +157,87 @@ test('roi-check：roi 越出图像尺寸 → FINDINGS(3) 且明确说用错空�
   } finally { cleanup() }
 })
 
+test('roi-check：两侧都无得分 → MISS（不是 AMBIGUOUS——"没证据"不等于"分不出来"）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const noScore = (imgW = 1280, imgH = 720) => ({
+      meta: { source: 'stub', w: imgW, h: imgH },
+      results: [{
+        param: {}, ms: 12, ok: false,
+        detail: { name: '@reco/node', algorithm: 'TemplateMatch', hit: false, box: [0, 0, 0, 0], detail: { all: [], best: null, filtered: [] } },
+      }],
+    })
+    const { code, out } = await runCli(baseArgs(image), [
+      { cmd: 'reco_test', when: { 'param.roi.0': ROI[0] }, data: noScore() },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_LO[0] }, data: noScore() },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_HI[0] }, data: noScore() },
+    ])
+    assert.equal(code, 3, out)
+    assert.match(out, /结论：MISS/, out)
+    assert.match(out, /两套候选都没有得分/, out)
+    assert.ok(!/AMBIGUOUS/.test(out), 'AMBIGUOUS 是"该人工放大对比"的信号，不能被"什么都没匹配上"占用：' + out)
+    assert.match(out, /差值：不适用/, out)
+  } finally { cleanup() }
+})
+
+test('roi-check：本位置低分 + 对照无分 → MISS（旧算法算出 |Δ|=0.10 < 0.15 会误报 AMBIGUOUS）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const noScore = {
+      meta: { source: 'stub', w: 1280, h: 720 },
+      results: [{
+        param: {}, ms: 12, ok: false,
+        detail: { name: '@reco/node', algorithm: 'TemplateMatch', hit: false, box: [0, 0, 0, 0], detail: { all: [], best: null, filtered: [] } },
+      }],
+    }
+    const { code, out } = await runCli(baseArgs(image), [
+      { cmd: 'reco_test', when: { 'param.roi.0': ROI[0] }, data: recognition(0.10, false) },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_LO[0] }, data: noScore },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_HI[0] }, data: noScore },
+    ])
+    assert.equal(code, 3, out)
+    assert.match(out, /结论：MISS/, out)
+    assert.match(out, /本位置没有得分/, out)
+    assert.ok(!/AMBIGUOUS/.test(out), out)
+  } finally { cleanup() }
+})
+
+test('roi-check：只有对照有分 → MISS（本位置无证据，谈不上"分不出来"）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const noScore = {
+      meta: { source: 'stub', w: 1280, h: 720 },
+      results: [{
+        param: {}, ms: 12, ok: false,
+        detail: { name: '@reco/node', algorithm: 'TemplateMatch', hit: false, box: [0, 0, 0, 0], detail: { all: [], best: null, filtered: [] } },
+      }],
+    }
+    const { code, out } = await runCli(baseArgs(image), [
+      { cmd: 'reco_test', when: { 'param.roi.0': ROI[0] }, data: noScore },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_LO[0] }, data: recognition(0.91, true) },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_HI[0] }, data: noScore },
+    ])
+    assert.equal(code, 3, out)
+    assert.match(out, /结论：MISS/, out)
+    assert.match(out, /而对照位置有（0\.91）/, out)
+    assert.ok(!/AMBIGUOUS/.test(out), out)
+  } finally { cleanup() }
+})
+
+test('roi-check：真歧义仍要报 AMBIGUOUS（修法不得把这条路堵掉）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const { code, out } = await runCli(baseArgs(image), [
+      { cmd: 'reco_test', when: { 'param.roi.0': ROI[0] }, data: recognition(0.90, true) },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_LO[0] }, data: recognition(0.30, false) },
+      { cmd: 'reco_test', when: { 'param.roi.0': ALT_HI[0] }, data: recognition(0.88, true) },
+    ])
+    assert.equal(code, 3, out)
+    assert.match(out, /AMBIGUOUS：无法区分，需人工放大对比/, out)
+    assert.match(out, /两侧分差 0\.02/, out)
+  } finally { cleanup() }
+})
+
 test('roi-check：参数错（缺 target / 缺 resource-dir / 缺 roi）→ USAGE(2) 且零请求', async () => {
   const { image, cleanup } = setup()
   try {
