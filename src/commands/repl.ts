@@ -90,6 +90,44 @@ function numFlag(tokens: string[], name: string, def: number): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/** reco 的 k=v 里**期望数组**的参数：单值写法（`roi=558,68,140,43`）必须落成数组。
+ *
+ * 为什么不能靠"看起来像数字"自动判断：`Number("558,68,140,43")` = NaN，于是旧代码把整串
+ * 当字符串发出去，而 MaaFW 只认 `is_array()` —— 字符串被当**节点名**解析，回执 `ok:false`
+ * 且无置信度，看起来像"模板没读到"。本文件里另外 8 处（frame/crop/color/wait/annotate/swipe）
+ * 早就按逗号拆了，`reco` 是唯一遗漏。
+ *
+ * 为什么只列 `roi`：它是 MaaFW 里唯一"不给数组就必然用错空间"的参数（`roi` 也覆盖了
+ * `roi_offset` 这类同族标量写法，那些在 pipeline 里可以是单值，不擅自升级）。`expected`
+ * 不动——OCR 的 expected 字符串与数组**都命中**（实测），按逗号拆文本是凭空造规则。 */
+const RECO_ARRAY_PARAMS = ['roi']
+
+/** `[...]` / `a,b,c` 两种数组写法都收；有一个不是有限数就退回原字符串（不猜、不静默改成 NaN）。 */
+function coerceRecoList(v: string): number[] | null {
+  const body = v.startsWith('[') && v.endsWith(']') ? v.slice(1, -1) : v
+  const parts = body.split(',').map((x) => x.trim())
+  if (parts.some((x) => x === '')) return null
+  const nums = parts.map((x) => Number(x))
+  return nums.every((n) => Number.isFinite(n)) ? nums : null
+}
+
+/** repl `reco <type> k=v …` 的参数解析：沿用既有惯例（数字转 number），列表参数转数组。 */
+export function recoParam(tokens: string[]): Record<string, unknown> {
+  const param: Record<string, unknown> = {}
+  for (const t of tokens.slice(2)) {
+    const eq = t.indexOf('=')
+    if (eq <= 0) continue
+    const k = t.slice(0, eq)
+    const v = t.slice(eq + 1)
+    if (RECO_ARRAY_PARAMS.includes(k) && (v.includes(',') || (v.startsWith('[') && v.endsWith(']')))) {
+      param[k] = coerceRecoList(v) ?? v
+      continue
+    }
+    param[k] = Number.isFinite(Number(v)) && v !== '' ? Number(v) : v
+  }
+  return param
+}
+
 function short(v: unknown, max = 400): string {
   const s = typeof v === 'string' ? v : JSON.stringify(v)
   return s.length > max ? s.slice(0, max) + ' …' : s
@@ -559,15 +597,7 @@ export const replCommand: Command = {
               break
             case 'reco': {
               const type = tokens[1] ?? 'TemplateMatch'
-              const param: Record<string, unknown> = {}
-              for (const t of tokens.slice(2)) {
-                const eq = t.indexOf('=')
-                if (eq > 0) {
-                  const k = t.slice(0, eq)
-                  const v = t.slice(eq + 1)
-                  param[k] = Number.isFinite(Number(v)) && v !== '' ? Number(v) : v
-                }
-              }
+              const param = recoParam(tokens)
               const sweepRaw = readFlag(tokens, '--sweep')
               const resourceDir = readFlag(tokens, '--resource-dir') ?? ''
               out(short(await act.recoTest(client, {
