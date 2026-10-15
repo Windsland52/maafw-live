@@ -7,6 +7,9 @@
  *
  * `MAAFW_STUB_REPLIES`（可选）＝ `{"<cmd>": {…}}`：给指定命令**叠一层**自造回执字段，
  * 用来把"daemon 报了什么"当成输入喂给上层的判据（例如 reco 的 meta.w/h 触发 roi 越界）。
+ *
+ * `MAAFW_STUB_RULES`（可选）＝ `[{ cmd, when, data }]`：按请求**内容**分支回执（先命中先用），
+ * 用来把"同一个命令在不同参数下拿到不同分数"变成可造输入（roi-check 的三个结论靠它）。
  */
 import readline from 'node:readline'
 import { appendFileSync } from 'node:fs'
@@ -17,6 +20,21 @@ const send = (m) => process.stdout.write(JSON.stringify(m) + '\n')
 
 let EXTRA = {}
 try { EXTRA = JSON.parse(process.env.MAAFW_STUB_REPLIES ?? '{}') } catch { EXTRA = {} }
+let RULES = []
+try {
+  const parsed = JSON.parse(process.env.MAAFW_STUB_RULES ?? '[]')
+  if (Array.isArray(parsed)) RULES = parsed
+} catch { RULES = [] }
+
+/** when 的键按 `/` 路径下钻（`param.roi.0`），比较用 `===` 与 JSON 序列化两种口径。 */
+function matches(req, when) {
+  if (!when || typeof when !== 'object') return false
+  for (const [path, want] of Object.entries(when)) {
+    const got = path.split('.').reduce((v, k) => (v == null ? undefined : v[k]), req)
+    if (!(got === want) && JSON.stringify(got) !== JSON.stringify(want)) return false
+  }
+  return true
+}
 
 /** 只给调用方真正会读字段的命令一个像样的回执，其余 `{ok:true}` 即可 */
 const SHAPES = {
@@ -34,7 +52,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   appendFileSync(LOG, JSON.stringify(m) + '\n')
   if (m.cmd === 'shutdown') process.exit(0)
   const base = SHAPES[m.cmd] ?? { ok: true }
-  const extra = EXTRA[m.cmd]
+  const rule = RULES.find((r) => r && r.cmd === m.cmd && matches(m, r.when))
+  const extra = rule ? rule.data : EXTRA[m.cmd]
   send({
     kind: 'reply', id: m.id, ok: true,
     data: extra && typeof extra === 'object' ? { ...base, ...extra } : base,
