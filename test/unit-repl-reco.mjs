@@ -12,7 +12,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,11 +24,11 @@ const CLI = join(HERE, '..', 'bin', 'maafw-live.mjs')
 const STUB = join(HERE, 'fixtures', 'stub-recording-daemon.mjs')
 
 /** 跑一次 REPL 会话（桩 daemon + 管道 stdin），返回 stdout、退出码与桩收到的请求。 */
-async function runRepl(commands) {
+async function runRepl(commands, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-reco-'))
   const log = join(dir, 'requests.jsonl')
   const child = spawn(process.execPath, [CLI, 'repl', '--kind', 'adb', '--target', 'stub'], {
-    env: { ...process.env, MAA_DAEMON: STUB, MAAFW_STUB_LOG: log },
+    env: { ...process.env, MAA_DAEMON: STUB, MAAFW_STUB_LOG: log, ...env },
     stdio: ['pipe', 'pipe', 'ignore'],
   })
   let out = ''
@@ -105,4 +106,59 @@ test('repl reco：roi 数组真发到线上（集成面，桩 daemon 记账）',
     'roi 必须是数组，否则 MaaFW 当节点名解析 → ok:false：' + JSON.stringify(reqs[0]))
   assert.equal(reqs[0].resourceDir, 'R')
   assert.equal(reqs[0].type, 'TemplateMatch')
+})
+
+test('repl reco：--image 与 --seq 透传（旧行为静默丢弃 --image）', async () => {
+  const { out, requests, code } = await runRepl([
+    'reco TemplateMatch template=a/Leaders.png roi=558,68,140,43 --resource-dir R --image C:/tmp/kf21.png',
+    'reco TemplateMatch template=a/Leaders.png roi=0,180,1280,420 --resource-dir R --seq 2',
+    'reco TemplateMatch template=a/Leaders.png --resource-dir R --seq abc',
+    'quit',
+  ])
+  assert.equal(code, 0, '会话正常结束：' + out)
+  const reqs = recoReqs(requests)
+  assert.equal(reqs.length, 2, '--seq abc 该只报用法、不发请求：' + JSON.stringify(reqs))
+  assert.equal(reqs[0].image, 'C:/tmp/kf21.png', '--image 必须透传：' + JSON.stringify(reqs[0]))
+  assert.equal(reqs[0].seq, undefined, '--image 时不该额外造一个 seq')
+  assert.equal(reqs[1].seq, 2, '--seq 必须透传：' + JSON.stringify(reqs[1]))
+  assert.equal(reqs[1].image, undefined)
+  assert.match(out, /--seq 必须是数字/, out)
+})
+
+test('repl reco：--from-kf 传的是 kfSource 对象（daemon 收对象，不是 flag 字符串）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-kf-'))
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+    'base64')
+  const pngFile = join(dir, '0001.png')
+  writeFileSync(pngFile, png)
+  const id = 'kf:11111111-0000-4000-8000-000000000001:0001'
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
+    schema: 1, libraryId: '11111111-0000-4000-8000-000000000001', next: 2,
+    frames: [{
+      id, file: '0001.png', sha256: createHash('sha256').update(png).digest('hex'),
+      session: { daemon: 'd', gen: 1, kind: 'adb', target: 'stub' },
+      capturedAt: '2026-10-05T10:00:00.000Z', captureSeq: 7, ctrlW: 1, ctrlH: 1,
+      smallW: null, smallH: null, scale: null, source: 'explicit', note: null,
+    }],
+  }))
+
+  try {
+    const { out, requests, code } = await runRepl([
+      'reco TemplateMatch template=a/Leaders.png --resource-dir R --from-kf ' + id + ' --frames-dir ' + dir,
+      'quit',
+    ])
+    assert.equal(code, 0, '会话正常结束：' + out)
+    const reqs = recoReqs(requests)
+    assert.equal(reqs.length, 1, '应当只发一条 reco_test：' + JSON.stringify(requests))
+    const src = reqs[0].kfSource
+    assert.ok(src && typeof src === 'object', '--from-kf 要传对象：' + JSON.stringify(reqs[0]))
+    assert.equal(src.id, id)
+    assert.equal(src.path.replace(/\\/g, '/'), pngFile.replace(/\\/g, '/'))
+    assert.equal(src.ctrlW, 1)
+    assert.equal(src.ctrlH, 1)
+    assert.equal(reqs[0].image, undefined, 'kfSource 路径不该同时塞 image')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

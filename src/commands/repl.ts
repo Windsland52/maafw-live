@@ -39,7 +39,10 @@ const HELP = [
   '       swipe --via 走 touch_down→逐点 touch_move→touch_up：**一条笔画画折线**（中途不抬手）',
   '  press <x> <y> [--duration ms] | dbclick <x> <y> | keys <c[,c+..]> | scroll <dx> <dy> | move <dx> <dy>',
   '  touchdown <x> <y> | touchmove <x> <y> | touchup       裸触点原语（跨命令维持同一次按压）',
-  '  reco <type> [k=v ...] [--sweep json]   识别单测（用缓冲最新帧）',
+  '  reco <type> [k=v ...] [--image f.png|kf:…] [--seq n] [--from-kf kf:…] [--resource-dir d] [--sweep json]',
+  '       识别单测。缺省用会话缓冲最新帧（L1 小图，roi 要按该图尺寸给）；--image 走文件',
+  '       （控制器空间，roi 用 ctrl 坐标）；--from-kf 走库内留存帧、离线。roi 必须给数组：',
+  '       `roi=1,2,3,4`（逗号写法即可，不必写方括号）。',
   '  kf status | kf promote [seq|latest] [--note s] | kf list | kf resolve <kf:...>',
   '  help | quit',
 ]
@@ -126,6 +129,22 @@ export function recoParam(tokens: string[]): Record<string, unknown> {
     param[k] = Number.isFinite(Number(v)) && v !== '' ? Number(v) : v
   }
   return param
+}
+
+/** 库帧来源解析（`--from-kf kf:…` 与 `--image kf:…` 共用）：与一次性 CLI 同一份离线读侧。 */
+function kfSourceFrom(id: string, tokens: string[]): { source?: act.CropKfSource; error?: string } {
+  const dir = readFlag(tokens, '--frames-dir') ?? defaultFramesDir()
+  const rr = resolveFrame(dir, id)
+  if (rr.status !== 'available' || !rr.path || !rr.record) {
+    return { error: '库帧不可用（' + rr.status + '）：' + String(rr.reason ?? '') + '（库 ' + dir + '）' }
+  }
+  return {
+    source: {
+      id: rr.record.id, path: rr.path, sha256: rr.record.sha256,
+      ctrlW: rr.record.ctrlW, ctrlH: rr.record.ctrlH,
+      captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
+    },
+  }
 }
 
 function short(v: unknown, max = 400): string {
@@ -367,17 +386,9 @@ export const replCommand: Command = {
               const kfId = readFlag(tokens, '--from-kf')
               let kfSource: act.CropKfSource | undefined
               if (kfId) {
-                const dir = readFlag(tokens, '--frames-dir') ?? defaultFramesDir()
-                const rr = resolveFrame(dir, kfId)
-                if (rr.status !== 'available' || !rr.path || !rr.record) {
-                  out('库帧不可用（' + rr.status + '）：' + String(rr.reason ?? '') + '（库 ' + dir + '）')
-                  break
-                }
-                kfSource = {
-                  id: rr.record.id, path: rr.path, sha256: rr.record.sha256,
-                  ctrlW: rr.record.ctrlW, ctrlH: rr.record.ctrlH,
-                  captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
-                }
+                const k = kfSourceFrom(kfId, tokens)
+                if (k.error) { out(k.error); break }
+                kfSource = k.source
               }
               const ck = await act.tplCrop(client, {
                 ...(roiRaw ? { roi: roiRaw.split(',').map((x) => Number(x)) } : {}),
@@ -398,17 +409,9 @@ export const replCommand: Command = {
               const kfSom = readFlag(tokens, '--from-kf')
               let somKf: act.CropKfSource | undefined
               if (kfSom) {
-                const dir = readFlag(tokens, '--frames-dir') ?? defaultFramesDir()
-                const rr = resolveFrame(dir, kfSom)
-                if (rr.status !== 'available' || !rr.path || !rr.record) {
-                  out('库帧不可用（' + rr.status + '）：' + String(rr.reason ?? '') + '（库 ' + dir + '）')
-                  break
-                }
-                somKf = {
-                  id: rr.record.id, path: rr.path, sha256: rr.record.sha256,
-                  ctrlW: rr.record.ctrlW, ctrlH: rr.record.ctrlH,
-                  captureSeq: rr.record.captureSeq, capturedAt: rr.record.capturedAt,
-                }
+                const k = kfSourceFrom(kfSom, tokens)
+                if (k.error) { out(k.error); break }
+                somKf = k.source
               }
               const somLimitRaw = readFlag(tokens, '--som-limit')
               const somLimit = somLimitRaw === undefined ? undefined : Number(somLimitRaw)
@@ -600,8 +603,28 @@ export const replCommand: Command = {
               const param = recoParam(tokens)
               const sweepRaw = readFlag(tokens, '--sweep')
               const resourceDir = readFlag(tokens, '--resource-dir') ?? ''
+              /* --image / --seq / --from-kf：图像来源三条与一次性 CLI 一致，由 daemon 按
+               * 「kfSource → image → 缓冲帧」的次序取（`--image` 优先于 `--seq`，不另行报错——
+               * 那会再造一套 repl/CLI 规则差）。缺了资源目录 daemon 只会给出零例数，见下条校验。 */
+              const imageRaw = readFlag(tokens, '--image')
+              const seqRaw = readFlag(tokens, '--seq')
+              const kfId = readFlag(tokens, '--from-kf') ?? (imageRaw?.startsWith('kf:') ? imageRaw : undefined)
+              let kfSource: act.CropKfSource | undefined
+              if (kfId) {
+                const k = kfSourceFrom(kfId, tokens)
+                if (k.error) { out(k.error); break }
+                kfSource = k.source
+              }
+              const seqNum = seqRaw === undefined ? undefined : Number(seqRaw)
+              if (seqRaw !== undefined && !Number.isFinite(seqNum)) {
+                out('--seq 必须是数字（收到 ' + JSON.stringify(seqRaw) + '）')
+                break
+              }
               out(short(await act.recoTest(client, {
                 resourceDir, type, param,
+                ...(imageRaw && !kfId ? { image: imageRaw } : {}),
+                ...(seqNum !== undefined ? { seq: seqNum } : {}),
+                ...(kfSource ? { kfSource } : {}),
                 ...(sweepRaw ? { sweep: JSON.parse(sweepRaw) } : {}),
               }), 800))
               break
