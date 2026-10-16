@@ -589,19 +589,26 @@ function pushFrame(dec, png) {
     S.quietNow = false
     const last = S.events.length ? S.events[S.events.length - 1] : null
     if (last && last.type === 'change' && fr.t - last.t < 400) {
+      /* 合并同簇：seq/t/diff 前移，**frame 锚点必须跟着前移**——否则事件指向的是簇内第一帧，
+       * 而调用方看到的 t/seq 是最后一帧，锚点与内容对不上（同一类"回执与事实不符"）。 */
       last.t = fr.t; last.seq = fr.seq; last.diff = Math.max(last.diff, diff)
+      l0AnchorAdd({ ...l0, source: 'change' })
+      last.frame = eventFrameAnchor(fr.seq)
     } else {
+      /* 顺序要紧：**先入锚区、再发事件**。事件里的 `frame.retained` 是按 seq 反查 L0 得出的，
+       * 反过来的话刚发出的 change/stable 事件会自报 `retained:'gone'`——明明它自己就是
+       * 触发入锚区的那一帧（实测就是这么错了一次）。 */
+      l0AnchorAdd({ ...l0, source: 'change' })
       pushEvent({
         type: 'change', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000,
         ...(changed ? { blocks: changed.blocks.length, region: changed.region } : {}),
       })
-      l0AnchorAdd({ ...l0, source: 'change' })
     }
   } else if (prev) {
     if (!S.quietNow) {
       S.quietNow = true
-      pushEvent({ type: 'stable', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
       l0AnchorAdd({ ...l0, source: 'stable' })
+      pushEvent({ type: 'stable', seq: fr.seq, t: fr.t, diff: Math.round(diff * 1000) / 1000 })
     }
   }
 }
@@ -647,11 +654,38 @@ function anchorFromCache(source) {
   const ent = S.l0.roll[S.l0.roll.length - 1]
   l0AnchorAdd({ ...ent, source }, true)
 }
-/** 事件入环 + 推送 host（cap 1200） */
+/** 事件入环 + 推送 host（cap 1200）。
+ *
+ * 事件自带 `frame` 锚点：告诉调用方"这一刻的画面在哪能拿到"。
+ * 为什么必须有：事件流的消费者（LLM / 脚本）看到 `{"type":"stable","seq":2,"diff":0}` 时，
+ * 唯一想知道的是"那是什么画面"——旧回执只有 seq/t/diff，人得自己去 `frame get 2` 试，
+ * 而 L0 是**滚动淘汰**的，试的时候那张图可能已经没了（本仓 G9：事件无画面锚点，
+ * 只能拿 seq 去撞运气）。现在按 seq 反查 L0 两区，直接给出可取性：
+ *
+ *   frame: { seq, retained: 'l0' | 'gone', source }   // retained='l0' 才能 frame get / kf promote
+ *
+ * 只报事实，不代取图：取图要走 `frame get`（`--src full` 出控制器分辨率原图），
+ * 事件里塞 PNG 会让 1200 条环形缓冲变成内存炸弹。 */
+function eventFrameAnchor(seq) {
+  if (typeof seq !== 'number') return undefined
+  const inRoll = S.l0.roll.find((x) => x.seq === seq)
+  const inAnchor = S.l0.anchor.find((x) => x.seq === seq)
+  const hit = inRoll ?? inAnchor
+  if (!hit) return { seq, retained: 'gone' }
+  return {
+    seq,
+    retained: 'l0',
+    /* 两区都可能有同一 seq（共享 Buffer）：优先报锚区来源（锚区才是"值得留的"那张） */
+    source: (inAnchor ?? inRoll).source ?? null,
+    w: hit.w, h: hit.h,
+  }
+}
+
 function pushEvent(ev) {
-  S.events.push(ev)
+  const anchored = { ...ev, frame: eventFrameAnchor(ev.seq) }
+  S.events.push(anchored)
   if (S.events.length > 1200) S.events.splice(0, S.events.length - 1200)
-  send({ kind: 'event', ev })
+  send({ kind: 'event', ev: anchored })
 }
 
 async function streamTick() {
@@ -2895,5 +2929,5 @@ export const __test = {
   pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, blockHash, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
-  l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, S,
+  l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
 }

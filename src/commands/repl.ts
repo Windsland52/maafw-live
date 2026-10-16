@@ -522,7 +522,18 @@ export const replCommand: Command = {
               const n = Number(tokens[1] ?? 10)
               const evs = client.events.events.slice(-n)
               out('事件 ' + evs.length + ' 条（共 ' + client.events.events.length + '）')
-              for (const e of evs) out('  ' + short(e, 200))
+              /* 每条事件显式带出画面锚点：seq 单独给没有用（L0 是滚动淘汰的，得知道还能不能取到）。
+               * 保留 `short(e, 200)` 的其余字段，但锚点不能被截断掉——它是这条事件唯一可行动的部分。 */
+              for (const e of evs) {
+                const ev = e as { seq?: number; frame?: { seq?: number; retained?: string; source?: string | null } }
+                const f = ev.frame
+                const anchor = !f
+                  ? '  frame=?（旧 daemon 回执，无锚点）'
+                  : f.retained === 'l0'
+                    ? '  frame=l0:' + String(f.seq) + (f.source ? '（' + f.source + '）' : '') + ' → frame get ' + String(f.seq)
+                    : '  frame=gone（seq ' + String(f.seq) + ' 已滚出 L0，取不到了）'
+                out('  ' + short(e, 200) + anchor)
+              }
               break
             }
             case 'logs': {
