@@ -156,8 +156,10 @@ export function run(c: DaemonClient, args: Record<string, unknown>, timeoutMs = 
 export const input = (c: DaemonClient, payload: Record<string, unknown>, timeoutMs = 20000) =>
   c.call<Record<string, unknown>>('input', payload, timeoutMs)
 
-export const recoTest = (c: DaemonClient, args: Record<string, unknown>) =>
-  c.call<Record<string, unknown>>('reco_test', args, 90000)
+/** 识别单测。`timeoutMs` 供**多候选**调用方放宽（候选逐例串行，耗时随候选数线性增长：
+ * daemon 侧的子进程预算也跟着用例数放宽，见 framed.mjs 的 recoChildBudget）。 */
+export const recoTest = (c: DaemonClient, args: Record<string, unknown>, timeoutMs = 90000) =>
+  c.call<Record<string, unknown>>('reco_test', args, timeoutMs)
 
 /* ─────────────────────── 项目（interface.json）驱动 ─────────────────────── */
 

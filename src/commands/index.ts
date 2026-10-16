@@ -16,6 +16,7 @@ import { KF_COMMANDS } from './kf.js'
 import { RECO_COMMANDS } from './reco.js'
 import { replCommand } from './repl.js'
 import { ROI_CHECK_COMMANDS } from './roi-check.js'
+import { ROI_COMPARE_COMMANDS } from './roi-compare.js'
 import { RUNTIME_COMMANDS } from './runtime.js'
 import { skillCommand } from './skill.js'
 import { TIMING_COMMANDS } from './timing.js'
@@ -28,6 +29,7 @@ export const COMMANDS: Command[] = [
   ...RUNTIME_COMMANDS,
   ...INPUT_COMMANDS,
   ...RECO_COMMANDS,
+  ...ROI_COMPARE_COMMANDS,
   ...ROI_CHECK_COMMANDS,
   ...COLOR_COMMANDS,
   ...CROP_COMMANDS,

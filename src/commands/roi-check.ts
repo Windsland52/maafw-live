@@ -13,43 +13,20 @@
  *     把"该做放大对比"变成工具主动喊出来的事；
  *  3. **两个假设的分数都要给**：单边只能证明"旧的不对"，证明不了"新的对"。
  *
- * 实现复用既有 `reco_test` 通道（**本仓库没有 NCC / 模板匹配实现**，全库 grep 0 命中；
- * 唯一能出匹配分的路是 MaaFW 的 TemplateMatch）——对同一张 `--image` 跑两次识别，
- * 两次之间没有画面漂移风险。缺 `--pitch` 时**不做对照**：推测周期正是本条批评的静默错，
- * 缺省只报单边分 + 明说"未做对照"。
+ * 本命令现在是**薄包装**：候选集合比较的判据（生成 / 排序 / bestGap / 并列带 / 三态）都在
+ * `src/runtime/roi-compare.ts`，这里只负责把它接到本命令既有的回执与文案上。
+ * 候选生成器 `--pitch`（本位置 + 沿 x 偏移 ±pitch/2）是**案例专用**的形状：它假定单一周期、
+ * 且 y 从不偏移；泛用的形态是 `maafw-live roi-compare`（`--rois` / `--offsets` / `--scan`）。
+ * 缺 `--pitch` 时**不做对照**：推测周期正是本条批评的静默错，缺省只报单边分 + 明说"未做对照"。
  */
 import { existsSync } from 'node:fs'
-import type { DaemonClient } from '../client/daemon.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import { recoTest, withDaemon } from '../runtime/actions.js'
-import { roiOutOfBounds } from '../runtime/reco-args.js'
+import {
+  aggregate, DEFAULT_GAP, fromOffsets, sampleOf,
+  type CandidateSet, type CompareItem, type FrameSize, type Offset,
+} from '../runtime/roi-compare.js'
 import { daemonFail } from './runtime.js'
-
-/** 允许说"分不出来"的门槛：两侧分差小于它就不下结论（与原稿约定一致）。 */
-const AMBIGUOUS_GAP = 0.15
-
-interface Probe {
-  score: number | null
-  ok: boolean
-  boxes: number[]
-}
-
-/** 取一例识别结果的分数与命中框。分数在识别详情内层（miss 时 best 为 null、all 仍带候选分）。 */
-function probeResult(result: { ok?: unknown; detail?: unknown } | undefined): Probe {
-  const inner = (result?.detail as { detail?: { best?: { score?: unknown }; all?: Array<{ score?: unknown }> } } | null | undefined)?.detail
-  const best = inner?.best?.score
-  const boxes = (inner?.all ?? [])
-    .map((x) => Number(x.score))
-    .filter((n) => Number.isFinite(n))
-    .concat(Number.isFinite(Number(best)) ? [Number(best)] : [])
-  const score = boxes.length ? Math.max(...boxes) : null
-  const box = (inner?.best as { box?: unknown } | undefined)?.box
-  return {
-    score,
-    ok: result?.ok === true,
-    boxes: Array.isArray(box) ? (box as number[]) : [],
-  }
-}
 
 const fmt = (n: number | null): string => (n === null ? '（无得分）' : String(Math.round(n * 1000) / 1000))
 
@@ -60,6 +37,8 @@ export const roiCheckCommand: Command = {
     '                    [--resource-dir <dir>] [--threshold <t>]\n' +
     '       判据是**外来目标**（不是自匹配）：本位置分 / 对照位置分 / 差值 / 结论(HIT|MISS|AMBIGUOUS)\n' +
     '       对照位置 = roi 沿 x 偏移 ±pitch/2，取更相似的那个；缺 --pitch 只报单边分并明说未做对照\n' +
+    '       --pitch 是**案例专用的候选生成器**（单一周期、y 不偏移）；泛用形态见 `maafw-live roi-compare`\n' +
+    '       （--rois 显式全套 / --offsets 相对平移 / --scan 发现模式）\n' +
     '       退出码：0 命中 / 3 歧义或未命中 / 2 参数错',
   options: {
     image: { type: 'string' },
@@ -108,79 +87,90 @@ export const roiCheckCommand: Command = {
     }
     const type = typeof ctx.values.name === 'string' && ctx.values.name ? ctx.values.name : 'TemplateMatch'
 
-    /** 在给定 roi 上跑一次外来目标识别，拿回分数与命中框。 */
-    const probe = async (c: DaemonClient, useRoi: number[]): Promise<Probe> => {
-      const r = await recoTest(c, {
-        resourceDir, type, image,
-        param: { template: target, roi: useRoi },
-      })
-      const results = (r.results as Array<{ ok?: unknown; detail?: unknown }> | undefined) ?? []
-      if (r.ok === false && !results.length) {
-        throw new Error(String(r.error ?? '识别失败'))
-      }
-      return probeResult(results[0])
-    }
+    /* `--pitch` 就是候选生成器：本位置（偏移 0）+ 沿 x 的 ±pitch/2。y 分量恒为 0 正是它的形状限制，
+     * 也是泛用形态存在的理由（真实棋盘行距 ≠ 列距）。 */
+    const half = pitch !== undefined ? pitch / 2 : 0
+    const offsets: Offset[] = pitch !== undefined
+      ? [{ dx: 0, dy: 0 }, { dx: -half, dy: 0 }, { dx: half, dy: 0 }]
+      : [{ dx: 0, dy: 0 }]
+    const build = (size?: FrameSize): CandidateSet => fromOffsets(offsets, roi, size)
+    const sent = build().candidates
 
     try {
       return await withDaemon(async (c) => {
-        /* 图像尺寸先要一次：daemon 的 reco_test 回执带 meta.w/h，越界判据靠它（不猜）。 */
-        const first = await recoTest(c, { resourceDir, type, image, param: { template: target, roi } })
-        const meta = first.meta as { w?: unknown; h?: unknown } | undefined
+        const t0 = Date.now()
+        const r = await recoTest(c, {
+          resourceDir, type, image,
+          param: { template: target },
+          candidates: sent.map((x) => x.roi),
+        }, Math.max(90000, sent.length * 5000) + 20000)
+        const elapsedMs = Date.now() - t0
+        const results = (r.results as Array<{ ok?: unknown; detail?: unknown }> | undefined) ?? []
+        const meta = r.meta as { w?: unknown; h?: unknown } | undefined
         const imgW = Number(meta?.w)
         const imgH = Number(meta?.h)
-        const oob = roiOutOfBounds(roi, meta?.w, meta?.h)
-        if (oob) {
-          return fail('ROI_OUT_OF_BOUNDS', oob, 'roi 要按 --image 的像素坐标给（控制器的 roi 差一个 scale）', EXIT.FINDINGS)
+        const known = Number.isFinite(imgW) && Number.isFinite(imgH) && imgW > 0 && imgH > 0
+        if (r.ok === false && !results.length) {
+          return fail('ROI_CHECK', String(r.error ?? '识别失败'), undefined, EXIT.FINDINGS)
         }
-        const firstResults = (first.results as Array<{ ok?: unknown; detail?: unknown }> | undefined) ?? []
-        if (first.ok === false && !firstResults.length) {
-          return fail('ROI_CHECK', String(first.error ?? '识别失败'), undefined, EXIT.FINDINGS)
+        if (results.length !== sent.length) {
+          return fail('ROI_CHECK',
+            '识别回执例数 ' + results.length + ' ≠ 发出的候选数 ' + sent.length + '：逐例对应关系断了，不猜',
+            undefined, EXIT.FINDINGS)
         }
-        const base = probeResult(firstResults[0])
+        const set = build(known ? { w: imgW, h: imgH } : undefined)
+        const byOrigin = new Map<number, ReturnType<typeof sampleOf>>()
+        sent.forEach((x, i) => byOrigin.set(x.origin, sampleOf(results[i])))
+
+        /* 本位置越界：这是**参数用错空间**，先于一切判据报出来（roiOutOfBounds 连左上负坐标一起判）。 */
+        const baseSkip = set.skipped.find((s) => s.origin === 0)
+        if (baseSkip) {
+          return fail('ROI_OUT_OF_BOUNDS', baseSkip.reason,
+            'roi 要按 --image 的像素坐标给（控制器的 roi 差一个 scale）', EXIT.FINDINGS)
+        }
+        const base = byOrigin.get(0)!
+        const baseRoi = set.candidates.find((x) => x.origin === 0)!.roi
 
         const human: string[] = [
-          'ROI 验真（外来目标）：' + String(target) + '  on ' + image,
-          '  图像 ' + (Number.isFinite(imgW) && Number.isFinite(imgH) ? imgW + 'x' + imgH : '尺寸未知')
-            + '  roi=' + roi.join(','),
+          'ROI 验真（外来目标）：' + target + '  on ' + image,
+          '  图像 ' + (known ? imgW + 'x' + imgH : '尺寸未知')
+            + '  roi=' + baseRoi.join(','),
           '  本位置   score=' + fmt(base.score) + (base.ok ? '  [命中]' : '  [未中]')
-            + (base.boxes.length ? '  box=' + JSON.stringify(base.boxes) : ''),
+            + (base.box.length ? '  box=' + JSON.stringify(base.box) : ''),
         ]
 
-        let alt: Probe | null = null
-        let altRoi: number[] | null = null
-        /* 未做对照的**原因**：直接写进回执，别让"没做"看起来像"做过了没差别" */
+        /* 对照候选（origin ≥ 1）里界内的那些；出界的一律进"已跳过"计数并按顺序报出。
+         * 候选**不预过滤**：左右都交给 roiOutOfBounds 判——同一条判据不能有两套口径。 */
+        const altCand = set.candidates.filter((x) => x.origin > 0)
+        const altSkipped = set.skipped.filter((x) => x.origin > 0)
+        let alt: CompareItem | null = null
         let whyNoCompare = ''
-        if (pitch !== undefined) {
-          const half = pitch / 2
-          /* 候选**不预过滤**：左右都交给 roiOutOfBounds 判，出界的一律进"已跳过"计数。
-           * 旧代码在这里 `.filter(r[0] >= 0)` 把负候选悄悄丢掉，于是"左边出界"不报、
-           * "右边出界"才报——同一条判据不能有两套口径，左右不对称正是空间错的一种。 */
-          const want = [-half, half].map((d) => ({ d, r: [roi[0] + d, roi[1], roi[2], roi[3]] }))
-          const checks = want.map((x) => ({ ...x, oob: roiOutOfBounds(x.r, imgW, imgH) }))
-          const valid = checks.filter((x) => x.oob === null)
-          if (!valid.length) {
-            whyNoCompare = '±pitch/2 的对照位置越出图像（' + want.map((x) => x.r.join(',')).join(' / ') + '）'
-          } else {
-            if (valid.length < want.length) {
-              human.push('  对照位置：' + (want.length - valid.length) + ' 个越出图像，已跳过（'
-                + checks.filter((x) => x.oob !== null).map((x) => x.r.join(',')).join(' / ') + '）')
-            }
-            for (const cand of valid) {
-              const p = await probe(c, cand.r)
-              if (!alt || (p.score ?? -1) > (alt.score ?? -1)) { alt = p; altRoi = cand.r }
+        if (pitch === undefined) {
+          whyNoCompare = '未给 --pitch'
+        } else if (!altCand.length) {
+          whyNoCompare = '±pitch/2 的对照位置越出图像（' + offsets.slice(1).map((o) =>
+            [baseRoi[0]! + o.dx, baseRoi[1]! + o.dy, baseRoi[2]!, baseRoi[3]!].join(',')).join(' / ')
+            + '）'
+        } else {
+          if (altSkipped.length) {
+            human.push('  对照位置：' + altSkipped.length + ' 个越出图像，已跳过（'
+              + altSkipped.map((x) => x.roi.join(',')).join(' / ') + '）')
+          }
+          for (const cand of altCand) {
+            const p = byOrigin.get(cand.origin)!
+            if (!alt || (p.score ?? -1) > (alt.score ?? -1)) {
+              alt = { roi: cand.roi, origin: cand.origin, ...p }
             }
           }
-        } else {
-          whyNoCompare = '未给 --pitch'
         }
 
-        if (!alt || !altRoi) {
+        const imageSize = known ? { w: imgW, h: imgH } : null
+        if (!alt) {
           human.push('  对照位置：未做（' + whyNoCompare + '）——**未做验真**，本回执只证明外来目标在此位置的分数，'
             + '不能证明这个位置比"偏移半周期"更对（推测周期正是本命令拒绝做的事）')
           /* 单边结论与双边共用一条门槛口径：给了 --threshold 就按它断言，没给就按"有无得分"断言
            * （未命中不是调低阈值的理由）。这是单边，不据此声称"偏移半周期"不成立。 */
-          const miss = base.score === null
-            || (threshold !== undefined && base.score < threshold)
+          const miss = base.score === null || (threshold !== undefined && base.score < threshold)
           const verdict = miss ? 'MISS' : 'HIT'
           human.push('  结论：' + verdict
             + (threshold === undefined
@@ -190,28 +180,32 @@ export const roiCheckCommand: Command = {
             exitCode: verdict === 'HIT' ? EXIT.OK : EXIT.FINDINGS,
             human,
             data: {
-              image, roi, target, type, pitch: pitch ?? null, threshold: threshold ?? null,
-              imageSize: Number.isFinite(imgW) && Number.isFinite(imgH) ? { w: imgW, h: imgH } : null,
-              scores: { base: { score: base.score, ok: base.ok, box: base.boxes }, alt: null },
-              delta: null, gap: AMBIGUOUS_GAP, varied: false, verdict,
+              image, roi: baseRoi, target, type, pitch: pitch ?? null, threshold: threshold ?? null,
+              imageSize,
+              scores: { base: { score: base.score, ok: base.ok, box: base.box }, alt: null },
+              delta: null, gap: DEFAULT_GAP, varied: false, verdict,
               compare: 'none',
               compareSkipped: whyNoCompare,
+              bestGap: null, withinGap: [], elapsedMs,
             },
           }
         }
 
-        /* 分数为 null = **没有证据**，不是 0 分。先按"有没有证据"定结论，再谈歧义——
-         * 反过来的话，两侧都无分（目标根本不存在）会算出 Δ=0 → 误报 AMBIGUOUS，
-         * 而 AMBIGUOUS 是这条命令的灵魂信号（专门喊"该人工放大对比"），
-         * 被滥用到"什么都没匹配上"的场景就退化成噪声。参照位置越界的候选已在上面滤掉，
-         * 所以"对照 null"到这里是异常路径，不是常见输入。 */
+        /* 三态判据的事实部分（排序 / bestGap / 并列带）来自核心；本命令保留自己既有的
+         * **优先序与方向**（单测钉着）：缺证据先于歧义、歧义先于门槛、"本位置 vs 对照"看方向。
+         * 泛用的 roi-compare 与之只在"门槛 vs 歧义"的次序上不同（文档定的优先序）。 */
+        const items: CompareItem[] = [
+          { roi: baseRoi, origin: 0, score: base.score, ok: base.ok, box: base.box },
+          { roi: alt.roi, origin: alt.origin, score: alt.score, ok: alt.ok, box: alt.box },
+        ]
+        const outcome = aggregate(items, { gap: DEFAULT_GAP })
         const bothScored = base.score !== null && alt.score !== null
         const failThreshold = threshold !== undefined && base.score !== null && base.score < threshold
         let verdict: 'HIT' | 'MISS' | 'AMBIGUOUS'
         if (!bothScored) {
           /* 任一位置无证据 → 谈不上"分不出来"：最多只能说某一边有分。 */
           verdict = 'MISS'
-        } else if (Math.abs(base.score! - alt.score!) < AMBIGUOUS_GAP) {
+        } else if (outcome.withinGap.length >= 2) {
           verdict = 'AMBIGUOUS'
         } else if (failThreshold) {
           verdict = 'MISS'
@@ -221,14 +215,14 @@ export const roiCheckCommand: Command = {
         const delta = bothScored ? base.score! - alt.score! : null
 
         human.push('  对照位置 score=' + fmt(alt.score) + (alt.ok ? '  [命中]' : '  [未中]')
-          + '  roi=' + altRoi.join(',')
-          + (alt.boxes.length ? '  box=' + JSON.stringify(alt.boxes) : ''))
+          + '  roi=' + alt.roi.join(',')
+          + (alt.box.length ? '  box=' + JSON.stringify(alt.box) : ''))
         human.push(delta === null
           ? '  差值：不适用（有一侧无得分 —— 无证据不等于 0 分）'
-          : '  差值（本位置 − 对照）= ' + (Math.round(delta * 1000) / 1000) + '，判定门槛 |Δ| ≥ ' + AMBIGUOUS_GAP)
+          : '  差值（本位置 − 对照）= ' + (Math.round(delta * 1000) / 1000) + '，判定门槛 |Δ| ≥ ' + DEFAULT_GAP)
         if (verdict === 'AMBIGUOUS') {
           human.push('  AMBIGUOUS：无法区分，需人工放大对比'
-            + '（两侧分差 ' + (Math.round(Math.abs(delta!) * 1000) / 1000) + ' < ' + AMBIGUOUS_GAP
+            + '（两侧分差 ' + (Math.round(Math.abs(delta!) * 1000) / 1000) + ' < ' + DEFAULT_GAP
             + '；本案例的判据正是 4× 放大 A/B 四联图，不是分数）')
         } else if (verdict === 'HIT') {
           human.push('  结论：HIT —— 外来目标在本位置明显优于偏移半周期（'
@@ -237,10 +231,8 @@ export const roiCheckCommand: Command = {
           /* 文案必须与上面打印的两侧分数逐字一致：漏分的那一侧是 base 还是 alt，
            * 处置方向完全不同（目标有问题 vs 对照位置有问题）。 */
           if (base.score === null && alt.score === null) {
-            human.push('  结论：MISS —— ' + (altRoi ? '本位置与对照位置' : '两套候选')
-              + '都没有得分（外来目标在这张图上什么都没匹配上），不是"分不出来"；'
-              + '先核对目标模板与图像是否同源、roi 是否用错空间'
-              + (altRoi ? '' : '，别当成歧义去人工对比'))
+            human.push('  结论：MISS —— 本位置与对照位置都没有得分（外来目标在这张图上什么都没匹配上），'
+              + '不是"分不出来"；先核对目标模板与图像是否同源、roi 是否用错空间')
           } else if (base.score === null) {
             human.push('  结论：MISS —— 本位置没有得分，而对照位置有（' + fmt(alt.score) + '）；'
               + '先核对目标模板与图像是否同源、roi 是否用错空间，别当成歧义去人工对比')
@@ -259,17 +251,20 @@ export const roiCheckCommand: Command = {
           exitCode: verdict === 'HIT' ? EXIT.OK : EXIT.FINDINGS,
           human,
           data: {
-            image, roi, target, type, pitch: pitch ?? null, threshold: threshold ?? null,
-            imageSize: Number.isFinite(imgW) && Number.isFinite(imgH) ? { w: imgW, h: imgH } : null,
+            image, roi: baseRoi, target, type, pitch: pitch ?? null, threshold: threshold ?? null,
+            imageSize,
             scores: {
-              base: { score: base.score, ok: base.ok, box: base.boxes },
-              alt: { score: alt.score, ok: alt.ok, box: alt.boxes, roi: altRoi },
+              base: { score: base.score, ok: base.ok, box: base.box },
+              alt: { score: alt.score, ok: alt.ok, box: alt.box, roi: alt.roi },
             },
             delta: delta === null ? null : Math.round(delta * 1000) / 1000,
-            gap: AMBIGUOUS_GAP,
+            gap: DEFAULT_GAP,
+            bestGap: outcome.bestGap,
+            withinGap: outcome.withinGap,
             varied: true,
             verdict,
             compare: bothScored ? 'both-scored' : (base.score === null ? 'base-missing' : 'alt-missing'),
+            elapsedMs,
           },
         }
       })

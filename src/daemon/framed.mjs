@@ -1381,6 +1381,15 @@ async function cmdInput(args) {
   return done(job)
 }
 
+/**
+ * 子进程预算：用例数越多放得越宽（实测每例 ≈ 0.24s，留 5s/例的余量）。
+ * 固定 90s 会让"几十个候选"在慢机器上被误杀，而误杀的表现是"识别子进程失败"——
+ * 与真正的识别失败分不开。上限仍由 spawnRecoChild 自己封（120s）。
+ */
+function recoChildBudget(cases) {
+  return Math.max(90000, Number(cases) * 5000)
+}
+
 /* 识别单测：子进程隔离执行（beta 绑定的 post_recognition 在无效模板上会原生崩溃，
  * 子进程炸掉只损失一次测试，绝不让宿主陪葬）。 */
 function spawnRecoChild(payload, timeoutMs) {
@@ -1525,8 +1534,26 @@ async function cmdRecoTest(args) {
   }
   const baseParam = args.param && typeof args.param === 'object' ? args.param : {}
   const sweep = args.sweep && typeof args.sweep === 'object' ? args.sweep : null
+  /* --candidates：候选集合逐例换 roi（roi-compare 走的正是这条）。
+   * 与 sweep 像但**不变量不同**：sweep 是"同键换值"，候选是"逐例换 roi"——
+   * 折叠进同一个 cases、走同一次 spawnRecoChild，不新开第二条子进程通道。 */
+  const candidates = Array.isArray(args.candidates) ? args.candidates : null
+  if (candidates && sweep && typeof sweep.min === 'number') {
+    return { ok: false, error: 'candidates 与 sweep 互斥：一次识别单测只跑一种候选来源' }
+  }
+  if (candidates && !candidates.length) {
+    return { ok: false, error: 'candidates 是空数组：至少给一个 [x,y,w,h] 候选' }
+  }
   const cases = []
-  if (sweep && typeof sweep.min === 'number' && typeof sweep.max === 'number') {
+  if (candidates) {
+    for (const c of candidates) {
+      const roi = Array.isArray(c) ? c.map(Number) : null
+      if (!roi || roi.length !== 4 || !roi.every(Number.isFinite)) {
+        return { ok: false, error: 'candidates 每项都要是 [x,y,w,h] 四个数字，收到：' + JSON.stringify(c) }
+      }
+      cases.push({ ...baseParam, roi })
+    }
+  } else if (sweep && typeof sweep.min === 'number' && typeof sweep.max === 'number') {
     /* step 带方向：升序 0.5→0.9 / 降序 0.9→0.5 都合法；区间为空明确报错，不静默测个空 */
     const step = sweep.step !== undefined && Number(sweep.step) !== 0 ? Number(sweep.step) : 1
     const up = step > 0
@@ -1546,7 +1573,7 @@ async function cmdRecoTest(args) {
       /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
       ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
       ...(node ? { node } : { cases }),
-    }, 90000)
+    }, recoChildBudget(cases.length))
   } finally {
     /* 子进程已经读完这张图（spawnRecoChild 会等到它退出），此时删除是安全的 */
     if (tempImage) { try { fs.rmSync(tempImage, { force: true }) } catch (e) { /* ignore */ } }
