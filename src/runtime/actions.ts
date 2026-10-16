@@ -80,6 +80,10 @@ export const streamStart = (c: DaemonClient, args: { fps?: number; scale?: numbe
   c.call<Record<string, unknown>>('stream_start', args, 15000)
 export const streamStop = (c: DaemonClient) => c.call<{ ok: boolean }>('stream_stop', {}, 10000)
 export const streamStatus = (c: DaemonClient) => c.call<Record<string, unknown>>('stream_status', {}, 10000)
+/** 事件环查询：一次性 CLI 用。事件环活在 daemon 里，跨进程只能现查（REPL 另有本地副本）。 */
+export const eventsList = (c: DaemonClient, args: { since?: number; limit?: number } = {}) =>
+  c.call<{ ok: boolean; total: number; matched: number; cap: number; truncated: boolean; events: Array<Record<string, unknown>> }>(
+    'events_list', args, 10000)
 export const frameGet = (c: DaemonClient, args: { seq?: number; roi?: number[]; out?: string; src?: 'auto' | 'full' | 'ring' }) =>
   c.call<Record<string, unknown>>('frame_get', args, 30000)
 /** 等状态谓词成立：stable=画面静下来 / change=画面动了。取代调用方硬睡时钟。 */

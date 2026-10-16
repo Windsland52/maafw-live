@@ -205,6 +205,81 @@ export const screencapCommand: Command = {
   },
 }
 
+export const eventsCommand: Command = {
+  name: 'events',
+  summary: '查帧流事件（stable/change/run），每条自带画面锚点；--watch 可自起帧流现场采集',
+  usage: 'maafw-live events [--limit <n>] [--since <seq>] [--watch <ms>] [--fps <n>]\n' +
+    '       --watch <ms>：本次调用内先起帧流、等 ms 毫秒、再查（**推荐**：daemon 随命令退出而销毁，\n' +
+    '                     事件环不跨进程存活，所以"查上一次留下的记录"是拿不到的）\n' +
+    '       不带 --watch：只查当前 daemon 会话里已有的事件——一次性 CLI 里这通常为空，\n' +
+    '                     该用法主要用于 REPL 之外的脚本在同进程内先跑 run 再查\n' +
+    '       每条事件 frame.retained=l0 表示画面还能取（frame get <seq> / kf promote），gone 表示已滚出',
+  options: { ...CONNECT_OPTIONS, limit: { type: 'string' }, since: { type: 'string' }, watch: { type: 'string' }, fps: { type: 'string' } },
+
+  async run(ctx): Promise<CommandResult> {
+    const o = sessionOptions(ctx.values)
+    const rawLimit = ctx.values.limit
+    const limit = typeof rawLimit === 'string' ? Number(rawLimit) : 20
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return fail('BAD_ARGUMENTS', '--limit 必须是正整数', undefined, EXIT.USAGE)
+    }
+    const rawSince = ctx.values.since
+    const since = typeof rawSince === 'string' ? Number(rawSince) : undefined
+    if (rawSince !== undefined && !Number.isFinite(since)) {
+      return fail('BAD_ARGUMENTS', '--since 必须是数字（seq）', undefined, EXIT.USAGE)
+    }
+    const rawWatch = ctx.values.watch
+    const watch = typeof rawWatch === 'string' ? Number(rawWatch) : undefined
+    if (rawWatch !== undefined && (!Number.isFinite(watch) || (watch as number) <= 0)) {
+      return fail('BAD_ARGUMENTS', '--watch 必须是正毫秒数', undefined, EXIT.USAGE)
+    }
+    const rawFps = ctx.values.fps
+    const fps = typeof rawFps === 'string' ? Number(rawFps) : undefined
+    if (rawFps !== undefined && (!Number.isFinite(fps) || (fps as number) <= 0)) {
+      return fail('BAD_ARGUMENTS', '--fps 必须是正数', undefined, EXIT.USAGE)
+    }
+    try {
+      return await withDaemon(async (client) => {
+        const s = await ensureSession(client, o)
+        /* --watch：daemon 随命令退出而销毁，事件环不跨进程存活——所以"自己起流、现场采集"
+         * 是一次性 CLI 拿到事件的唯一可靠方式。用 `wait` 的 change/stable 语义不合适
+         * （它等到第一个满足就返回，而我们要的是"跑满这段窗口"），直接起流后按毫秒等。 */
+        let watched: { fps?: number; ms: number } | null = null
+        if (watch !== undefined) {
+          await act.streamStart(client, fps !== undefined ? { fps } : {})
+          await new Promise((r) => setTimeout(r, watch))
+          watched = { ...(fps !== undefined ? { fps } : {}), ms: watch }
+        }
+        const r = await act.eventsList(client, { limit, ...(since !== undefined ? { since } : {}) })
+        const evs = r.events ?? []
+        const human = [...describeSession(s), '事件 ' + evs.length + ' 条' +
+          (r.matched !== r.total ? '（匹配 ' + r.matched + ' / 环内共 ' + r.total + '）' : '') +
+          (r.truncated ? '，已按 --limit 截取' : '') +
+          (watched ? '（本次起流 ' + watched.ms + 'ms' + (watched.fps ? ' @' + watched.fps + 'fps' : '') + ' 现场采集）' : '')]
+        if (!evs.length) {
+          human.push(watched
+            ? '  （这 ' + watched.ms + 'ms 内画面没有变化：事件只在"动了"或"静下来"时产生，' +
+              '静止画面不产生事件。要抓变化就加长 --watch 或在等待期间对设备做操作）'
+            : '  （环内没有事件：daemon 随命令退出而销毁，事件环不跨进程存活——' +
+              '加 --watch <ms> 让它本次调用内起流采集，或改用 REPL 会话）')
+        }
+        for (const e of evs) {
+          const f = e.frame as { seq?: number; retained?: string; source?: string | null } | undefined
+          const anchor = !f
+            ? '  frame=?（无锚点）'
+            : f.retained === 'l0'
+              ? '  frame=l0:' + String(f.seq) + (f.source ? '（' + f.source + '）' : '') + ' → frame get ' + String(f.seq)
+              : '  frame=gone（seq ' + String(f.seq) + ' 已滚出 L0，取不到了）'
+          human.push('  ' + JSON.stringify(e) + anchor)
+        }
+        return { exitCode: EXIT.OK, human, data: r }
+      })
+    } catch (e) {
+      return daemonFail(e, '事件环只在 daemon 存活期间保留；一次性 CLI 请用 --watch <ms> 现场采集')
+    }
+  },
+}
+
 export const frameCommand: Command = {
   name: 'frame',
   summary: '帧流状态与历史帧取用（环形缓冲只在 REPL 会话里才有内容）',
@@ -555,5 +630,5 @@ export const stopCommand: Command = {
 
 export const RUNTIME_COMMANDS: Command[] = [
   probeCommand, deviceCommand, connectCommand, disconnectCommand,
-  screencapCommand, frameCommand, waitCommand, runCommand, stopCommand,
+  screencapCommand, frameCommand, eventsCommand, waitCommand, runCommand, stopCommand,
 ]

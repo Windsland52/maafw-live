@@ -751,6 +751,36 @@ function cmdStreamStatus() {
   }
 }
 
+/**
+ * 事件环查询（顶层 CLI 用）。
+ *
+ * 为什么必须做成 daemon 命令：事件环 `S.events` 活在 daemon 进程里，而一次性 CLI 命令
+ * **退出即断连**——它拿不到"过去发生过什么"，只能自己开着会话边跑边收。于是本仓 G7 的
+ * 诉求（`events` 不该只在 repl 里）落不到"客户端本地环"上，只能让 daemon 按需吐出它自己那份。
+ *
+ * 与 REPL 的 `events` 是**同一份数据**（同一个 `S.events`），只是取用方式不同：
+ * REPL 边收推送边留本地副本，CLI 每次现查。两处渲染共用 `frame` 锚点字段。
+ *
+ * `since` 支持按 seq 增量拉取（长跑时反复查询不必重传全量）；`limit` 从尾部截取。
+ */
+function cmdEventsList(args) {
+  const rawSince = Number(args.since)
+  const since = Number.isFinite(rawSince) ? rawSince : null
+  const rawLimit = Number(args.limit)
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 20
+  const all = since === null ? S.events : S.events.filter((e) => typeof e.seq === 'number' && e.seq > since)
+  const picked = all.slice(-limit)
+  return {
+    ok: true,
+    /* 报总数与"环里还留着多少"，让调用方知道有没有被 1200 上限截掉过 */
+    total: S.events.length,
+    matched: all.length,
+    cap: 1200,
+    truncated: all.length > picked.length,
+    events: picked,
+  }
+}
+
 /* ────────────────────────── 历史帧取用（ROI 裁剪，像素按需出 worker） ────────────────────────── */
 /**
  * roi 参数校验：只接受 4 个**有限数字**。
@@ -2887,6 +2917,7 @@ const handlers = {
   stream_start: cmdStreamStart,
   stream_stop: cmdStreamStop,
   stream_status: cmdStreamStatus,
+  events_list: cmdEventsList,
   frame_get: cmdFrameGet,
   frame_diff: cmdFrameDiff,
   wait: cmdWait,
