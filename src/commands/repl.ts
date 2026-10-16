@@ -10,11 +10,15 @@
 import readline from 'node:readline'
 import { resolve } from 'node:path'
 import { spawnDaemon, type DaemonClient } from '../client/daemon.js'
-import { EXIT, type Command, type CommandResult } from '../protocol.js'
+import { EXIT, fail, type Command, type CommandContext, type CommandResult, type ExitCode } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
 import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
+import {
+  pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath,
+  spawnSessionServer, stopSession, validSessionName, waitPipeReady,
+} from '../runtime/session-ipc.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 
 const HELP = [
@@ -240,10 +244,40 @@ function suggestHead(name: string, maxDistance = 3): string | undefined {
 export const replCommand: Command = {
   name: 'repl',
   summary: '交互/管道会话：连接一次，后续命令复用同一个 daemon 与设备会话',
-  usage: 'maafw-live repl [--project <dir>|--kind win32|adb|gamepad [--target ...]]',
-  options: { ...CONNECT_OPTIONS },
+  usage: 'maafw-live repl [--project <dir>|--kind win32|adb|gamepad [--target ...]]\n' +
+    '       maafw-live repl --session <name> [<命令>…]   命名常驻会话：首次起、之后复用（不必自建驱动）\n' +
+    '        不带 <命令>：进入该会话的交互式提示符（等价于 repl，但连接状态跨调用保持）\n' +
+    '        带 <命令>：把命令送进常驻会话并打印回执（可多条，逐条串行执行）\n' +
+    '       maafw-live repl --session <name> --session-status   看会话状态\n' +
+    '       maafw-live repl --session <name> --session-stop     收掉会话\n' +
+    '       --session-serve <name>  内部用：常驻侧（从命名管道读命令，不要手敲）',
+  options: {
+    ...CONNECT_OPTIONS,
+    session: { type: 'string' },
+    'session-status': { type: 'boolean' },
+    'session-stop': { type: 'boolean' },
+    'session-serve': { type: 'string' },
+  },
 
   async run(ctx): Promise<CommandResult> {
+    /* ── 常驻侧：`--session-serve` 从命名管道收命令，把 repl 的输出按条回给调用方 ──
+     * 这条分支不读 stdin（PowerShell 递不了管道给子进程），而是自己 listen。 */
+    const serveName = typeof ctx.values['session-serve'] === 'string' ? ctx.values['session-serve'] : undefined
+    if (serveName !== undefined) {
+      if (!validSessionName(serveName)) {
+        return fail('BAD_ARGUMENTS', '会话名只允许字母数字与 - _（1..48 字符）', undefined, EXIT.USAGE)
+      }
+      return await runSessionServer(serveName, ctx)
+    }
+
+    const name = typeof ctx.values.session === 'string' ? ctx.values.session : undefined
+    if (name !== undefined) {
+      if (!validSessionName(name)) {
+        return fail('BAD_ARGUMENTS', '会话名只允许字母数字与 - _（1..48 字符）：' + JSON.stringify(name), undefined, EXIT.USAGE)
+      }
+      return await runNamedSession(name, ctx)
+    }
+
     const client = spawnDaemon()
     const out = (line: string): void => { process.stdout.write(line + '\n') }
     const state: { session: string; plan: SessionState['plan'] | null } = { session: '(未连接)', plan: null }
@@ -293,14 +327,43 @@ export const replCommand: Command = {
         if (process.stdin.isTTY) process.stdout.write('maa> ')
         const line = await ask()
         if (line === null) break
-        const tokens = tokenize(line)
-        if (!tokens.length) continue
-        const head = tokens[0]
-        if (head === 'quit' || head === 'exit') break
-        if (head === 'help') { for (const h of HELP) out(h); continue }
+        const step = await runReplLine(line, { client, out, state, remember })
+        if (step === 'quit') break
+      }
+    } finally {
+      rl.close()
+      client.close()
+    }
 
-        try {
-          switch (head) {
+    return { exitCode: EXIT.OK, human: ['会话结束。'] }
+  },
+}
+
+/** 一条 REPL 命令的执行结果：`quit` 表示该收会话了（quit/exit 或 EOF）。 */
+type ReplStep = 'continue' | 'quit'
+
+/** 一条 REPL 命令的运行时依赖。
+ *
+ * 抽出来是为了让**命名常驻会话**（`--session`）复用同一份命令实现：它从命名管道收命令、
+ * 把输出按条回给调用方，但 switch 里那几十条命令的语义必须与交互式 repl 完全一致——
+ * 复制一份必然漂移（本仓最贵的一类返工就是"两处同义实现各自演化"）。 */
+interface ReplRuntime {
+  client: DaemonClient
+  out: (line: string) => void
+  state: { session: string; plan: SessionState['plan'] | null }
+  remember: (s: SessionState) => void
+}
+
+async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
+  const { client, out, state, remember } = rt
+  const tokens = tokenize(line)
+  if (!tokens.length) return 'continue'
+  const head = tokens[0]
+  if (head === 'quit' || head === 'exit') return 'quit'
+  if (head === 'help') { for (const h of HELP) out(h); return 'continue' }
+
+  try {
+    switch (head) {
             case 'probe':
               out(short(await act.probe(client)))
               break
@@ -757,17 +820,170 @@ export const replCommand: Command = {
               out('未知命令：' + head
                 + (suggestHead(head) ? '（是想输入 ' + String(suggestHead(head)) + ' 吗？）' : '')
                 + '（输入 help 看命令表）')
-          }
-        } catch (e) {
-          if (e instanceof SessionError) out('会话错误 [' + e.code + ']：' + e.message)
-          else out('错误：' + (e instanceof Error ? e.message : String(e)))
-        }
+    }
+  } catch (e) {
+    if (e instanceof SessionError) out('会话错误 [' + e.code + ']：' + e.message)
+    else out('错误：' + (e instanceof Error ? e.message : String(e)))
+  }
+  return 'continue'
+}
+
+/* ─────────────────── 命名常驻会话（`--session <name>`）─────────────────── */
+
+/** 调用侧：复用已存在的会话，或首次起一个再送命令。 */
+async function runNamedSession(name: string, ctx: CommandContext): Promise<CommandResult> {
+  const rest = ctx.positionals.slice()
+  const wantStatus = ctx.values['session-status'] === true
+  const wantStop = ctx.values['session-stop'] === true
+
+  if (wantStop) {
+    const meta = readSessionMeta(name)
+    if (!meta) return { exitCode: EXIT.OK, human: ['会话 ' + name + ' 不存在（无需收）'], data: { name, existed: false } }
+    stopSession(name)
+    return { exitCode: EXIT.OK, human: ['已收掉会话 ' + name + '（pid ' + meta.pid + '）'], data: { name, pid: meta.pid } }
+  }
+
+  const existing = readSessionMeta(name)
+  if (wantStatus) {
+    if (!existing) return { exitCode: EXIT.OK, human: ['会话 ' + name + '：不存在'], data: { name, exists: false } }
+    const alive = pidAlive(existing.pid)
+    return {
+      exitCode: EXIT.OK,
+      human: [
+        '会话 ' + name + '：' + (alive ? '在跑' : '**已死**（meta 还在，但进程没了——用 --session-stop 清掉重起）'),
+        '  pid ' + existing.pid + '，起于 ' + existing.startedAt,
+        '  管道 ' + existing.pipe,
+        '  连接参数 ' + JSON.stringify(existing.connectArgs),
+      ],
+      data: { ...existing, alive },
+    }
+  }
+
+  /* 起会话：把本次的连接参数原样交给常驻进程（同一套 CLI 旗标，不另造参数面） */
+  let meta = existing
+  if (!meta || !pidAlive(meta.pid)) {
+    if (meta) stopSession(name)
+    const connectArgs: Record<string, unknown> = {}
+    for (const k of ['project', 'controller', 'resource', 'hwnd', 'address', 'kind', 'target']) {
+      const v = ctx.values[k]
+      if (typeof v === 'string') connectArgs[k] = v
+    }
+    meta = spawnSessionServer(name, process.argv[1] ?? '', connectArgs)
+    const ready = await waitPipeReady(meta.pipe, 20000)
+    if (!ready) {
+      stopSession(name)
+      return fail('SESSION_NOT_READY',
+        '会话 ' + name + ' 起了但管道 ' + meta.pipe + ' 20s 内不可连（常驻进程可能启动即失败）',
+        '检查连接参数是否正确；必要时用 --session-stop ' + name + ' 清掉再试', EXIT.FINDINGS)
+    }
+  }
+
+  /* 不带命令 = 交互式：把本进程的 stdin 逐行送进常驻会话，输出照原样打印。
+   * 这样 `repl --session x` 的手感与普通 repl 一致，但连接状态跨调用保持。 */
+  if (!rest.length) {
+    const rl = readline.createInterface({ input: process.stdin, terminal: process.stdin.isTTY === true })
+    const lines: string[] = []
+    let wake: (() => void) | null = null
+    let ended = false
+    rl.on('line', (l: string) => { lines.push(l); if (wake) { const w = wake; wake = null; w() } })
+    rl.on('close', () => { ended = true; if (wake) { const w = wake; wake = null; w() } })
+    const ask = async (): Promise<string | null> => {
+      for (;;) {
+        if (lines.length) return lines.shift() ?? null
+        if (ended) return null
+        await new Promise<void>((r) => { wake = r })
+      }
+    }
+    try {
+      for (;;) {
+        if (process.stdin.isTTY) process.stdout.write('maa[' + name + ']> ')
+        const l = await ask()
+        if (l === null) break
+        if (!l.trim()) continue
+        const rep = await sendToSession(meta, l, 600000)
+        for (const o of rep.lines) process.stdout.write(o + '\n')
+        if (rep.error) process.stdout.write('错误：' + rep.error + '\n')
+        if (rep.closing || /^(quit|exit)\s*$/i.test(l.trim())) break
       }
     } finally {
       rl.close()
-      client.close()
     }
+    return { exitCode: EXIT.OK, human: ['会话 ' + name + ' 保持运行（用 --session-stop ' + name + ' 收掉）'], data: { name, pid: meta.pid } }
+  }
 
-    return { exitCode: EXIT.OK, human: ['会话结束。'] }
-  },
+  /* 带命令：逐条串行送进会话，把回执按序打印。任一条 quit/exit 就结束会话。 */
+  const human: string[] = []
+  let exitCode: ExitCode = EXIT.OK
+  for (const cmd of rest) {
+    const rep = await sendToSession(meta, cmd, 600000)
+    human.push(...rep.lines)
+    if (rep.error) {
+      human.push('错误：' + rep.error)
+      exitCode = EXIT.FAIL
+    }
+    if (rep.closing || /^(quit|exit)\s*$/i.test(cmd.trim())) {
+      stopSession(name)
+      break
+    }
+  }
+  return { exitCode, human, data: { name, pid: meta.pid } }
+}
+
+/** 常驻侧：从命名管道收命令，交给与交互式 repl 同一份 `runReplLine` 执行。 */
+async function runSessionServer(name: string, ctx: CommandContext): Promise<CommandResult> {
+  const client = spawnDaemon()
+  const state: { session: string; plan: SessionState['plan'] | null } = { session: '(未连接)', plan: null }
+  const remember = (s: SessionState): void => {
+    state.session = String((s.session as { target?: unknown } | null)?.target ?? '(已连接)')
+    state.plan = s.plan ?? null
+  }
+
+  const server = new SessionServer((line, reply) => {
+    void runReplLine(line, { client, out: (l) => server.pushOutput(l), state, remember })
+      .then((step) => {
+        reply({ ok: true, lines: [], ...(step === 'quit' ? { closing: true } : {}) })
+        if (step === 'quit') {
+          /* 收尾延后一拍：先把回执写出去，调用方才能读到"会话已结束"而不是连接被掐 */
+          setTimeout(() => {
+            server.close()
+            try { client.close() } catch { /* ignore */ }
+            process.exit(0)
+          }, 150)
+        }
+      })
+      .catch((e) => reply({ ok: false, lines: [], error: e instanceof Error ? e.message : String(e) }))
+  })
+
+  /* 先建连接、再 listen：反过来的话命令可能在 `ensureSession` 完成**之前**到达，
+   * 那条命令会跑在一个还没连接的会话上（表现为"第一条命令报未连接，第二条才好"）。
+   * 而调用侧有 `waitPipeReady` 轮询，所以推迟 listen 不会让它空等——
+   * 它只是在管道就绪前一直重试，拿到的一定是连接完成的会话。 */
+  const o: SessionOptions = sessionOptions(ctx.values)
+  const startup: string[] = []
+  if (o.project || o.kind) {
+    try {
+      const s = await ensureSession(client, o)
+      remember(s)
+      startup.push('已连接：' + state.session)
+    } catch (e) {
+      startup.push('连接失败：' + (e instanceof Error ? e.message : String(e)))
+    }
+  } else {
+    startup.push('未连接设备。先 connect project <dir> 或 connect win32 <target>。')
+  }
+
+  const pipe = sessionPipePath(name)
+  try {
+    await server.listen(pipe)
+  } catch (e) {
+    try { client.close() } catch { /* ignore */ }
+    return fail('SESSION_PIPE_FAILED', '命名管道 ' + pipe + ' 监听失败：' + (e instanceof Error ? e.message : String(e)),
+      '同名会话可能已在跑；用 --session-status ' + name + ' 查，或 --session-stop ' + name + ' 收掉', EXIT.FINDINGS)
+  }
+  /* 横幅在 listen 之后入待认领队列：它在第一条命令的回执里出现，与交互式 repl 的"先报连接"一致 */
+  for (const l of startup) server.pushStartup(l)
+
+  /* 常驻：等管道上的命令，直到收到 quit/exit 或父侧 stopSession 把进程杀掉 */
+  await new Promise<void>(() => { /* 永不 resolve；退出走上面的 process.exit 或外部 kill */ })
+  return { exitCode: EXIT.OK, human: [] }
 }
