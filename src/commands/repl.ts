@@ -49,20 +49,48 @@ const HELP = [
   '  help | quit',
 ]
 
-/** 极简分词：空格分隔，支持 --flag value 与 key=value；text 用整行剩余内容。
+/** 分词：空格分隔，支持 --flag value 与 key=value；text 用整行剩余内容。
  *
- * **成对引号要剥掉**：脚本与 agent 习惯把带逗号的参数写进引号（`--roi "470,10,180,110"`），
+ * **引号要剥掉**：脚本与 agent 习惯把带逗号的参数写进引号（`--roi "470,10,180,110"`），
  * 不剥就整串当参数：`Number('"470')` = NaN → 走 JSON 变 null → daemon `Number(null)` = 0，
  * 于是退化成一个**合法但错误**的框（实测 `--roi "400,20,200,60"` 变成 `w=200,h=0`）且不报错。
- * 剥引号让"带引号"与"不带引号"等价——这是调用方最自然的写法。 */
+ * 剥引号让"带引号"与"不带引号"等价——这是调用方最自然的写法。
+ *
+ * **引号内的空格不是分隔符**：只按 `/\s+/` 切再逐 token 剥首尾引号，会把带空格的引号参数切碎，
+ * 且残片各自都不成对、于是**原样留着引号**：`--note "活动大厅 主界面"` 变成
+ * `--note '"活动大厅'`（`readFlag` 只取下一个 token）——数据侧被污染成"截断 + 残留引号"，
+ * 而 `kf promote` 照收不误，`kf list` 里看起来像是显示层截断。同一个坑对
+ * `--expected "选择 领队"`、`--override '{...带空格...}'` 一样成立。
+ *
+ * 所以这里按字符扫描：引号内的空白并入当前 token，引号本身不产出。
+ * `\` 只转义引号与 `\` 自身（Windows 路径里的反斜杠必须原样保留）。
+ * 未闭合的引号按"到行尾"收，并把内容原样给出——参数校验层会拿它报错，不在这里静默吞掉。 */
 function tokenize(line: string): string[] {
-  return line.trim().split(/\s+/).filter((t) => t !== '').map((t) => {
-    if (t.length >= 2) {
-      const a = t[0], z = t[t.length - 1]
-      if ((a === '"' && z === '"') || (a === "'" && z === "'")) return t.slice(1, -1)
+  const tokens: string[] = []
+  let cur = ''
+  let quote: '"' | "'" | null = null
+  let has = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (quote) {
+      if (ch === '\\' && (line[i + 1] === quote || line[i + 1] === '\\')) {
+        cur += line[++i]
+        continue
+      }
+      if (ch === quote) { quote = null; continue }
+      cur += ch
+      continue
     }
-    return t
-  })
+    if (ch === '"' || ch === "'") { quote = ch; has = true; continue }
+    if (/\s/.test(ch)) {
+      if (has) { tokens.push(cur); cur = ''; has = false }
+      continue
+    }
+    cur += ch
+    has = true
+  }
+  if (has) tokens.push(cur)
+  return tokens
 }
 
 function readFlag(tokens: string[], name: string): string | undefined {
