@@ -563,8 +563,20 @@ export const replCommand: Command = {
                       : {}),
                   }, timeout)
                 .then((r) => {
-                  const rec = (r as { record?: { ok?: boolean, agent?: { ok?: boolean } } }).record
-                  out('run 完成：任务级 ' + (rec ? (rec.ok ? 'ok' : 'FAIL') : '未知') +
+                  const rec = (r as {
+                    record?: { ok?: boolean, stopped?: boolean, timeoutMs?: number, durationMs?: number, agent?: { ok?: boolean } }
+                  }).record
+                  /* 与一次性 CLI 同一份三态判据：`status:0 + stopped:true` 不是"完成"。
+                   * 判据用 record 自带的 timeoutMs，不靠调用方回忆刚才给了什么。 */
+                  const budget = rec && typeof rec.timeoutMs === 'number' ? rec.timeoutMs : null
+                  const ranFull = rec?.stopped === true && budget !== null && budget > 0
+                    && typeof rec.durationMs === 'number' && rec.durationMs >= budget
+                  const verdict = !rec ? '未知'
+                    : rec.ok ? 'ok'
+                      : ranFull ? '超时截断（非成功，也非失败）'
+                        : rec.stopped === true ? '被停止（未成功）'
+                          : 'FAIL'
+                  out('run 完成：任务级 ' + verdict +
                     (rec?.agent ? '，agent ' + (rec.agent.ok ? '已连接' : '失败') : '') + '  ' + short(r, 700))
                 })
                 .catch((e) => out('run 失败：' + (e instanceof Error ? e.message : String(e))))

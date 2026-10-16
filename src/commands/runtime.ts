@@ -463,6 +463,7 @@ export const runCommand: Command = {
           ok?: boolean
           status?: unknown
           stopped?: boolean
+          timeoutMs?: number
           durationMs?: number
           nodes?: Array<{ name: string; status: string; ms: number }>
           startSeq?: number | null
@@ -472,6 +473,21 @@ export const runCommand: Command = {
         }
         const taskOk = rec.ok === true
         const nodes = rec.nodes ?? []
+        /* 三态结论词：`status:0 + stopped:true` 单看 status 会被读成"成功完成"（本仓 G21 实测误读）。
+         * 判据用 record 自带的 timeoutMs，不靠调用方回忆当初给了什么：
+         *   跑满窗口被截断 → 非成功非失败（是"没跑完"，不是"跑完了没成功"）；
+         *   stopped 但没跑满 → 是任务自己结束、只是没成功。
+         * 退出码仍按任务级 record.ok，不给截断开绿灯。 */
+        const budget = typeof rec.timeoutMs === 'number' ? rec.timeoutMs : null
+        const ranFull = rec.stopped === true && budget !== null && budget > 0
+          && typeof rec.durationMs === 'number' && rec.durationMs >= budget
+        const verdict = taskOk
+          ? '完成'
+          : ranFull
+            ? '超时截断（非成功，也非失败：任务没跑完就被 post_stop 了）'
+            : rec.stopped === true
+              ? '被停止（任务自己结束，但未成功）'
+              : '失败'
         const agentLines: string[] = []
         if (rec.agent) {
           agentLines.push(rec.agent.ok
@@ -481,8 +497,9 @@ export const runCommand: Command = {
         }
         const human = [
           ...describeSession(s),
-          '任务 ' + resolvedEntry + '：' + (taskOk ? '完成' : (rec.stopped ? '超时被停止（视为失败）' : '失败')) +
-            '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms，帧序 ' +
+          '任务 ' + resolvedEntry + '：' + verdict +
+            '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms' +
+            (budget !== null ? ' / timeout=' + String(budget) + 'ms' : '') + '，帧序 ' +
             String(rec.startSeq) + '..' + String(rec.endSeq) + '）',
           ...agentLines,
           ...appliedLines.map((l) => '  override: ' + l),

@@ -1247,6 +1247,10 @@ async function cmdRun(args) {
     entry: String(args.entry),
     status,
     stopped,
+    /* 本次实际生效的超时预算：回执要能自证"是不是跑满窗口被截断"。
+     * 缺了它，`status:0 + stopped:true` 只能靠人回忆当初给的 --timeout 才分得清
+     * 「跑满窗口」与「自己结束但没成功」——两者都是 stopped:true，而处置完全不同。 */
+    timeoutMs,
     durationMs: Date.now() - t0,
     startSeq: nodes.size ? order[0].seq : null,
     endSeq: S.seq,
