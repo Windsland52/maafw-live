@@ -269,6 +269,22 @@ test('roi-check：本位置无分且未做对照 → 结论按"有无得分"判 
   } finally { cleanup() }
 })
 
+test('roi-check：--name 只认 TemplateMatch（别的类型会把 --target 静默吞掉）→ USAGE(2)', async () => {
+  const { image, cleanup } = setup()
+  try {
+    for (const name of ['OCR', 'ColorMatch', 'TemplateMatchx']) {
+      const { code, err } = await runCli([...baseArgs(image), '--name', name], [])
+      assert.equal(code, 2, name + ' → ' + err)
+      assert.match(err, /--name 只接受 TemplateMatch/, err)
+    }
+    /* 显式给 TemplateMatch 不该被拦（缺省也是它） */
+    const ok = await runCli([...baseArgs(image), '--name', 'TemplateMatch'],
+      scenario(ROI[0], [at(1.0, true), at(0.42), at(0.50)]))
+    assert.equal(ok.code, 0, ok.out + ok.err)
+    assert.match(ok.out, /结论：HIT/, ok.out)
+  } finally { cleanup() }
+})
+
 test('roi-check：参数错（缺 target / 缺 resource-dir / 缺 roi）→ USAGE(2) 且零请求', async () => {
   const { image, cleanup } = setup()
   try {

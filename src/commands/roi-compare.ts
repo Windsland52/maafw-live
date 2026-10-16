@@ -82,10 +82,11 @@ export const roiCompareCommand: Command = {
     '                       ( --rois "x,y,w,h;x,y,w,h;…"         # 显式全套（位置已经知道时用这条）\n' +
     '                       | --offsets "0,0;135,0;140,0;0,111"  # 相对 --roi 的平移，x/y 分量与非均匀列表都允许\n' +
     '                       | --scan "dx=-160..160/8,dy=0" )     # 你也不知道周期时的发现模式\n' +
-    '                       [--roi x,y,w,h]   [--threshold <t>]   [--gap <0.15>]   [--name <识别名>]\n' +
+    '                       [--roi x,y,w,h]   [--threshold <t>]   [--gap <0.15>]   [--name TemplateMatch]\n' +
     '       判据是**候选集合比较**：按分数排序，报第 1/2 名的真实分差（bestGap）与并列带（withinGap）\n' +
     '       三态：唯一最优且过门槛 → 命中(0) / 歧义·未命中·有候选无法评估 → 检出问题(3) / 参数错 → 2\n' +
     '       候选越界（含左上负坐标）：跳过并报出是谁；全部越界 → 检出问题(3)\n' +
+    '       --name 只接受 TemplateMatch：别的识别类型不读 template，会把 --target 静默吞掉\n' +
     '       --scan 是**发现模式**，不是判据：结论只说"发现/未发现唯一最优"，不据此判位置对错\n' +
     '       --roi 是 --offsets/--scan 的基准（--offsets 缺省用第一个候选：把它写成 x,y,w,h）\n' +
     '       成本：候选逐例**串行**，实测 ≈ 0.24s/例 + 一次子进程启动；候选越多越慢，不是秒回',
@@ -155,7 +156,16 @@ export const roiCompareCommand: Command = {
     if (!Number.isFinite(gap) || gap < 0 || gap > 1) {
       return fail('BAD_ARGUMENTS', '--gap 要在 [0,1]（并列带宽度：最优与次优分差小于它就不下结论）', undefined, EXIT.USAGE)
     }
-    const type = typeof ctx.values.name === 'string' && ctx.values.name ? ctx.values.name : 'TemplateMatch'
+    /* 只认 TemplateMatch：`--target` 是必给的**模板**，而 OCR / ColorMatch 这些类型根本不读
+     * `template`——放行它们就是"参数被静默忽略、分数换成另一套含义，而回执照旧打「外来目标」"，
+     * 正是本命令要治的那种静默错。 */
+    const nameRaw = typeof ctx.values.name === 'string' ? ctx.values.name.trim() : ''
+    if (nameRaw && nameRaw !== 'TemplateMatch') {
+      return fail('BAD_ARGUMENTS', '--name 只接受 TemplateMatch，收到：' + nameRaw,
+        '别的识别类型（OCR / ColorMatch …）不读 template：--target 会被静默忽略、score 也换成另一套含义',
+        EXIT.USAGE)
+    }
+    const type = 'TemplateMatch'
 
     /* 候选生成器只写一遍：`build()` 不判越界（还不知道图像尺寸）→ 决定发哪些候选；
      * `build({w,h})` 用回执里的 meta 尺寸跑同一个函数 → 决定报哪些候选被跳过。
@@ -283,17 +293,22 @@ export const roiCompareCommand: Command = {
         }))
         const outcome = aggregate(items, { gap, threshold })
         const missing = items.filter((x) => x.score === null)
-        const top = outcome.ranked[0]!
-        const best = top.score
+        /* `ranked` 里**只有拿得到分数的候选**：没有分数就没有名次（它们仍在回执的逐例记录里点名）。 */
+        const top = outcome.ranked[0] ?? null
+        const best = top?.score ?? null
 
-        const roiW = Math.max(15, ...outcome.ranked.map((x) => x.roi.join(',').length))
-        human.push(' rank  ' + 'roi'.padEnd(roiW) + '  score   命中')
-        for (const row of outcome.ranked) {
-          const delta = best !== null && row.score !== null ? Math.round((best - row.score) * 1000) / 1000 : null
-          human.push(' ' + String(row.rank).padStart(4) + '  ' + row.roi.join(',').padEnd(roiW)
-            + '  ' + fmt(row.score).padStart(5) + '   ' + (row.ok ? '✓' : '')
-            + (row.inBand && row.rank > 1 && delta !== null
-              ? '     ← Δ=' + delta + ' < ' + outcome.gap + '，并列带内' : ''))
+        if (outcome.ranked.length) {
+          const roiW = Math.max(15, ...outcome.ranked.map((x) => x.roi.join(',').length))
+          human.push(' rank  ' + 'roi'.padEnd(roiW) + '  score   命中')
+          for (const row of outcome.ranked) {
+            const delta = best !== null && row.score !== null ? Math.round((best - row.score) * 1000) / 1000 : null
+            human.push(' ' + String(row.rank).padStart(4) + '  ' + row.roi.join(',').padEnd(roiW)
+              + '  ' + fmt(row.score).padStart(5) + '   ' + (row.ok ? '✓' : '')
+              + (row.inBand && row.rank > 1 && delta !== null
+                ? '     ← Δ=' + delta + ' < ' + outcome.gap + '，并列带内' : ''))
+          }
+        } else {
+          human.push(' （没有候选拿到分数：无排序表可打）')
         }
         human.push(' bestGap = ' + (outcome.bestGap === null ? '不可用（可评估候选不足 2 个）' : outcome.bestGap)
           + '   gap = ' + outcome.gap
@@ -323,10 +338,10 @@ export const roiCompareCommand: Command = {
             ? '（可评估候选只有 1 个，无从谈并列）'
             : '与次优差 ' + outcome.bestGap + ' ≥ gap ' + outcome.gap
           human.push(discovery
-            ? ' 结论：**发现唯一最优** rank ' + top.rank + '（roi=' + top.roi.join(',') + ' score=' + fmt(best)
+            ? ' 结论：**发现唯一最优** rank ' + top!.rank + '（roi=' + top!.roi.join(',') + ' score=' + fmt(best)
               + '，' + gapText + '）—— 这是发现模式的输出，**不构成"位置对了"的判据**；'
               + '要判位置请把候选集合显式给出来（--rois / --offsets）'
-            : ' 结论：HIT —— 唯一最优 rank 1（roi=' + top.roi.join(',') + ' score=' + fmt(best) + '），'
+            : ' 结论：HIT —— 唯一最优 rank 1（roi=' + top!.roi.join(',') + ' score=' + fmt(best) + '），'
               + gapText + '，' + passText)
         } else if (outcome.reason === 'ambiguous') {
           human.push(' 结论：AMBIGUOUS —— 无法区分，需人工放大对比（差值过小）'
@@ -339,7 +354,7 @@ export const roiCompareCommand: Command = {
             + '先核对目标模板与图像是否同源、roi 是否用错空间')
         } else if (outcome.reason === 'below-threshold') {
           human.push(' 结论：' + (discovery ? '未发现唯一最优：' : 'MISS —— ')
-            + '最优 ' + top.roi.join(',') + ' 得分 ' + fmt(best) + ' < 门槛 ' + threshold
+            + '最优 ' + top!.roi.join(',') + ' 得分 ' + fmt(best) + ' < 门槛 ' + threshold
             + '；识别未命中不是调低阈值的理由（先核对模板与画面是否同源）')
         } else {
           human.push(' 结论：' + (discovery ? '未发现唯一最优' : 'MISS') + '（' + outcome.reason + '）')
@@ -367,8 +382,8 @@ export const roiCompareCommand: Command = {
               missing: missing.map((x) => x.roi),
               skipped: skipped.map((s) => ({ roi: s.roi, origin: s.origin, reason: s.reason })),
             },
-            /* 逐例回执（**输入顺序**）：`caseRoi` 是 daemon 回执里那例自己的 param.roi。
-             * 它和 `roi` 必须逐例相等，且 15 例两两不同——这条不变量是机械可检查的。 */
+            /* 逐例回执（**输入顺序**，**含没有得分的那几例**）：完整记录，`ranked` 只放有得分的。
+             * `caseRoi` 是 daemon 回执里那例自己的 param.roi，必须与 `roi` 逐例相等。 */
             cases: items.map((x) => ({
               origin: x.origin,
               roi: x.roi,

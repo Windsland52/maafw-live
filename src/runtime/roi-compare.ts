@@ -7,8 +7,8 @@
  * 发现模式）是调用方的事，这里只负责"生成 → 逐个取分 → 排序 → 下结论"。
  *
  * 三条不许动的性质：
- *  1. **没有证据 ≠ 0 分**：`score: null` 的候选不参与排序，也不许被当成垫底来"宣布胜出"
- *     （全无证据 = 未命中；部分缺证据 = 不宣布唯一最优）；
+ *  1. **没有证据 ≠ 0 分**：`score: null` 的候选不进 `ranked`（没有分数就没有名次），也不许被当成
+ *     垫底来"把最优衬托成唯一"；
  *  2. **`bestGap` 无上限地照给**：永远报第 1 与第 2 名的真实分差，不做阈值截断——
  *     只报"带内"的差值等于把"差多少"这件事藏起来；
  *  3. **顺序可追溯**：候选带 `origin`（输入列表下标），排序稳定（同分按 origin），
@@ -223,7 +223,6 @@ export interface RankedItem extends CompareItem {
   /** 落在"与最优的差 < gap"这条并列带里（带是按分数降序的前缀） */
   inBand: boolean
 }
-
 export type Verdict = 'HIT' | 'MISS' | 'AMBIGUOUS'
 
 export type CompareReason =
@@ -239,6 +238,7 @@ export type CompareReason =
   | 'no-candidates'
 
 export interface CompareOutcome {
+  /** **只有拿得到分数的候选**，按分数降序编号 1..M（没有分数就没有名次） */
   ranked: RankedItem[]
   bestGap: number | null
   gap: number
@@ -253,10 +253,11 @@ export interface CompareOutcome {
  *  ① 可评估候选 0 个 → 未命中；② 最优未过 threshold → 未命中；
  *  ③ 与最优并列（|Δ| < gap）的 ≥ 2 → AMBIGUOUS；④ 否则唯一最优。
  *
- * `score: null` 的候选**不参与**排序与并列带（"没有证据"不是 0 分，也不许被当成垫底来
- * 把最优衬托成唯一）。剩下有证据的那些谁更优，才是这里回答的问题；"还有候选没被评估过"
- * 这件事由调用方写进退出码（3）与回执，不改变这里的结论——一次 41 点的扫描里，落在背景上的
- * 点本来就拿不到相关系数（实测 `all: []`），把它们算成"分不出来"会淹没真正的信号。
+ * "剔除"以**输出形状**兑现：`score: null` 的候选**不在 `ranked` 里**——没有分数就没有名次，
+ * 也进不了并列带（"没有证据"既不是 0 分，也不许被当成垫底来把最优衬托成唯一）。
+ * 剩下有证据的那些谁更优，才是这里回答的问题；"还有候选没被评估过"由调用方写进退出码（3）
+ * 与逐例回执，不改变这里的结论——一次 41 点的扫描里，落在背景上的点本来就拿不到相关系数
+ * （实测 `all: []`），把它们算成"分不出来"会淹没真正的信号。
  */
 export function aggregate(
   items: CompareItem[],
@@ -264,16 +265,15 @@ export function aggregate(
 ): CompareOutcome {
   const gap = options.gap ?? DEFAULT_GAP
   const threshold = options.threshold
-  const scored = items.filter((x) => x.score !== null)
-  const missing = items.filter((x) => x.score === null)
-  const byScore = scored.slice().sort((a, b) => (b.score! - a.score!) || (a.origin - b.origin))
-  const tail = missing.slice().sort((a, b) => a.origin - b.origin)
+  const byScore = items
+    .filter((x) => x.score !== null)
+    .sort((a, b) => (b.score! - a.score!) || (a.origin - b.origin))
   const best = byScore.length ? byScore[0]!.score! : null
   const second = byScore.length > 1 ? byScore[1]!.score! : null
   const bestGap = best !== null && second !== null ? round3(best - second) : null
   const band = best === null ? [] : byScore.filter((x) => best - x.score! < gap)
   const withinGap = band.map((_, i) => i + 1)
-  const ranked: RankedItem[] = [...byScore, ...tail].map((x, i) => ({
+  const ranked: RankedItem[] = byScore.map((x, i) => ({
     ...x,
     rank: i + 1,
     inBand: i < band.length,

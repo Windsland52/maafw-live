@@ -85,7 +85,15 @@ export const roiCheckCommand: Command = {
       return fail('BAD_ARGUMENTS', '--threshold 要在 [0,1]（TemplateMatch 的置信度门槛；缺省只报分数不下结论）',
         undefined, EXIT.USAGE)
     }
-    const type = typeof ctx.values.name === 'string' && ctx.values.name ? ctx.values.name : 'TemplateMatch'
+    /* 同 roi-compare：只认 TemplateMatch。`--target` 是必给的模板，别的识别类型不读 template，
+     * 放行它们等于让 `--target` 被静默忽略、分数换成另一套含义，而回执照旧打「外来目标」。 */
+    const nameRaw = typeof ctx.values.name === 'string' ? ctx.values.name.trim() : ''
+    if (nameRaw && nameRaw !== 'TemplateMatch') {
+      return fail('BAD_ARGUMENTS', '--name 只接受 TemplateMatch，收到：' + nameRaw,
+        '别的识别类型（OCR / ColorMatch …）不读 template：--target 会被静默忽略、分数也换成另一套含义',
+        EXIT.USAGE)
+    }
+    const type = 'TemplateMatch'
 
     /* `--pitch` 就是候选生成器：本位置（偏移 0）+ 沿 x 的 ±pitch/2。y 分量恒为 0 正是它的形状限制，
      * 也是泛用形态存在的理由（真实棋盘行距 ≠ 列距）。 */

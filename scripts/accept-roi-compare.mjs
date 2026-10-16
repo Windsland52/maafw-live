@@ -38,7 +38,17 @@ fs.mkdirSync(path.join(RES, 'image'), { recursive: true })
 const W = 1280
 const H = 720
 
-/** 一帧 RGB 画布 + 画一个爪印状图案（格心 + 每格抖动，于是格与格"像但不等同"） */
+/** 定种子的 PRNG：合成画面必须可复现（同一张图每次跑分数一致） */
+const prng = (seed) => () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296)
+
+/**
+ * 一帧 RGB 画布：**真实 15 格坐标** + 每格爪形各不相同（种子随机）+ 第 0 格多一条底纹条。
+ *
+ * 为什么要一条**结构**上的独特特征：CCOEFF_NORMED 会把常数偏移减掉，所以"每格底色不同"
+ * 根本不产生区分度（实测：底色渐变之后次优仍然 0.99 → AMBIGUOUS）。要让"分得出来"这半条路
+ * 真跑起来，差异必须是结构性的（爪形随机 + 第 0 格那条）。
+ * 真实棋盘上爪印近似周期，15 格里 8 格真的分不出来 —— 那种"常态歧义"由下面 ② 的周期图覆盖。
+ */
 function paintBoard() {
   const rgb = Buffer.alloc(W * H * 3, 0)
   for (let i = 0; i < W * H; i++) { rgb[i * 3] = 40; rgb[i * 3 + 1] = 44; rgb[i * 3 + 2] = 58 }
@@ -51,13 +61,26 @@ function paintBoard() {
       }
     }
   }
+  const rand = prng(20261016)
   REAL_GRID.rois.forEach((roi, k) => {
-    const cx = roi[0] + 34 + (k % 3), cy = roi[1] + 22 + (k % 4)
-    blob(cx, cy, 13, 210)                       // 掌
-    blob(cx - 11, cy - 12, 5, 230)              // 四趾
-    blob(cx - 3, cy - 16, 5, 230)
-    blob(cx + 5, cy - 16, 5, 230)
-    blob(cx + 12, cy - 12, 5, 230)
+    const cx = roi[0] + 34
+    const cy = roi[1] + 22
+    const padR = 9 + Math.floor(rand() * 7)        // 9..15：掌大小逐格不同
+    const toes = 3 + Math.floor(rand() * 3)        // 3..5
+    const toeR = 4 + Math.floor(rand() * 4)        // 4..7
+    blob(cx, cy, padR, 210)
+    for (let t = 0; t < toes; t++) {
+      const a = Math.PI * (0.15 + 0.7 * (t + 0.5) / toes)
+      blob(cx + Math.round(Math.cos(a) * (padR + 6)), cy - Math.round(Math.sin(a) * (padR + 6)), toeR, 230)
+    }
+    if (k === 0) {
+      for (let y = roi[1] + 34; y < roi[1] + 42; y++) {
+        for (let x = roi[0] + 6; x < roi[0] + 62; x++) {
+          const i = (y * W + x) * 3
+          rgb[i] = 250; rgb[i + 1] = 120; rgb[i + 2] = 60
+        }
+      }
+    }
   })
   return pngEncodeRGB(rgb, W, H)
 }
@@ -117,9 +140,15 @@ check('ranked 的 roi 能从输入按 origin 还原（不变量 2）',
 check('自匹配那一格排第一（真识别给得出 1.0）',
   d1?.ranked[0].roi.join(',') === REAL_GRID.rois[0].join(',') && d1.ranked[0].score === 1,
   JSON.stringify(d1?.ranked?.[0]))
+check('**分得出来**这半条路：唯一最优 → HIT + 退出码 0',
+  d1?.verdict === 'HIT' && d1.reason === 'unique' && d1.exit === 0 && rois.code === 0,
+  'verdict=' + d1?.verdict + ' code=' + rois.code)
 check('bestGap 是第 1/2 名的真实分差（无上限照给）',
   d1?.bestGap !== null && d1.bestGap >= 0 && d1.bestGap <= 1, 'bestGap=' + d1?.bestGap)
 check('imageSize 来自 daemon 回执的 w/h', d1?.imageSize?.w === W && d1?.imageSize?.h === H)
+check('逐例回执里没有无得分的候选（合成画面每格都认得出自己）',
+  d1?.candidates.missing.length === 0 && d1.cases.every((c) => c.score !== null),
+  JSON.stringify(d1?.candidates?.missing))
 
 /* ── ② 真周期图：AMBIGUOUS 必触发 ─────────────────────────────────────────── */
 
@@ -145,7 +174,7 @@ check('发现模式如实说"周期结构下不唯一"，并明说不是"位置�
 
 console.log('③ 越界族（负坐标 / 右下超出 / 全部越界）')
 const partial = run(['roi-compare', '--image', BOARD, '--target', 'cell_0.png', '--resource-dir', RES,
-  '--rois=0,0,20,20;1250,700,68,44;-50,200,80,300', '--json'])
+  '--rois=' + [REAL_GRID.rois[0].join(','), '1250,700,68,44', '-50,200,80,300'].join(';'), '--json'])
 check('界内候选照常排序，越界的两条都报出来',
   (partial.env?.data?.ranked.length ?? 0) === 1
   && partial.env?.data?.candidates.skipped.length === 2, JSON.stringify(partial.env?.data?.candidates))

@@ -35,6 +35,28 @@ export const REAL_GRID = {
     withinGap: [1, 2],
     verdict: 'AMBIGUOUS',
   },
+  /**
+   * **同一组 15 格、另一份模板**（从 `867,175,68,44` 裁）：这份是**分得出来**的
+   * ——bestGap 0.367 ≥ 0.15 → HIT + 退出 0。15 格两两之间的分数矩阵实测（225 例）：
+   * 15 份模板里 **7 份 decisive**（0.367 / 0.351 / 0.238 / 0.220 / 0.200 / 0.151 …），
+   * 其余 8 份落在 0.10~0.15。也就是说"分不出来"是这批数据的**常态**（爪印近似周期），
+   * 而不是工具的毛病；这里取最 decisive 的那份当"分得出来"的真实用例。
+   */
+  decisive: {
+    cell: [867, 175, 68, 44],
+    scores: [
+      0.442053, 0.494814, 0.633333, 0.999999, 0.518032,
+      0.344217, 0.375351, 0.364986, 0.341186, 0.336384,
+      0.151869, 0.168999, 0.192729, 0.215696, 0.112806,
+    ],
+    hits: [false, false, false, true, false, false, false, false, false, false, false, false, false, false, false],
+    expected: {
+      bestGap: 0.367,
+      withinGap: [1],
+      verdict: 'HIT',
+      exit: 0,
+    },
+  },
   image: 'M9A/.live/cc40/kf22.png（1280×720 真机留存帧）',
   template: '从 4.0 帧裁的爪印 462,175,68,44',
 }

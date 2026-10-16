@@ -301,7 +301,7 @@ test('roi-compare：最优未过 --threshold → MISS + exit 3（不是调低阈
   } finally { cleanup() }
 })
 
-test('roi-compare：有候选无法评估 → 无证据的剔除出比较，结论只对可评估的成立，退出码 3 承担这个caveat', async () => {
+test('roi-compare：有候选无法评估 → 无证据的不进 ranked（没有分数就没有名次），退出码 3 承担 caveat', async () => {
   const { image, cleanup } = setup()
   try {
     const rois = [[0, 0, 50, 50], [200, 0, 50, 50], [400, 0, 50, 50]]
@@ -317,8 +317,12 @@ test('roi-compare：有候选无法评估 → 无证据的剔除出比较，结�
     assert.equal(env.data.reason, 'unique')
     assert.equal(env.data.exit, 3, '唯一最优但仍有候选无法评估 → 退出码不是 0')
     assert.deepEqual(env.data.candidates.missing, [[200, 0, 50, 50]])
-    assert.equal(env.data.ranked[2].roi.join(','), '200,0,50,50', '无得分的排在表尾')
-    assert.equal(env.data.ranked[2].score, null, 'null 不能被当成 0 分')
+    assert.deepEqual(env.data.ranked.map((r) => r.roi), [[0, 0, 50, 50], [400, 0, 50, 50]],
+      'ranked 里不许有无得分的行——没有分数就没有名次')
+    assert.ok(!env.data.ranked.some((r) => r.score === null), 'null 不能被当成 0 分混进排名')
+    /* 它仍在**逐例回执**里（输入顺序、完整记录），只是不参与"谁更优" */
+    assert.deepEqual(env.data.cases.map((c) => c.score), [0.95, null, 0.2])
+    assert.equal(env.data.cases[1].roi.join(','), '200,0,50,50')
   } finally { cleanup() }
 })
 
@@ -336,22 +340,59 @@ test('roi-compare：有候选无法评估时，人读回执必须点名并说清
     assert.match(out, /已从比较里剔除（无证据 ≠ 0 分，也不当垫底）/, out)
     assert.match(out, /本结论只对可评估的 2 个成立/, out)
     assert.match(out, /退出码按"有候选无法评估"给 3/, out)
+    assert.ok(!/3\s+200,0,50,50/.test(out), '无得分的候选不该出现在排序表里（表只排名有分的）：' + out)
     assert.ok(!/AMBIGUOUS/.test(out), '缺证据 ≠ 分不出来：' + out)
   } finally { cleanup() }
 })
 
-test('roi-compare：候选全部无得分 → MISS（不是 AMBIGUOUS）+ exit 3', async () => {
+test('roi-compare：候选全部无得分 → MISS（不是 AMBIGUOUS）+ exit 3，且没有排序表', async () => {
   const { image, cleanup } = setup()
   try {
     const rois = [[0, 0, 50, 50], [200, 0, 50, 50]]
     const { code, out } = await runCli([
       'roi-compare', '--image', image, '--target', 'T.png', '--resource-dir', 'R',
-      '--rois', roisArg(rois), '--json',
+      '--rois', roisArg(rois),
     ], { rules: rule([NONE, NONE]) })
     assert.equal(code, 3, out)
+    assert.match(out, /（没有候选拿到分数：无排序表可打）/, out)
+    assert.match(out, /不是"分不出来"/, out)
+  } finally { cleanup() }
+})
+
+test('roi-compare：全部无得分时 ranked 是空的（没有分数就没有名次）', async () => {
+  const { image, cleanup } = setup()
+  try {
+    const rois = [[0, 0, 50, 50], [200, 0, 50, 50]]
+    const { out } = await runCli([
+      'roi-compare', '--image', image, '--target', 'T.png', '--resource-dir', 'R',
+      '--rois', roisArg(rois), '--json',
+    ], { rules: rule([NONE, NONE]) })
     const env = envelope(out)
     assert.equal(env.data.reason, 'no-evidence')
-    assert.equal(env.data.verdict, 'MISS')
+    assert.deepEqual(env.data.ranked, [])
+    assert.equal(env.data.candidates.evaluated, 0)
+    assert.equal(env.data.cases.length, 2, '逐例回执仍在（完整记录）')
+  } finally { cleanup() }
+})
+
+test('roi-compare：真实格"分得出来"的那一半 —— 同一组 15 格、另一份模板 → HIT + exit 0', async () => {
+  const { image, cleanup } = setup()
+  try {
+    /* 夹具里那份 decisive 模板（从 867,175,68,44 裁）的真实分数：bestGap 0.367 ≥ 0.15。
+     * "分不出来"（上面那条）与"分得出来"（这条）用的是**同一批真机 data**，区别只在模板。 */
+    const cases = REAL_GRID.decisive.scores.map((s, i) => at(s, REAL_GRID.decisive.hits[i]))
+    const { code, out } = await runCli([...gridArgs(image), '--json', '--threshold', '0.8', '--name', 'TemplateMatch'],
+      { rules: rule(cases) })
+    assert.equal(code, 0, out)
+    const env = envelope(out)
+    assert.equal(env.data.verdict, REAL_GRID.decisive.expected.verdict)
+    assert.equal(env.data.reason, 'unique')
+    assert.equal(env.data.exit, 0)
+    assert.equal(env.data.bestGap, REAL_GRID.decisive.expected.bestGap)
+    assert.deepEqual(env.data.withinGap, REAL_GRID.decisive.expected.withinGap)
+    assert.equal(env.data.ranked[0].roi.join(','), REAL_GRID.decisive.cell.join(','), '自己那一格唯一最优')
+    assert.equal(env.data.ranked[1].score, 0.633333, '次优逐例钉住')
+    assert.equal(env.data.candidates.missing.length, 0)
   } finally { cleanup() }
 })
 
@@ -531,6 +572,10 @@ test('roi-compare：参数错 → USAGE(2) 且零识别请求', async () => {
       ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--roi', '0,0,10,10', '--offsets', '0,0;1,2,3,4'], // 绝对 roi + 基准
       ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--rois', '0,0,10,10', '--threshold', '1.5'],
       ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--rois', '0,0,10,10', '--gap', '2'],
+      /* --name 只认 TemplateMatch：别的类型不读 template，放行它就是让 --target 被静默吞掉 */
+      ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--rois', '0,0,10,10', '--name', 'OCR'],
+      ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--rois', '0,0,10,10', '--name', 'ColorMatch'],
+      ['--image', image, '--target', 'T.png', '--resource-dir', 'R', '--rois', '0,0,10,10', '--name', 'TemplateMatch_'],
       ['--image', image, '--rois', '0,0,10,10', '--resource-dir', 'R'],                                // 缺 target
       ['--image', image, '--target', 'T.png', '--rois', '0,0,10,10'],                                  // 缺 resource-dir
     ]
