@@ -26,7 +26,7 @@
  */
 import { createServer, connect, type Server, type Socket } from 'node:net'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -40,10 +40,20 @@ export function sessionDir(name: string): string {
   return join(homedir(), '.maafw-live', 'sessions', name)
 }
 
-/** Windows 命名管道名；其它平台退回 Unix domain socket 路径（同一份代码，两个平台都能跑）。 */
+/** Windows 命名管道名；其它平台用 Unix domain socket 文件（同一份代码，两个平台都能跑）。
+ *
+ * ⚠️ 返回 Unix socket **路径**时会落在 `sessionDir(name)/sock` 下，所以调用方必须先确保
+ * 该目录存在（`ensureSessionDir`）——`listen()` 对不存在的父目录直接 ENOENT。
+ * Windows 命名管道在 `\\.\pipe\` 命名空间里，与文件系统无关，不需要建目录。 */
 export function sessionPipePath(name: string): string {
-  if (process.platform === 'win32') return `\\\\.\\pipe\\maafw-live-${name}`
-  return join(sessionDir(name), 'sock')
+    if (process.platform === 'win32') return `\\\\.\\pipe\\maafw-live-${name}`
+    return join(sessionDir(name), 'sock')
+}
+
+/** 平台无关的"管道父目录就绪"：Windows 上是空操作（命名管道不走文件系统）。 */
+export function ensureSessionDir(name: string): void {
+    if (process.platform === 'win32') return
+    mkdirSync(sessionDir(name), { recursive: true })
 }
 
 export interface SessionMeta {
@@ -154,6 +164,16 @@ export class SessionServer {
 
     listen(pipe: string): Promise<void> {
         return new Promise((resolve, reject) => {
+            /* POSIX 下 socket 是**文件**：进程被强杀时文件会留下，再 listen 就是 EADDRINUSE
+             * （Windows 命名管道随进程消失，没有这个问题）。所以先清掉残留的 socket 文件——
+             * 但只清"确实是 socket"的，不误删普通文件。 */
+            if (process.platform !== 'win32') {
+                try {
+                    if (lstatSync(pipe).isSocket()) rmSync(pipe, { force: true })
+                } catch {
+                    /* 不存在或不是 socket：都不用管 */
+                }
+            }
             const server = createServer((socket) => {
                 this.sockets.add(socket)
                 socket.setEncoding('utf8')

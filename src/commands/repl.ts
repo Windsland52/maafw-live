@@ -16,7 +16,7 @@ import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '..
 import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import {
-  pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath,
+  ensureSessionDir, pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath,
   spawnSessionServer, stopSession, validSessionName, waitPipeReady,
 } from '../runtime/session-ipc.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
@@ -1002,6 +1002,9 @@ async function runSessionServer(name: string, ctx: CommandContext): Promise<Comm
 
   const pipe = sessionPipePath(name)
   try {
+    /* POSIX 下管道是文件系统里的 socket 文件，父目录必须在 listen 之前就存在，
+     * 否则 listen 直接 ENOENT（Windows 命名管道不走文件系统，这里是空操作）。 */
+    ensureSessionDir(name)
     await server.listen(pipe)
   } catch (e) {
     try { client.close() } catch { /* ignore */ }
