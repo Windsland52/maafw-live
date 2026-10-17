@@ -108,13 +108,13 @@ test('命名会话：首次调用起会话并执行，后续独立进程复用�
     t.after(() => cleanup(name))
 
     // ① 首次：起常驻会话 + 执行第一条命令
-    const first = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', 'probe'], logPath)
+    const first = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe'], logPath)
     assert.equal(first.code, 0, '首次调用应成功：' + first.out)
     assert.match(first.out, /已连接/, '启动横幅要在第一条回执里给出（"会话连到了什么"）：' + first.out)
     assert.match(first.out, /\{"ok":true\}/, '命令本身要执行（桩对 probe 回 ok:true）：' + first.out)
 
     // ② 第二个独立进程：复用同一会话（桩是新的，但会话进程是同一个）
-    const second = await runCli(['repl', '--session', name, 'probe'], logPath)
+    const second = await runCli(['repl', '--session', name, '--cmd', 'probe'], logPath)
     assert.equal(second.code, 0, '复用调用应成功：' + second.out)
     assert.match(second.out, /\{"ok":true\}/, '第二条命令也要真的执行：' + second.out)
     assert.doesNotMatch(second.out, /已连接/, '启动横幅只跟第一条命令走，不重复：' + second.out)
@@ -130,7 +130,7 @@ test('命名会话：一次送多条命令按序串行执行', async (t) => {
     const logPath = stubLogFor(name).path
     t.after(() => cleanup(name))
 
-    const r = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', 'probe', 'frame status', 'kf status'], logPath)
+    const r = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe', '--cmd', 'frame status', '--cmd', 'kf status'], logPath)
     assert.equal(r.code, 0, '多条命令应全部成功：' + r.out)
     /* 桩对三条命令都回 ok:true，"都执行了"用条数证明；顺序用"回执不乱"证明——
      * 每条命令一段，段数 = 命令数（衔接处不会串行错位）。 */
@@ -144,8 +144,8 @@ test('命名会话：quit 收掉会话，之后状态报不存在（收尾不留
     const logPath = stubLogFor(name).path
     t.after(() => cleanup(name))
 
-    await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', 'probe'], logPath)
-    const q = await runCli(['repl', '--session', name, 'quit'], logPath)
+    await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe'], logPath)
+    const q = await runCli(['repl', '--session', name, '--cmd', 'quit'], logPath)
     assert.equal(q.code, 0, 'quit 应正常返回：' + q.out)
 
     // 常驻进程收尾有 150ms 的延后（先把回执写出去），轮询等它退出
@@ -169,9 +169,45 @@ test('命名会话：--session-stop 幂等（会话不存在也返回 0）', asy
     assert.match(r1.out, /不存在/, '要说清"无需收"：' + r1.out)
 })
 
+/* 下面两条钉住的是**实现过程中真实踩到的坑**，不是假想边界：
+ * 最初形态是裸位置参数 `<命令>…`，于是
+ *   `repl --session cc run X --timeout 0`  → `--timeout` 被 repl 自己的选项表拒掉；
+ *   `repl --session cc screencap out.png`  → 位置参数被当成**两条命令**：
+ *        `screencap` 用默认路径真截了一张（结果丢掉）+ `out.png` 报未知命令，
+ *        也就是**静默执行了错误的动作**，还退 0。
+ * 所以改成只认 `--cmd`，并把裸位置参数明确拒掉。 */
+
+test('命名会话：裸位置参数被明确拒掉（不猜意图、不静默拆成多条命令）', async () => {
+    const name = sessionName()
+    const r = await runCli(['repl', '--session', name, 'screencap', 'out.png'], null)
+    assert.notEqual(r.code, 0, '裸位置参数应失败（实际 ' + r.code + '）：' + r.out)
+    assert.match(r.out, /要用 --cmd 传/, '要点名正确的用法：' + r.out)
+    assert.match(r.out, /screencap/, '要把收到的位置参数原样报出，便于对照：' + r.out)
+    assert.doesNotMatch(r.out, /\{"ok":true\}/, '**不许真的执行**任何一条（静默错动作比报错更贵）：' + r.out)
+})
+
+test('命名会话：--cmd 里的子命令选项原样交给会话（不被 repl 自己的选项表吃掉）', async (t) => {
+    const name = sessionName()
+    const logPath = stubLogFor(name).path
+    t.after(() => cleanup(name))
+
+    /* `run … --timeout 1200` 整条作为 --cmd 的值：repl 不该把 --timeout 当自己的选项。
+     * 判据不能用 `{ok:true}` —— 会话内 `run` 还要求 --resource-dir（缺了会先拦），
+     * 那条"缺资源"的提示**本身就是命令已完整送达**的证明（说明它解析到了 run 分支、
+     * 且没在 repl 的选项层就被拒）。所以直接钉这两件事：不报选项错 + 走到 run 分支。 */
+    const r = await runCli(
+        ['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'run StartUp --timeout 1200'],
+        logPath,
+    )
+    assert.equal(r.code, 0, '--cmd 应正常执行：' + r.out)
+    assert.doesNotMatch(r.out, /Unknown option|\[BAD_ARGUMENTS\]/, '--timeout 不该被 repl 的选项表拒掉：' + r.out)
+    assert.doesNotMatch(r.out, /未知命令：--timeout/, '--timeout 不该被切成独立命令：' + r.out)
+    assert.match(r.out, /缺资源|已提交|"ok":true/, '命令要真的走到 run 分支：' + r.out)
+})
+
 test('命名会话：会话名白名单（要进管道名与文件路径，不能被穿越）', async () => {
     for (const bad of ['../evil', 'a/b', 'a\\b', 'a b', '', 'x'.repeat(49)]) {
-        const r = await runCli(['repl', '--session', bad, 'probe'], null)
+        const r = await runCli(['repl', '--session', bad, '--cmd', 'probe'], null)
         assert.notEqual(r.code, 0, '非法会话名 ' + JSON.stringify(bad) + ' 应被拒：' + r.out)
         assert.match(r.out, /会话名只允许/, '要给出可读的拒绝理由：' + r.out)
     }
@@ -182,7 +218,7 @@ test('命名会话：meta 里记下连接参数（诊断"这条会话连的是�
     const logPath = stubLogFor(name).path
     t.after(() => cleanup(name))
 
-    await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', 'probe'], logPath)
+    await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe'], logPath)
     const status = await runCli(['repl', '--session', name, '--session-status'], logPath)
     assert.match(status.out, /连接参数/, '状态里要能看出连接参数：' + status.out)
     assert.match(status.out, /stub/, '连接参数要包含实际给的目标：' + status.out)

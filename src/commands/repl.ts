@@ -245,15 +245,20 @@ export const replCommand: Command = {
   name: 'repl',
   summary: '交互/管道会话：连接一次，后续命令复用同一个 daemon 与设备会话',
   usage: 'maafw-live repl [--project <dir>|--kind win32|adb|gamepad [--target ...]]\n' +
-    '       maafw-live repl --session <name> [<命令>…]   命名常驻会话：首次起、之后复用（不必自建驱动）\n' +
-    '        不带 <命令>：进入该会话的交互式提示符（等价于 repl，但连接状态跨调用保持）\n' +
-    '        带 <命令>：把命令送进常驻会话并打印回执（可多条，逐条串行执行）\n' +
+    '       maafw-live repl --session <name> [--cmd <命令>]…   命名常驻会话：首次起、之后复用（不必自建驱动）\n' +
+    '        不带 --cmd：进入该会话的交互式提示符（等价于 repl，但连接状态跨调用保持）\n' +
+    '        带 --cmd：把命令送进常驻会话并打印回执；可给多个 --cmd，逐条串行执行\n' +
+    '          maafw-live repl --session cc --cmd "screencap a.png"\n' +
+    '          maafw-live repl --session cc --cmd "run CritterCrashEntry --timeout 0" --cmd "events 20"\n' +
+    '        **必须用 --cmd 传带选项的命令**：不加 --cmd 时参数会先被 repl 自己的选项表解析，\n' +
+    '        `repl --session cc run X --timeout 0` 里的 `--timeout` 会被当成 repl 的选项而报错\n' +
     '       maafw-live repl --session <name> --session-status   看会话状态\n' +
     '       maafw-live repl --session <name> --session-stop     收掉会话\n' +
     '       --session-serve <name>  内部用：常驻侧（从命名管道读命令，不要手敲）',
   options: {
     ...CONNECT_OPTIONS,
     session: { type: 'string' },
+    cmd: { type: 'string', multiple: true },
     'session-status': { type: 'boolean' },
     'session-stop': { type: 'boolean' },
     'session-serve': { type: 'string' },
@@ -832,9 +837,32 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
 
 /** 调用侧：复用已存在的会话，或首次起一个再送命令。 */
 async function runNamedSession(name: string, ctx: CommandContext): Promise<CommandResult> {
-  const rest = ctx.positionals.slice()
   const wantStatus = ctx.values['session-status'] === true
   const wantStop = ctx.values['session-stop'] === true
+
+  /* 命令收集：**只认 `--cmd`**。
+   *
+   * 为什么不用裸位置参数：位置参数会先被 repl 自己的选项表解析，于是
+   *   `repl --session cc run X --timeout 0`
+   * 里的 `--timeout` 被当成 repl 的选项直接 BAD_ARGUMENTS 拒掉。而绕开的写法
+   * （整条命令加引号）是个"必须记住"的坑，且退化形态更危险——实测
+   *   `repl --session cc screencap out.png`
+   * 里的位置参数被当成**两条命令**：`screencap`（用默认路径真截了一张、丢掉结果）
+   * + `out.png`（报未知命令），也就是**静默执行了错误的动作**。
+   * 所以这里只收 `--cmd`（可重复），并把裸位置参数当成明确的用法错误报出来，
+   * 不给"看起来成功了"的歧义空间。 */
+  const rawCmds = ctx.values.cmd
+  const cmds: string[] = Array.isArray(rawCmds)
+    ? rawCmds.filter((c): c is string => typeof c === 'string')
+    : typeof rawCmds === 'string' ? [rawCmds] : []
+  if (ctx.positionals.length) {
+    return fail('BAD_ARGUMENTS',
+      '命名会话的命令要用 --cmd 传（收到位置参数 ' + JSON.stringify(ctx.positionals) + '）',
+      '例：maafw-live repl --session ' + name + ' --cmd "run X --timeout 0"\n' +
+      '       位置参数不加 --cmd 时会被当成多条独立命令（`screencap out.png` 会被拆成两条），\n' +
+      '       所以这里直接拒掉，不猜你的意图',
+      EXIT.USAGE)
+  }
 
   if (wantStop) {
     const meta = readSessionMeta(name)
@@ -878,9 +906,9 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
     }
   }
 
-  /* 不带命令 = 交互式：把本进程的 stdin 逐行送进常驻会话，输出照原样打印。
+  /* 不带 --cmd = 交互式：把本进程的 stdin 逐行送进常驻会话，输出照原样打印。
    * 这样 `repl --session x` 的手感与普通 repl 一致，但连接状态跨调用保持。 */
-  if (!rest.length) {
+  if (!cmds.length) {
     const rl = readline.createInterface({ input: process.stdin, terminal: process.stdin.isTTY === true })
     const lines: string[] = []
     let wake: (() => void) | null = null
@@ -911,10 +939,10 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
     return { exitCode: EXIT.OK, human: ['会话 ' + name + ' 保持运行（用 --session-stop ' + name + ' 收掉）'], data: { name, pid: meta.pid } }
   }
 
-  /* 带命令：逐条串行送进会话，把回执按序打印。任一条 quit/exit 就结束会话。 */
+  /* 带 --cmd：逐条串行送进会话，把回执按序打印。任一条 quit/exit 就结束会话。 */
   const human: string[] = []
   let exitCode: ExitCode = EXIT.OK
-  for (const cmd of rest) {
+  for (const cmd of cmds) {
     const rep = await sendToSession(meta, cmd, 600000)
     human.push(...rep.lines)
     if (rep.error) {
