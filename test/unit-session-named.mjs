@@ -21,7 +21,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -154,18 +154,25 @@ test('命名会话：quit 收掉会话，之后状态报不存在（收尾不留
     const q = await runCli(['repl', '--session', name, '--cmd', 'quit'], logPath)
     assert.equal(q.code, 0, 'quit 应正常返回：' + q.out)
 
-    // 常驻进程收尾有 150ms 的延后（先把回执写出去），轮询等它退出
+    /* 常驻进程收尾有 150ms 的延后（先把回执写出去）。这里**直接读 meta 看目录还在不在**，
+     * 不再每轮 spawn 一个 CLI 去问 --session-status：那种写法每一轮要起一个 node 进程，
+     * 慢 runner 上 8s 只够轮询三四次，是典型的"本地绿、CI 偶发红"。
+     * 现在只做文件检查 + 进程存活判断，毫秒级、可多轮。 */
     let gone = false
-    const deadline = Date.now() + 8000
+    const deadline = Date.now() + 20000
     while (Date.now() < deadline) {
-        const st = await runCli(['repl', '--session', name, '--session-status'], logPath, 20000)
-        if (/不存在/.test(st.out)) {
+        const metaPath = join(homedir(), '.maafw-live', 'sessions', name, 'meta.json')
+        if (!existsSync(metaPath)) {
             gone = true
             break
         }
-        await new Promise((r) => setTimeout(r, 300))
+        await new Promise((r) => setTimeout(r, 100))
     }
-    assert.ok(gone, 'quit 之后会话应消失（不留下常驻进程）')
+    assert.ok(gone, 'quit 之后会话目录应被收掉（不留下常驻进程）：' + join(homedir(), '.maafw-live', 'sessions', name))
+
+    /* 再用 CLI 复核一次人读的输出（只问一次，不轮询） */
+    const st = await runCli(['repl', '--session', name, '--session-status'], logPath, 20000)
+    assert.match(st.out, /不存在/, '状态命令也要报不存在：' + st.out)
 })
 
 test('命名会话：--session-stop 幂等（会话不存在也返回 0）', async () => {

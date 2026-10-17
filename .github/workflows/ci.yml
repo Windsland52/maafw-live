@@ -25,8 +25,14 @@ jobs:
       matrix:
         # 22.13 是 engines 声明的下限——跑它才让下限保持真实，不会无声上漂；24 是当前 LTS。
         # win32 是主要开发平台（win32 控制器路径），linux 覆盖 CI / 服务器侧安装。
+        #
+        # **ubuntu 钉版本号，不用 ubuntu-latest**：`ubuntu-latest` 会随镜像轮转静默换环境
+        # （2026-10-17 的官方通告：该 label 将于 2026-11 起指向 Ubuntu 26.04）。本仓已经有
+        # 一条被这种"环境悄悄变了"坑过的记录——`--session` 的 POSIX 分支正是 Windows 上
+        # 永远绿、Linux 上必挂的那种。CI 的价值在于"变红时说得出是谁变了"，
+        # 所以这里把 OS 钉住，镜像升级改成一次显式的、可回滚的改动。
         os:
-          - ubuntu-latest
+          - ubuntu-24.04
           - windows-latest
         node:
           - 22.13
