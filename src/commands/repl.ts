@@ -16,7 +16,7 @@ import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '..
 import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import {
-  ensureSessionDir, pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath,
+  ensureSessionDir, pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath, sessionServeLogTail,
   spawnSessionServer, stopSession, validSessionName, waitPipeReady,
 } from '../runtime/session-ipc.js'
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
@@ -899,10 +899,15 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
     meta = spawnSessionServer(name, process.argv[1] ?? '', connectArgs)
     const ready = await waitPipeReady(meta.pipe, 20000)
     if (!ready) {
+      /* 真因几乎都在常驻进程自己的日志里（最常见的两种：POSIX 残留 socket 的 EADDRINUSE、
+       * 连接参数不合法）。不读回来就只剩"20s 不可连"这种没法行动的说法。 */
+      const tail = sessionServeLogTail(name)
       stopSession(name)
       return fail('SESSION_NOT_READY',
-        '会话 ' + name + ' 起了但管道 ' + meta.pipe + ' 20s 内不可连（常驻进程可能启动即失败）',
-        '检查连接参数是否正确；必要时用 --session-stop ' + name + ' 清掉再试', EXIT.FINDINGS)
+        '会话 ' + name + ' 起了但管道 ' + meta.pipe + ' 20s 内不可连（常驻进程启动即失败）',
+        (tail.length ? '常驻进程日志尾部：\n    ' + tail.join('\n    ') + '\n' : '') +
+        '    常见原因：POSIX 上残留 socket 未被清（删掉 ' + meta.pipe + ' 重试）；连接参数不合法（多设备未给 --address）',
+        EXIT.FINDINGS)
     }
   }
 

@@ -122,7 +122,13 @@ test('命名会话：首次调用起会话并执行，后续独立进程复用�
     // ③ 状态可查
     const status = await runCli(['repl', '--session', name, '--session-status'], logPath)
     assert.match(status.out, /在跑/, '状态应报"在跑"：' + status.out)
-    assert.match(status.out, /maafw-live-/, '要报出管道名，便于诊断：' + status.out)
+    /* 管道地址要报出来，便于诊断——但**形状因平台而异**，不能钉死其中一个：
+     *   Windows: \\.\pipe\maafw-live-<name>         （命名空间，含 maafw-live- 前缀）
+     *   POSIX  : ~/.maafw-live/sessions/<name>/sock （文件系统里的 socket 文件）
+     * 一开始这条断言写的是 /maafw-live-/，在 Linux 上必挂——测试自己的平台假设错了。 */
+    const pipeLine = status.out.split('\n').find((l) => /管道/.test(l)) ?? ''
+    assert.match(pipeLine, new RegExp(name), '管道地址里要能定位到这条会话：' + status.out)
+    assert.match(pipeLine, /pipe\\|sock|\\\\\.\\/, '管道地址要是两个平台之一的形状：' + status.out)
 })
 
 test('命名会话：一次送多条命令按序串行执行', async (t) => {

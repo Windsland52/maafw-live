@@ -26,7 +26,7 @@
  */
 import { createServer, connect, type Server, type Socket } from 'node:net'
 import { spawn } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -289,18 +289,37 @@ export async function sendToSession(
     })
 }
 
-/** 起一个脱离父进程的常驻会话（`--session-serve` 模式）。 */
+/** 起一个脱离父进程的常驻会话（`--session-serve` 模式）。
+ *
+ * `stdio` 不能是 `'ignore'`：常驻进程起不来时（最典型的是 POSIX 上残留 socket 导致
+ * listen 失败），调用方只会看到"管道 20s 内不可连"，真因被吞掉——而 `listen` 的 EADDRINUSE
+ * 与"连接参数错"是完全不同的两件事。所以把它自己的 stdout/stderr 落到会话目录的
+ * `serve.log`，失败时读回来当诊断依据。 */
 export function spawnSessionServer(name: string, cliEntry: string, connectArgs: Record<string, unknown>): SessionMeta {
     const dir = sessionDir(name)
     mkdirSync(dir, { recursive: true })
     const pipe = sessionPipePath(name)
+    const logPath = join(dir, 'serve.log')
+    let out: number | 'ignore' = 'ignore'
+    try {
+        out = openSync(logPath, 'a')
+    } catch {
+        out = 'ignore'
+    }
     const args = [cliEntry, 'repl', '--session-serve', name, ...connectArgsToArgv(connectArgs)]
     const child = spawn(process.execPath, args, {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', out, out],
         windowsHide: true,
     })
     child.unref()
+    if (typeof out === 'number') {
+        try {
+            closeSync(out)
+        } catch {
+            /* ignore */
+        }
+    }
     const meta: SessionMeta = {
         name,
         pid: child.pid ?? 0,
@@ -310,6 +329,18 @@ export function spawnSessionServer(name: string, cliEntry: string, connectArgs: 
     }
     writeFileSync(sessionMetaPath(name), JSON.stringify(meta, null, 2))
     return meta
+}
+
+/** 读常驻进程自己的日志尾部（诊断"为什么起不来"）。 */
+export function sessionServeLogTail(name: string, lines = 12): string[] {
+    const p = join(sessionDir(name), 'serve.log')
+    if (!existsSync(p)) return []
+    try {
+        const all = readFileSync(p, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '')
+        return all.slice(-lines)
+    } catch {
+        return []
+    }
 }
 
 /** 连接参数 → argv（会话常驻进程用同一套 CLI 旗标启动，不另造一套参数面）。 */
