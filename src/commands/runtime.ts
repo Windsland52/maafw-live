@@ -5,7 +5,8 @@
  * （控制器规划、资源解析、时间线）都不许写在这里——REPL 与其它壳（编辑器插件、面板）调的是同一批动作函数。
  */
 import { mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { watchLogs } from '../runtime/log-watch.js'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { defaultRunDir } from '../client/daemon.js'
 import { computePipelineOverride, mergeOverride } from '../interface/index.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
@@ -425,7 +426,8 @@ export const runCommand: Command = {
   summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐。退出码按任务级 record.ok',
   usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>] [--preset <name>] [--resource <名|路径>]\n' +
     '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
-    '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖',
+    '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖\n' +
+    '       --watch <日志文件> = 跑的同时实时 tail 该文件（可多次给）——长任务执行中 daemon 帧流被框架占住，这是唯一能看到进展的通道',
   options: {
     ...CONNECT_OPTIONS,
     entry: { type: 'string' },
@@ -433,6 +435,9 @@ export const runCommand: Command = {
     timeout: { type: 'string' },
     override: { type: 'string' },
     preset: { type: 'string' },
+    /* 运行期日志跟随：跑的时候把项目 agent 写的日志实时打出来（可多次给） */
+    watch: { type: 'string', multiple: true },
+    'watch-interval': { type: 'string' },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -522,7 +527,26 @@ export const runCommand: Command = {
           /* 用户 --override 最后覆盖合成结果；与四级链共用同一份合并实现（非对象值原样替换） */
           mergeOverride(args.override as Record<string, unknown>, override)
         }
+        /* 运行期日志跟随：run 会阻塞到任务结束，期间帧流/事件都不可用（框架占住控制器），
+         * 唯一还在更新的只有项目 agent 自己写的日志。给了 --watch 就在这里边跑边推。 */
+        const watchRaw = ctx.values.watch
+        const watchPaths = (Array.isArray(watchRaw) ? watchRaw : watchRaw === undefined ? [] : [watchRaw])
+          .filter((x): x is string => typeof x === 'string' && x.length > 0)
+          .map((x) => (isAbsolute(x) ? x : resolve(ctx.cwd, x)))
+        const watchInterval = Number(ctx.values['watch-interval'] ?? 2000)
+        const watcher = watchPaths.length
+          ? watchLogs(
+              { paths: watchPaths, intervalMs: Number.isFinite(watchInterval) ? watchInterval : 2000 },
+              (lines) => {
+                /* 直写 stdout：--json 模式下也会混进人类可读行，所以下面的信封里另给 watch 统计，
+                 * 并在 --json 时把人类行改走 stderr（stdout 只留信封）。 */
+                const sink = ctx.flags.json ? process.stderr : process.stdout
+                for (const l of lines) sink.write('[watch] ' + l + '\n')
+              },
+            )
+          : null
         const r = await act.run(client, args, timeoutMs)
+        const watchStats = watcher ? watcher.stop() : null
         if (r.ok === false || !r.record) {
           /* 调用级失败：任务根本没跑起来（未连接 / 资源缺失 / 已有任务在跑）→ FINDINGS */
           return {
@@ -598,10 +622,17 @@ export const runCommand: Command = {
         if (rec.agent && rec.agent.ok === false) {
           extraWarns.push('agent 连接失败：' + String(rec.agent.error ?? '?'))
         }
+        if (watchStats && watchStats.files.length === 0) {
+          extraWarns.push('--watch 没有命中任何文件（' + watchPaths.join(' , ') + '）：检查路径是否存在、日志是否在跑起来之后才创建')
+        }
+        if (watchStats) {
+          human.push('  运行期日志跟随：' + String(watchStats.pushed) + ' 行（来自 ' +
+            String(watchStats.files.length) + ' 个文件）')
+        }
         return {
           exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
           human,
-          data: r,
+          data: watchStats ? { ...(r as object), watch: watchStats } : r,
           warnings: [...extraWarns, ...((r.warns as string[] | undefined) ?? [])],
         }
       })
