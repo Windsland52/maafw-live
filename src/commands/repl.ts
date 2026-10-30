@@ -15,6 +15,7 @@ import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
 import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
+import { writeRunReceipt } from '../runtime/receipts.js'
 import {
   ensureSessionDir, pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath, sessionServeLogTail,
   spawnSessionServer, stopSession, validSessionName, waitPipeReady,
@@ -642,8 +643,15 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                       : {}),
                   }, timeout)
                 .then((r) => {
+                  /* 回执不再 short() 截断（0.3.x 实测：截断让 record.nodes[] 在会话里永远不可见，
+                   * "跑失败"变成"看不懂为什么失败"）。三件套替代：结论行（保住「run 完成：任务级 X」
+                   * 首词口径）→ 非 ok 节点点名 → 全量回执落盘给路径。落盘失败不吞结论，退化为完整 JSON。 */
                   const rec = (r as {
-                    record?: { ok?: boolean, stopped?: boolean, timeoutMs?: number, durationMs?: number, agent?: { ok?: boolean } }
+                    record?: {
+                      ok?: boolean, stopped?: boolean, timeoutMs?: number, durationMs?: number,
+                      agent?: { ok?: boolean },
+                      nodes?: Array<{ name?: unknown, status?: unknown, ms?: unknown, seq?: unknown }>,
+                    }
                   }).record
                   /* 与一次性 CLI 同一份三态判据：`status:0 + stopped:true` 不是"完成"。
                    * 判据用 record 自带的 timeoutMs，不靠调用方回忆刚才给了什么。 */
@@ -655,8 +663,22 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                       : ranFull ? '超时截断（非成功，也非失败）'
                         : rec.stopped === true ? '被停止（未成功）'
                           : 'FAIL'
+                  const nodes = rec?.nodes ?? []
+                  const okCount = nodes.filter((n) => n.status === 'ok').length
+                  const notOk = nodes.filter((n) => n.status !== 'ok')
                   out('run 完成：任务级 ' + verdict +
-                    (rec?.agent ? '，agent ' + (rec.agent.ok ? '已连接' : '失败') : '') + '  ' + short(r, 700))
+                    (rec?.agent ? '，agent ' + (rec.agent.ok ? '已连接' : '失败') : '') +
+                    '  节点 ' + nodes.length + ' 例（ok ' + okCount +
+                    (notOk.length ? ' / 其他 ' + notOk.length : '') + '）')
+                  for (const n of notOk) {
+                    out('  [' + String(n.status) + '] ' + String(n.name) + '  ' + String(n.ms) + 'ms  #' + String(n.seq ?? '?'))
+                  }
+                  /* 落盘走共享助手（目录可用 MAAFW_LIVE_RUNS_DIR 覆盖，单测不写真实 home）；
+                   * 失败不吞结论，退化为完整 JSON。 */
+                  const receipt = writeRunReceipt(r, resolvedEntry)
+                  out(receipt.path !== undefined
+                    ? '完整回执（含全部节点与 msgs）：' + receipt.path
+                    : '回执落盘失败，完整内容：' + JSON.stringify(r))
                 })
                 .catch((e) => out('run 失败：' + (e instanceof Error ? e.message : String(e))))
               break

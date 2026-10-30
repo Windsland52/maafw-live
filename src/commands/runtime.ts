@@ -13,6 +13,7 @@ import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
+import { writeRunReceipt } from '../runtime/receipts.js'
 
 /** 连接类选项：凡是要设备的命令都接受同一组，保证"怎么连"只有一套说法。 */
 export const CONNECT_OPTIONS = {
@@ -628,6 +629,12 @@ export const runCommand: Command = {
         if (watchStats) {
           human.push('  运行期日志跟随：' + String(watchStats.pushed) + ' 行（来自 ' +
             String(watchStats.files.length) + ' 个文件）')
+        }
+        /* 回执全量落盘（与 repl 同一助手、同一目录约定）：W1 runs 存储的种子。
+         * 失败只降级为不打路径行，不影响任务结论与退出码。 */
+        const receipt = writeRunReceipt(r, resolvedEntry)
+        if (receipt.path !== undefined) {
+          human.push('  完整回执（含全部节点与 msgs）：' + receipt.path)
         }
         return {
           exitCode: taskOk ? EXIT.OK : EXIT.FAIL,

@@ -16,7 +16,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,7 +25,8 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'maafw-live.mjs')
 const STUB = join(HERE, 'fixtures', 'stub-recording-daemon.mjs')
 
-/** 跑一次 REPL 会话（桩 daemon + 管道 stdin），返回 stdout 与退出码 */
+/** 跑一次 REPL 会话（桩 daemon + 管道 stdin），返回 stdout 与退出码。
+ *  MAAFW_LIVE_RUNS_DIR 指进临时目录：回执落盘不许写真实 home（2026-10-26 污染过一轮）。 */
 async function runRepl(commands, replies) {
     const dir = mkdtempSync(join(tmpdir(), 'maafw-run3-'))
     const log = join(dir, 'requests.jsonl')
@@ -34,6 +35,7 @@ async function runRepl(commands, replies) {
             ...process.env,
             MAA_DAEMON: STUB,
             MAAFW_STUB_LOG: log,
+            MAAFW_LIVE_RUNS_DIR: join(dir, 'runs'),
             ...(replies ? { MAAFW_STUB_REPLIES: JSON.stringify(replies) } : {}),
         },
         stdio: ['pipe', 'pipe', 'ignore'],
@@ -76,15 +78,17 @@ async function runRepl(commands, replies) {
     return { out, requests, code }
 }
 
-/** 跑一次性 CLI `run`（同样用桩），返回 stdout 与退出码 */
+/** 跑一次性 CLI `run`（同样用桩），返回 stdout、退出码与回执目录 */
 async function runCli(args, replies) {
     const dir = mkdtempSync(join(tmpdir(), 'maafw-run3c-'))
     const log = join(dir, 'requests.jsonl')
+    const runs = join(dir, 'runs')
     const child = spawn(process.execPath, [CLI, ...args], {
         env: {
             ...process.env,
             MAA_DAEMON: STUB,
             MAAFW_STUB_LOG: log,
+            MAAFW_LIVE_RUNS_DIR: runs,
             ...(replies ? { MAAFW_STUB_REPLIES: JSON.stringify(replies) } : {}),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -110,12 +114,16 @@ async function runCli(args, replies) {
             resolve(c)
         })
     })
+    /* 先把回执读出来再清临时目录（目录随 rmSync 消失，文件内容留在返回体里断言用） */
+    const receipts = existsSync(runs)
+        ? readdirSync(runs).map((f) => ({ name: f, body: JSON.parse(readFileSync(join(runs, f), 'utf8')) }))
+        : []
     try {
         rmSync(dir, { recursive: true, force: true })
     } catch {
         /* ignore */
     }
-    return { out, code }
+    return { out, code, receipts }
 }
 
 const rec = (fields) => ({ run: { record: { entry: 'X', nodes: [], startSeq: 1, endSeq: 2, framesCaptured: 2, ...fields } } })
@@ -167,4 +175,53 @@ test('daemon 回执自带 timeoutMs（结论词的证据来源）', async () => 
     const { requests } = await runRepl(['run X --resource-dir C:/x --timeout 1234', 'quit'], rec({ ok: true, status: 3000, stopped: false, timeoutMs: 1234, durationMs: 10 }))
     const runReq = requests.find((r) => r.cmd === 'run')
     assert.equal(runReq.timeoutMs, 1234, 'timeoutMs 要原样送达 daemon：' + JSON.stringify(runReq))
+})
+
+test('repl run 回执：失败节点点名 + 全量落盘（落盘目录可配，不写真实 home）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'maafw-run3r-'))
+    const runs = join(dir, 'runs')
+    const log = join(dir, 'requests.jsonl')
+    const child = spawn(process.execPath, [CLI, 'repl', '--kind', 'adb', '--target', 'stub'], {
+        env: {
+            ...process.env,
+            MAA_DAEMON: STUB,
+            MAAFW_STUB_LOG: log,
+            MAAFW_LIVE_RUNS_DIR: runs,
+            MAAFW_STUB_REPLIES: JSON.stringify(rec({
+                ok: false, status: 3000, stopped: false, timeoutMs: 60000, durationMs: 900,
+                nodes: [
+                    { name: 'CCStart', status: 'ok', ms: 300, seq: 1 },
+                    { name: 'CCDeploy', status: 'fail', ms: 10027, seq: 6 },
+                ],
+            })),
+        },
+        stdio: ['pipe', 'pipe', 'ignore'],
+    })
+    let out = ''
+    child.stdout.on('data', (d) => { out += String(d) })
+    child.stdin.write('run X --resource-dir C:/x --timeout 60000\nquit\n')
+    child.stdin.end()
+    await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { try { child.kill() } catch { /* ignore */ } reject(new Error('15s 未退出')) }, 15000)
+        child.on('exit', () => { clearTimeout(timer); resolve() })
+    })
+    assert.match(out, /节点 2 例（ok 1 \/ 其他 1）/, '节点计数行：' + out)
+    assert.match(out, /\[fail\] CCDeploy {2}10027ms {2}#6/, '失败节点点名（含 seq）：' + out)
+    assert.match(out, /完整回执（含全部节点与 msgs）：/, '要给出回执路径：' + out)
+    const files = existsSync(runs) ? readdirSync(runs) : []
+    assert.equal(files.length, 1, '恰好落盘一份回执：' + JSON.stringify(files))
+    const saved = JSON.parse(readFileSync(join(runs, files[0]), 'utf8'))
+    assert.equal(saved.record.nodes.length, 2, '落盘内容含全部节点（不被截断）')
+    assert.equal(saved.record.nodes[1].name, 'CCDeploy')
+    rmSync(dir, { recursive: true, force: true })
+})
+
+test('一次性 CLI run：回执同样落盘（同一目录约定，W1 runs 种子不缺半边）', async () => {
+    const { out, receipts } = await runCli(
+        ['run', '--entry', 'X', '--resource-dir', 'C:/x', '--timeout', '2000', '--kind', 'adb', '--target', 'stub'],
+        rec({ ok: false, status: 0, stopped: true, timeoutMs: 2000, durationMs: 2000 }),
+    )
+    assert.equal(receipts.length, 1, 'CLI 也要落一份回执：' + JSON.stringify(receipts.map((r) => r.name)))
+    assert.match(out, /完整回执（含全部节点与 msgs）：/, 'stdout 给出路径行：' + out)
+    assert.equal(receipts[0].body.record.entry, 'X', '落盘的是完整 record')
 })
