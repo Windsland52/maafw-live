@@ -8,3 +8,6 @@ roadmap.local.md
 *.tgz
 # out 类命令的旧缺省落点曾是调用方 cwd（仓库根），留下来的设备截图别再进仓
 maa_*.png
+
+# 本地探测/抓帧临时产物（非数据集；数据集走 ~/.maafw-live + promote）
+.live/
