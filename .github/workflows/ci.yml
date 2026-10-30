@@ -49,3 +49,6 @@ jobs:
       - run: npm run accept:offline
       # 离线、不需要设备，但会真的起 daemon + 识别子进程（自匹配）：覆盖 client 的 spawn/应答配对
       - run: npm run accept:crop
+      # 同上，覆盖 reco 的整条资源链（resource.path[] + attach）：overlay 同名节点谁覆盖谁、
+      # attach 段在不在链里，只有在真 post_bundle 之后才成立
+      - run: npm run accept:reco-node

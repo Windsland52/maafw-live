@@ -22,6 +22,7 @@
    npm run verify                          # 装配级回归：断言 stdout/stderr/退出码外部契约
    npm run accept:offline                  # 关键帧库离线契约验收
    npm run accept:crop                     # 离线库帧裁剪验收（会真的起 daemon + 识别子进程）
+   npm run accept:reco-node                # 资源链验收：overlay 覆盖 / attach 段 / --node-name（同样离线起真 daemon）
    node scripts/release-notes.mjs <version>  # 验证 CHANGELOG 段可提取（与 CI 同一脚本）
    ```
 

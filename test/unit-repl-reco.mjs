@@ -13,7 +13,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -247,4 +247,190 @@ test('repl reco：--seq 会话缓冲帧 → 不打离线标注（它来自本会
   ])
   assert.equal(recoReqs(requests).length, 1, '--seq 该真发出去（不是被拦掉才没有标注）：' + JSON.stringify(requests))
   assert.doesNotMatch(out, /离线评估/, '会话缓冲帧不算离线证据：' + out)
+})
+
+test('repl reco：--node-file 发 node 对象（JSONC 读入），不再带 type 路径的 param', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-node-'))
+  const file = join(dir, 'node.json')
+  writeFileSync(file, '// 注释\n{\n  "recognition": "DirectHit",\n}\n')
+  try {
+    const { out, requests, code } = await runRepl([
+      'reco --resource-dir R --node-file ' + file,
+      'quit',
+    ])
+    assert.equal(code, 0, '会话正常结束：' + out)
+    const reqs = recoReqs(requests)
+    assert.equal(reqs.length, 1, '应当只发一条 reco_test：' + JSON.stringify(requests))
+    assert.deepEqual(reqs[0].node, { recognition: 'DirectHit' }, '--node-file 要发对象：' + JSON.stringify(reqs[0]))
+    assert.equal(reqs[0].param, undefined, '节点来源不该再带 type 路径的参数')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('repl reco：--node-name 发原名（资源合并后按名跑）', async () => {
+  const { out, requests, code } = await runRepl([
+    'reco --resource-dir R --node-name ProbeNode',
+    'quit',
+  ])
+  assert.equal(code, 0, '会话正常结束：' + out)
+  const reqs = recoReqs(requests)
+  assert.equal(reqs.length, 1, '应当只发一条 reco_test：' + JSON.stringify(requests))
+  assert.equal(reqs[0].nodeName, 'ProbeNode')
+  assert.equal(reqs[0].param, undefined)
+  assert.match(out, /layer=resource/, '要标明只到资源合并结果：' + out)
+})
+
+test('repl reco：节点来源互斥、且与 k=v 参数互斥（不静默忽略）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-node-'))
+  const file = join(dir, 'node.json')
+  writeFileSync(file, '{"recognition":"DirectHit"}')
+  try {
+    const { out, requests, code } = await runRepl([
+      'reco --resource-dir R --node-file ' + file + ' --node-name ProbeNode',
+      'reco --resource-dir R --node-file ' + file + ' template=a.png',
+      'quit',
+    ])
+    assert.equal(code, 0, '会话正常结束：' + out)
+    assert.match(out, /--node-file 与 --node-name 互斥/, out)
+    assert.match(out, /只作用于 <type> 路径/, out)
+    assert.equal(recoReqs(requests).length, 0, '参数层就该拦掉：' + JSON.stringify(requests))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('repl reco：--node-name 撞上 Custom 节点 → 明说不桥接，不当 miss', async () => {
+  const { out, code } = await runRepl(
+    ['reco --resource-dir R --node-name CustomNode', 'quit'],
+    { MAAFW_STUB_REPLIES: JSON.stringify({ reco_test: { ok: false, code: 'CUSTOM_NODE', error: '节点 CustomNode 的识别是 Custom' } }) },
+  )
+  assert.equal(code, 0, '会话正常结束：' + out)
+  assert.match(out, /custom\/agent 识别要桥接/, out)
+})
+
+test('repl reco：未命中原因是本地派生的（daemon 只回原始 detail，不产 missReason）', async () => {
+  const { out, code } = await runRepl(
+    ['reco OCR --resource-dir R', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: {
+          type: 'OCR', meta: { seq: 2, w: 480, h: 270 },
+          results: [{ param: {}, ms: 9, ok: false, detail: { hit: false, detail: { all: [], filtered: [] } } }],
+        },
+      }),
+    },
+  )
+  assert.equal(code, 0, out)
+  /* R 不存在 → 链上没有 OCR 模型：空结果要先指向模型，不是"roi 里没有字" */
+  assert.match(out, /未命中原因：OCR 模型不在资源链里/, 'REPL 也要给原因，不能只回 JSON 让人自己翻 all/filtered：' + out)
+  assert.match(out, /候选 all=0 filtered=0/, out)
+})
+
+test('repl reco：链上有 OCR 模型时，空结果才说"roi 内无文字"', async () => {
+  const res = mkdtempSync(join(tmpdir(), 'maafw-repl-ocr-'))
+  mkdirSync(join(res, 'model', 'ocr'), { recursive: true })
+  for (const f of ['det.onnx', 'rec.onnx', 'keys.txt']) writeFileSync(join(res, 'model', 'ocr', f), '')
+  try {
+    const { out, code } = await runRepl(
+      ['reco OCR --resource-dir ' + res, 'quit'],
+      {
+        MAAFW_STUB_REPLIES: JSON.stringify({
+          reco_test: {
+            type: 'OCR', meta: { seq: 2, w: 480, h: 270 },
+            results: [{ param: {}, ms: 9, ok: false, detail: { hit: false, detail: { all: [], filtered: [] } } }],
+          },
+        }),
+      },
+    )
+    assert.equal(code, 0, out)
+    assert.match(out, /未命中原因：roi 内无文字/, out)
+  } finally {
+    rmSync(res, { recursive: true, force: true })
+  }
+})
+
+test('repl reco：--param-file 发文件里的参数（管道驱动 REPL 也能绕开 ^ 被 shell 吃掉）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-param-'))
+  const file = join(dir, 'param.json')
+  writeFileSync(file, '// 注释\n{"expected": "^解锁"}\n')
+  try {
+    const { out, requests, code } = await runRepl([
+      'reco OCR --resource-dir R --param-file ' + file,
+      'quit',
+    ])
+    assert.equal(code, 0, '会话正常结束：' + out)
+    const reqs = recoReqs(requests)
+    assert.equal(reqs.length, 1, '应当只发一条 reco_test：' + JSON.stringify(requests))
+    assert.deepEqual(reqs[0].param, { expected: '^解锁' }, '参数要原样到达：' + JSON.stringify(reqs[0]))
+    assert.equal(reqs[0].type, 'OCR')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('repl reco：--param-file 与 k=v 参数互斥', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-param-'))
+  const file = join(dir, 'param.json')
+  writeFileSync(file, '{"expected":"x"}')
+  try {
+    const { out, requests, code } = await runRepl([
+      'reco OCR expected=y --resource-dir R --param-file ' + file,
+      'quit',
+    ])
+    assert.equal(code, 0, out)
+    assert.match(out, /k=v 参数与 --param-file 互斥/, out)
+    assert.equal(recoReqs(requests).length, 0, '参数层就该拦掉：' + JSON.stringify(requests))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('repl reco：--node-file - / --param-file - 直接拒绝（REPL 的 stdin 是命令流）', async () => {
+  const { out, requests, code } = await runRepl([
+    'reco --resource-dir R --node-file -',
+    'reco OCR --resource-dir R --param-file -',
+    'quit',
+  ])
+  assert.equal(code, 0, out)
+  assert.match(out, /不接受 -/, '要说清为什么：stdin 是命令流：' + out)
+  assert.equal(out.match(/不接受 -/g)?.length, 2, out)
+  assert.equal(recoReqs(requests).length, 0, '不该拿会话输入当节点/参数文件：' + JSON.stringify(requests))
+})
+
+test('repl reco：节点名拼错给近邻建议', async () => {
+  const { out, code } = await runRepl(
+    ['reco --resource-dir R --node-name ProbeNod', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: { ok: false, code: 'NODE_MISSING', error: '资源里没有名为 ProbeNod 的节点', candidates: ['ProbeNode'] },
+      }),
+    },
+  )
+  assert.equal(code, 0, out)
+  assert.match(out, /最接近的节点名：ProbeNode/, out)
+})
+
+test('repl reco：类型是位置参数——选项/ k=v 打头时回缺省类型，不能被当成类型', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maafw-repl-type-'))
+  const file = join(dir, 'param.json')
+  writeFileSync(file, '{"expected":"解锁"}')
+  try {
+    /* 帮助里写的 `reco --param-file p.json` 就是这样打头的：旧代码把 tokens[1] 当类型，
+     * type 会变成字符串 "--param-file"（子进程拿到一个不存在的识别类型）。 */
+    const { out, requests, code } = await runRepl([
+      'reco --resource-dir R --param-file ' + file,
+      'reco --resource-dir R --node-name ProbeNode',
+      'quit',
+    ])
+    assert.equal(code, 0, '会话正常结束：' + out)
+    const reqs = recoReqs(requests)
+    assert.equal(reqs.length, 2, '两条命令都该发出去：' + JSON.stringify(requests))
+    assert.equal(reqs[0].type, 'TemplateMatch', '选项打头时类型要回缺省值：' + JSON.stringify(reqs[0]))
+    assert.deepEqual(reqs[0].param, { expected: '解锁' })
+    assert.equal(reqs[1].type, 'TemplateMatch', '--node-name 打头同理：' + JSON.stringify(reqs[1]))
+    assert.equal(reqs[1].nodeName, 'ProbeNode')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
