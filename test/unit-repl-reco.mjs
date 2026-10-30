@@ -229,3 +229,22 @@ test('repl reco：--from-kf 传的是 kfSource 对象（daemon 收对象，不�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('repl reco：--image 静态图 → 离线评估标注行（防旧截图出分冒充实测）', async () => {
+  const { out, code } = await runRepl([
+    'reco TemplateMatch template=a/Leaders.png --resource-dir R --image C:/tmp/kf21.png',
+    'quit',
+  ])
+  assert.equal(code, 0, '会话正常结束：' + out)
+  assert.match(out, /离线评估（静态图 --image）/, '标注行要在结果前给出：' + out)
+  assert.match(out, /不构成真机验收证据/, out)
+})
+
+test('repl reco：--seq 会话缓冲帧 → 不打离线标注（它来自本会话帧流）', async () => {
+  const { out, requests } = await runRepl([
+    'reco TemplateMatch template=a/Leaders.png --resource-dir R --seq 2',
+    'quit',
+  ])
+  assert.equal(recoReqs(requests).length, 1, '--seq 该真发出去（不是被拦掉才没有标注）：' + JSON.stringify(requests))
+  assert.doesNotMatch(out, /离线评估/, '会话缓冲帧不算离线证据：' + out)
+})

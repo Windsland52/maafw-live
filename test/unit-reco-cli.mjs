@@ -97,3 +97,15 @@ test('CLI reco：零置信度回执 → 提示语把 roi 空间列为首要疑�
   assert.ok(out.includes('roi 是否越出所用图的尺寸'), '首要疑因要是 roi 空间：' + out)
   assert.ok(out.indexOf('roi 是否越出') < out.indexOf('模板/资源'), 'roi 要先于"模板读不到"出现：' + out)
 })
+
+test('CLI reco：--image 静态图 → 显式「离线评估」标注（防旧截图出分冒充实测）', async () => {
+  const { code, out } = await runCli(
+    ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,
+      '--param', '{"template":"x.png","roi":[0,0,100,50]}'],
+    { reco_test: { meta: { source: IMAGE, w: 480, h: 270 }, results: [{ param: { roi: [0, 0, 100, 50] }, ms: 9, ok: true }] } },
+  )
+  assert.equal(code, 0, out)
+  assert.match(out, /离线评估（静态图 --image）/, '要标明离线来源：' + out)
+  assert.match(out, /不构成真机验收证据/, '要写明不算验收证据：' + out)
+  assert.match(out, /record\.ok/, '要指明验收判据是任务级 record.ok：' + out)
+})

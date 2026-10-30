@@ -814,6 +814,12 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               const meta = r.meta as { w?: unknown; h?: unknown } | undefined
               const oob = roiOutOfBounds(typeof param.roi === 'object' ? (param.roi as number[]) : undefined, meta?.w, meta?.h)
               if (oob) { out(oob); break }
+              /* 离线评估（静态图/库帧）标记：防"拿旧截图出分冒充实测"（G21 同族事故）。
+               * 分数可用于调参/回归，不构成真机验收证据。 */
+              if ((imageRaw && !kfId) || kfSource) {
+                out('⚠ 离线评估（' + (kfSource ? '库帧 --from-kf' : '静态图 --image') +
+                  '）：分数可用于调参/回归，不构成真机验收证据——验收只认真机 run 的 record.ok')
+              }
               out(short(r, 800))
               break
             }

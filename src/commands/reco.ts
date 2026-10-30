@@ -197,9 +197,17 @@ export const recoCommand: Command = {
             EXIT.FINDINGS)
         }
         const results = (r.results as Array<{ param: Record<string, unknown>; ms: number; ok: boolean }> | undefined) ?? []
+        /* 离线评估（静态图 / 库帧）标记：防"拿旧截图出分冒充实测"（本仓 G21 同族事故）。
+         * 分数可用于调参与回归，不构成真机验收证据；验收判据只认真机 run 的 record.ok。
+         * `--seq` 是本会话帧流的缓冲帧，不在此列。 */
+        const offlineEvidence = image !== undefined || offline
         const human = [
           ...describeSession(s),
           '识别 ' + String(r.type ?? type) + '：' + results.length + ' 例' + (node ? '（整节点透传）' : ''),
+          ...(offlineEvidence
+            ? ['  ⚠ 离线评估（' + (offline ? '库帧 --from-kf' : '静态图 --image') +
+                '）：分数可用于调参/回归，不构成真机验收证据——验收只认真机 run 的 record.ok']
+            : []),
           ...results.map((x) => '  ' + (x.ok ? '[命中]' : '[未中]') + ' ' + JSON.stringify(x.param) + '  ' + x.ms + 'ms'),
         ]
         const th = suggestThreshold(r.results as Array<{ ok: boolean; detail?: unknown }> | undefined ?? [])
@@ -225,7 +233,12 @@ export const recoCommand: Command = {
         return {
           exitCode: r.ok === false ? EXIT.FINDINGS : EXIT.OK,
           human,
-          data: { ...r, ...(th ? { thresholdSuggestion: th } : {}), ...(noConfidence ? { noConfidence: true } : {}) },
+          data: {
+            ...r,
+            ...(th ? { thresholdSuggestion: th } : {}),
+            ...(noConfidence ? { noConfidence: true } : {}),
+            ...(offlineEvidence ? { offlineEvidence: true } : {}),
+          },
         }
       })
     } catch (e) {
