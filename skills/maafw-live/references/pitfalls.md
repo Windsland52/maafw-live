@@ -134,6 +134,9 @@
 于是本不该命中的「未解锁」被判命中；改用 `node bin/maafw-live.mjs` 后结果正确。
 **症状是"三种不同正则给出完全相同的识别结果"时，先怀疑这一条。**
 
+不想和 shell 搏斗就走文件通道：`reco --node-file node.json`、`reco --param-file -`（stdin）。
+文件按 JSONC 解析（pipeline 常带 `//` 注释），`^`、`"`、`%` 都不经过 shell。
+
 ### 8.2 编码：控制台是 GBK，数据是 UTF-8
 
 - **回显乱码不是数据错**：管道里出现 `Ħ����˾` 是代码页 936 在解 UTF-8 字节。文件与 JSON 本身是好的。

@@ -1,9 +1,10 @@
 /**
  * reco_child —— 识别单测的一次性子进程（崩溃隔离）。
  * 用法：node reco_child.mjs --cfg <json> --out <result.json>
- * cfg = { resourceDir, type, image, cases?, node?, templateImage? }
+ * cfg = { resourceDirs? | resourceDir, type, image, cases?, node?, nodeName?, templateImage? }
  *   cases: 父进程（framed.mjs）已折叠好的参数用例列表，逐例执行
  *   node : 整节点 JSON 原样透传（V1 扁平 / V2 嵌套均支持，不转换）
+ *   nodeName: 按资源里的原名跑（不 dump 注入——dump 是缺省填满的 V2，与手写稀疏 V1 不是同一份）
  *   param/sweep: 直接调用（调试）时的单例路径，与 cases 二选一
  *
  * 为什么要造一个"图像假控制器"：裸 post_recognition 不产出 RecoId，于是 recognition_detail 拿不到
@@ -78,6 +79,48 @@ function strip(detail) {
   return copy
 }
 
+function writeOut(payload) {
+  fs.writeFileSync(out, JSON.stringify(payload), "utf8")
+}
+
+/** dump 里的识别类型：V2 是 `recognition.type`，个别版本/形态可能还是 V1 的字符串。 */
+function recoTypeOf(dump) {
+  const rec = dump && dump.recognition
+  if (typeof rec === "string") return rec
+  if (rec && typeof rec === "object") return String(rec.type ?? "")
+  return ""
+}
+
+function editDistance(a, b) {
+  if (a === b) return 0
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[b.length]
+}
+
+/**
+ * 近邻节点名：命令拼错会给建议，节点名拼错同样要给——否则 `--node-name` 写错一个字只会得到
+ * "资源里没有这个节点"，而正确名字就在资源里。距离阈值随名字长度放宽（长名的单个字符笔误
+ * 距离仍是 1；短名放宽到 2 就够，再宽会把无关节点列出来）。
+ */
+function nearestNames(names, target, limit) {
+  const want = String(target)
+  const cap = Math.max(2, Math.min(4, Math.floor(want.length / 3)))
+  const scored = []
+  for (const n of Array.isArray(names) ? names : []) {
+    if (typeof n !== "string" || !n || n === want) continue
+    const d = editDistance(n.toLowerCase(), want.toLowerCase())
+    if (d <= cap) scored.push({ n, d })
+  }
+  return scored.sort((x, y) => x.d - y.d || x.n.localeCompare(y.n)).slice(0, limit).map((x) => x.n)
+}
+
 async function main() {
   const maa = require("@maaxyz/maa-node")
   const image = toArrayBuffer(fs.readFileSync(cfg.image))
@@ -91,8 +134,14 @@ async function main() {
   await ctrl.post_connection().wait()
   if (!ctrl.connected) throw new Error("假控制器连接失败")
 
+  /* 资源链：interface.json 的 resource.path[]（+ 控制器 attach_resource_path）按声明顺序叠加，
+   * 后一段覆盖前一段——与 cmdRun 的 buildResource 同一语义。只加载单包时，overlay 包里的节点改写、
+   * 只存在于 overlay 的模板、被 And/Or 按名引用的子节点全部缺失，测出来的就不是项目里那个节点。 */
+  const dirs = Array.isArray(cfg.resourceDirs) && cfg.resourceDirs.length
+    ? cfg.resourceDirs.map(String)
+    : [String(cfg.resourceDir)]
   const res = new maa.Resource()
-  await res.post_bundle(cfg.resourceDir).wait()
+  for (const d of dirs) await res.post_bundle(d).wait()
   /* 面板裁出来的模板走 override_image：不必把它塞进任何资源目录，也不写用户项目。 */
   if (cfg.templateImage) res.override_image("@reco_template", toArrayBuffer(fs.readFileSync(cfg.templateImage)))
 
@@ -101,25 +150,58 @@ async function main() {
   tasker.resource = res
 
   const nodeMode = cfg.node !== undefined
+  const nodeNameMode = typeof cfg.nodeName === "string" && cfg.nodeName !== ""
   const node = nodeMode ? nodeEntry(cfg.node, cfg.templateImage) : null
-  const cases = nodeMode ? [node] : casesOf(cfg)
+  /* --node-name：dump 只进回执给人看，**不注入识别**。dump 是 DumpTask（V2 嵌套 + 缺省值全部
+   * 填满），与手写稀疏 V1 JSON 不是同一份；dump 再注入会让"测的到底是不是真节点"多一层不确定性。 */
+  let nodeDump = null
+  if (nodeNameMode) {
+    nodeDump = res.get_node_data_parsed(cfg.nodeName)
+    if (!nodeDump) {
+      const candidates = nearestNames(res.node_list, cfg.nodeName, 3)
+      writeOut({
+        ok: false, code: "NODE_MISSING", nodeName: cfg.nodeName, resourceDirs: dirs,
+        ...(candidates.length ? { candidates } : {}),
+        error: "资源里没有名为 " + cfg.nodeName + " 的节点（只查资源合并结果，不含 interface 的 pipeline_override）",
+      })
+      return
+    }
+    /* custom / agent 节点：reco_test 不桥接 agent 子进程（run 才桥接），明确报能力边界而不是让它看起来像 miss */
+    if (recoTypeOf(nodeDump) === "Custom") {
+      writeOut({
+        ok: false, code: "CUSTOM_NODE", nodeName: cfg.nodeName, nodeDump, resourceDirs: dirs,
+        error: "节点 " + cfg.nodeName + " 的识别是 Custom：reco_test 不桥接 custom/agent 识别（run --project 才桥接 agent 子进程）",
+      })
+      return
+    }
+  }
+  const cases = nodeMode || nodeNameMode ? [node] : casesOf(cfg)
   const results = []
   let slot = null
   let started = Date.now()
 
   res.register_custom_action("@reco/run", async self => {
-    const entry = nodeMode ? node : { recognition: cfg.type, ...(slot || {}) }
-    if (!nodeMode && cfg.templateImage && entry.template === undefined) entry.template = "@reco_template"
+    /* 入口三形态：--node-name 用资源原名（无 override）；--node 原样透传；--type 用折叠好的一例参数。
+     * param 只用于回执展示"测的是哪个/组参数"。 */
+    let param = null
     let detail = null
     try {
-      detail = await self.context.run_recognition("@reco/node", image, { "@reco/node": entry })
+      if (nodeNameMode) {
+        param = { nodeName: cfg.nodeName }
+        detail = await self.context.run_recognition(cfg.nodeName, image)
+      } else {
+        const entry = nodeMode ? node : { recognition: cfg.type, ...(slot || {}) }
+        if (!nodeMode && cfg.templateImage && entry.template === undefined) entry.template = "@reco_template"
+        param = entry
+        detail = await self.context.run_recognition("@reco/node", image, { "@reco/node": entry })
+      }
     } catch (e) {
-      results.push({ param: entry, ms: Date.now() - started, ok: false, error: String(e && e.message || e), detail: null })
+      results.push({ param, ms: Date.now() - started, ok: false, error: String(e && e.message || e), detail: null })
       return true
     }
     /* ok 只认 hit===true：miss 时 run_recognition 仍返回 detail 对象（hit:false、box 全零），
      * 旧判 !!detail 恒真——识别未中会标成命中，制造假观测证据。 */
-    results.push({ param: entry, ms: Date.now() - started, ok: !!detail && detail.hit === true, detail: strip(detail) })
+    results.push({ param, ms: Date.now() - started, ok: !!detail && detail.hit === true, detail: strip(detail) })
     return true
   })
 
@@ -135,7 +217,11 @@ async function main() {
     try { ctrl.destroy() } catch (e) { /* ignore */ }
   }
 
-  fs.writeFileSync(out, JSON.stringify({ ok: true, type: cfg.type, results }), "utf8")
+  writeOut({
+    ok: true,
+    ...(nodeNameMode ? { type: recoTypeOf(nodeDump), nodeName: cfg.nodeName, nodeDump } : { type: cfg.type }),
+    results,
+  })
 }
 
 main()

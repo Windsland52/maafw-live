@@ -91,19 +91,25 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
  * 为什么需要它：从关键帧库留存帧裁模板这条动线**不需要设备**（这正是"不可复现状态"的意义——
  * 设备早已不在那个画面上）。但自匹配要加载资源，而资源声明在项目里。项目此刻只是资源的
  * 来源，不是连接的对象，所以走 interface 的规划函数而不走 planProject（后者要扫设备）。
+ *
+ * 返回的是**整条链**（`resource.path[]` 按序叠加，末尾追加当前控制器的 `attach_resource_path`），
+ * 与在线规划同一份 `resolveResourcePaths`：只写 `resource.path` 会让 attach 进来的一段凭空消失。
  */
 export function offlineResource(
   project: string,
   controller?: string,
   resource?: string,
-): { paths: string[]; controllerName: string | null; error?: string } {
+): { paths: string[]; names: string[]; selected: string | null; controllerName: string | null; error?: string } {
   const loaded = loadInterface(project)
   if (!loaded.file) {
-    return { paths: [], controllerName: null, error: loaded.problems[0]?.message ?? '未找到 interface.json' }
+    return {
+      paths: [], names: [], selected: null, controllerName: null,
+      error: loaded.problems[0]?.message ?? '未找到 interface.json',
+    }
   }
   const controllerName = controller ?? loaded.controllers[0]?.name ?? null
   const plan = resolveResourcePaths(loaded, controllerName ?? undefined, resource)
-  return { paths: plan.paths, controllerName }
+  return { paths: plan.paths, names: plan.names, selected: plan.selected, controllerName }
 }
 
 /** 连接结果的行渲染（human 输出与 --json 共用一份事实）。 */export function describeSession(s: SessionState): string[] {

@@ -1067,6 +1067,31 @@ async function buildResource(dirs) {
   for (const d of dirs) await res.post_bundle(d).wait()
   return res
 }
+
+/**
+ * 资源链可加载性先验：识别本身在子进程里重跑，这里只为把"哪一段读不进"提前说清
+ * （子进程的原生报错只有一句 message，看不出是链上哪一段）。单包沿用 ensureResource
+ * 以便复用 S.res；整链用一次性 Resource，加载完即销毁，不把半截 bundle 留给后续命令。
+ */
+async function probeResourceChain(dirs) {
+  try {
+    if (dirs.length === 1) {
+      await ensureResource(dirs[0])
+      return null
+    }
+    const m = loadMaa()
+    const res = new m.Resource()
+    try {
+      for (const d of dirs) await res.post_bundle(d).wait()
+    } finally {
+      try { res.destroy() } catch (e) { /* ignore */ }
+    }
+    return null
+  } catch (e) {
+    return { ok: false, error: '资源链加载失败（链：' + dirs.join(' + ') + '）：' + String(e && e.message || e) }
+  }
+}
+
 function ensureTasker() {
   if (!S.tasker) {
     const m = loadMaa()
@@ -1498,8 +1523,10 @@ function stripDetail(d) {
  * 专测 target 框语义（框中心/偏移）与组合动作。识别输入 = 抓帧时的当前画面原图
  * （也是 action-before 边界锚点），动作执行后的画面另抓 action-after——效果可复核。
  */
-async function recoActTest(args, node) {
-  const res = await ensureResource(String(args.resourceDir))
+async function recoActTest(args, node, dirs) {
+  /* 资源链与识别路径同一份：节点里的模板/被引用子节点可能只在 overlay 段里 */
+  const res = dirs.length > 1 ? await buildResource(dirs) : await ensureResource(dirs[0])
+  if (dirs.length > 1) S.res = res
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl
@@ -1546,6 +1573,10 @@ async function recoActTest(args, node) {
   return {
     ok: out.ok,
     type: shownType,
+    /* 与识别路径同一口径：这次用的是整条资源链（含 attach 段），layer=resource 表示这里没有
+     * interface 的四级 pipeline_override（run --project 才会叠） */
+    resource: { dirs },
+    layer: 'resource',
     meta: { seq: before.seq, w: before.w, h: before.h, t: before.t },
     ...(out.error !== undefined ? { error: out.error } : {}),
     ...(out.stage ? { stage: out.stage } : {}),
@@ -1557,14 +1588,26 @@ async function recoActTest(args, node) {
 }
 
 async function cmdRecoTest(args) {
+  /* 资源链：resourceDirs[] 是 interface.json 的 resource.path[]（+ 控制器 attach_resource_path）
+   * 按声明顺序叠加的结果；resourceDir 是单包写法。只有单包时测的就不是项目里那个节点——
+   * overlay 段的节点改写、只存在于 overlay 的模板、被 And/Or 按名引用的子节点全会缺。 */
+  const chain = Array.isArray(args.resourceDirs) ? args.resourceDirs.map((d) => String(d)).filter((d) => d) : []
+  const dirs = chain.length ? chain : (args.resourceDir ? [String(args.resourceDir)] : [])
+  if (!dirs.length) return { ok: false, error: '缺少资源：给 resourceDirs[]（整链）或 resourceDir（单包）' }
+  const nodeName = typeof args.nodeName === 'string' && args.nodeName !== '' ? args.nodeName : null
+  if (nodeName && args.node && typeof args.node === 'object' && !Array.isArray(args.node)) {
+    return { ok: false, error: 'node 与 nodeName 互斥：一次只测一个节点来源' }
+  }
   /* --act：节点级单测（识别拿框 → 真机执行动作半），在 daemon 进程内跑（要真控制器） */
   const actNode = args.act === true && args.node && typeof args.node === 'object' && !Array.isArray(args.node) ? args.node : null
   if (args.act === true) {
+    if (nodeName) return { ok: false, error: '--act 不接受 nodeName：按资源原名跑的是识别判据，动作半要真机桥接（那是 run）' }
     if (!actNode) return { ok: false, error: '--act 需要同时给 --node（整节点 JSON，含 action）' }
     if (!S.ctrl) return { ok: false, error: '--act 要在真机上执行动作：需要已连接设备（REPL 或 --project/--kind）' }
-    return await recoActTest(args, actNode)
+    return await recoActTest(args, actNode, dirs)
   }
-  await ensureResource(args.resourceDir)   // 校验资源可加载（子进程会重新加载）
+  const loadFail = await probeResourceChain(dirs)   // 子进程会重新加载（崩溃隔离的那份不能复用）
+  if (loadFail) return loadFail
   /* 图像来源三条：库内留存帧（kfSource：控制器分辨率原图、**可无设备**）/ 显式文件 / 会话缓冲帧。
    * daemon 自己写的那份临时 PNG **用完即删**——不删就是每跑一次漏一个（CLI 侧的截帧泄漏是同一类，
    * 现场实测攒过 42 张；这条 `--seq` 路径同理，只是本机还没被触发过）。 */
@@ -1635,25 +1678,41 @@ async function cmdRecoTest(args) {
   let r = null
   try {
     r = await spawnRecoChild({
-      resourceDir: String(args.resourceDir),
+      ...(chain.length ? { resourceDirs: dirs } : { resourceDir: dirs[0] }),
       type: String(args.type || 'TemplateMatch'),
       image: imageFile,
       /* 面板场景：模板由调用方裁好落盘传进来（子进程走 override_image），不写进任何资源目录 */
       ...(args.templateImage ? { templateImage: String(args.templateImage) } : {}),
-      ...(node ? { node } : { cases }),
+      ...(node ? { node } : (nodeName ? { nodeName } : { cases })),
     }, recoChildBudget(cases.length))
   } finally {
     /* 子进程已经读完这张图（spawnRecoChild 会等到它退出），此时删除是安全的 */
     if (tempImage) { try { fs.rmSync(tempImage, { force: true }) } catch (e) { /* ignore */ } }
   }
+  /* 回执带资源链与层级：layer=resource 表示这里只到"资源合并结果"，
+   * run --project 还会再叠 interface 的四级 pipeline_override（GUI 选项改过同一字段时两者对不上是预期） */
+  const resource = { dirs }
   if (r && r.ok) {
     const rec = node && node.recognition
     const shownType = node
       ? (rec && typeof rec === 'object' ? String(rec.type ?? 'DirectHit') : String(rec))
-      : args.type
-    return { ok: true, type: shownType, meta, results: r.results }
+      : String(r.type ?? args.type ?? 'TemplateMatch')
+    return {
+      ok: true, type: shownType, meta, results: r.results, resource, layer: 'resource',
+      ...(nodeName ? { nodeName } : {}),
+      ...(r.nodeDump ? { nodeDump: r.nodeDump } : {}),
+    }
   }
-  return { ok: false, error: (r && r.error) || 'reco 失败', meta }
+  return {
+    ok: false,
+    error: (r && r.error) || 'reco 失败',
+    meta, resource, layer: 'resource',
+    ...(r && r.code ? { code: String(r.code) } : {}),
+    /* 近邻节点名：`--node-name` 拼错时给出"是不是想跑这个"，CLI/REPL 直接把它变成 hint */
+    ...(r && Array.isArray(r.candidates) && r.candidates.length ? { candidates: r.candidates.map(String) } : {}),
+    ...(nodeName ? { nodeName } : {}),
+    ...(r && r.nodeDump ? { nodeDump: r.nodeDump } : {}),
+  }
 }
 
 /* ────────────────────────── 关键帧库（L0 升格 + 登记，契约 §4） ──────────────────────────

@@ -150,14 +150,35 @@ maa> frame diff --a 120 --b 135 --rois "x,y,w,h;x,y,w,h"   # 这一步到底改�
 maafw-live reco --node '{"recognition":"TemplateMatch","template":"tpl.png","roi":[640,300,220,80]}' \
   --resource-dir ./resource/base --image frame.png
 
+# 节点/参数走文件（JSONC，可带注释）：argv 会被 cmd.exe 重写，`^`、`"` 这类字符会变形
+maafw-live reco --node-file node.json --resource-dir ./resource/base --image frame.png
+cat node.json | maafw-live reco --node-file - --resource-dir ./resource/base --image frame.png
+
+# 测"项目里那个节点"：按资源里的原名跑。整条资源链（resource.path[] + attach）都会加载
+maafw-live reco --project ./my-maa-project --node-name AP_NavUnlockButton --image frame.png
+
 maafw-live reco --type TemplateMatch --image frame.png --resource-dir ./resource/base \
   --sweep '{"key":"threshold","min":0.6,"max":0.95,"step":0.05}'
 ```
 
-- 图像来源三条：`--image <png>`（离线文件）、`--seq`（缓冲帧，需 `repl` 里先 `stream start`）、
+- 图像来源三条：`--image <png>`（离线文件，**不连设备**）、`--seq`（缓冲帧，需 `repl` 里先 `stream start`）、
   `--act`（当前画面 + 真机执行动作半）。
 - **读结果只认 `hit`**：miss 时框架仍会回 detail 对象，别把"有 detail"当命中。
+- miss 先读回执 `missReason`，别一律归到"模板没读到"：OCR 是 `roi 内无文字` / `expected 无匹配`
+  （**空结果还会先查 `model/ocr` 的 `det.onnx` + `rec.onnx` + `keys.txt` 在不在链上**——模型没加载时
+  框架不报错、只回空结果，以前会被当成"roi 里没有字"去改 roi）；模板匹配是
+  `低于阈值（最高置信度 x）` / `模板与画面不匹配（最高置信度 x）`。`rawCount` / `filteredCount`
+  是 `all` 与 `expected` 过滤后的条数。
 - 阈值起点 = 实测最高置信度 − 0.1（留余量）；得分随场景会掉，换场景要复测。
+- `--node` / `--node-file` / `--node-name` 三者互斥；`--param`、`--param-file`、`--sweep` 只作用于
+  `--type` 路径，与任一节点来源同给会直接报参数错误（不再静默忽略）。节点名拼错会给**近邻建议**
+  （按资源里真实节点名的编辑距离），别对着资源目录逐个比对。
+- `repl` 里的 `reco` 是同一组能力（`--node-file` / `--node-name` / `--param-file`，资源取
+  `connect project` 的整条链），miss 原因与计数同样给；`-`（stdin）只在一次性命令里有意义，
+  REPL 里会直接拒绝（它的 stdin 是命令流）。
+- `--node-name` 的 `layer` 恒为 `resource`（资源合并结果）：`run --project` 还会再叠 interface 的
+  四级 `pipeline_override`，GUI 选项改过同一字段时两者对不上是**预期行为**。Custom / agent 节点
+  不桥接，回执直接给 `code: RECO_CUSTOM_NODE`——不是 miss，改用 `run --project` 验。
 - `--act` 是"识别拿框 → 用框真机执行动作"的半链路，验证 target 框语义与落点；它会**真的动设备**。
   判据两层：识别 `hit` + 动作 `success`，且**落点在命中框内**；动作边界帧在 `retention.before/after`，
   取"点之前/点之后"的画面用它，不要事后重截冒充。识别未命中时动作半不执行（`stage=recognition`）。

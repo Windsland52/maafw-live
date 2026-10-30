@@ -75,6 +75,102 @@ function selfDir(): string {
 }
 
 /**
+ * 项目对 maa-node 的 pin 声明。
+ *
+ * 只认两处「项目自己写的声明」：package.json 的依赖声明、requirements.txt 的 MaaFW/maa 行。
+ * uv.lock 是求解结果而非声明，只在两者都没有时记一笔来源，不解析、不对账。
+ */
+interface MaaNodePin {
+  source: 'package.json' | 'requirements.txt' | 'uv.lock'
+  declared: string
+  /** 精确版本；范围声明与 uv.lock 辅证都是 null——不自己造 semver 解析 */
+  exact: string | null
+}
+
+/**
+ * 精确版本判定：`5.14.2` / `=5.14.2` / `==5.14.2` / `v5.14.2`，以及 PEP 440 的
+ * 预发布/后发布后缀（`5.15.0a1`、`5.15.0b1`、`5.15.0rc1`、`5.15.0.dev1`、`5.15.0.post1`）
+ * 才算「就是这个版本」。
+ *
+ * 后缀不改变「唯一确定」这一点：Python 绑定发布的正是 `MaaFW==5.15.0b1` 这种写法，
+ * 判成范围就等于对真正要防的那个不一致视而不见。
+ *
+ * `^5.14.2`、`>=5.14` 这类范围要 semver 解析才能判等，本工具不替 npm/pip 做这件事：
+ * 判错了比不判更坏，调用方会据此去改依赖。
+ */
+function exactVersion(spec: string): string | null {
+  const m = /^(?:==|=)?\s*v?(\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+|(?:a|b|c|rc|alpha|beta|pre|preview|post|dev)\d*)?)$/i.exec(
+    spec.trim(),
+  )
+  return m ? m[1]! : null
+}
+
+/**
+ * 把精确版本拆成 release 线与 qualifier：`5.15.0b1` → `5.15.0` + `b1`。
+ *
+ * 对账要分别看两段：release 线不同是换了个版本，qualifier 不同是同一条线上另一份构建。
+ * 只比字符串会把 `5.15.0` 与 `5.15.0b1` 当成无关，只比 release 又会把预发布报成一致。
+ */
+function splitRelease(version: string): { release: string; qualifier: string } | null {
+  const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(version.trim())
+  return m ? { release: m[1]!, qualifier: m[2] ?? '' } : null
+}
+
+function pinFromPackageJson(root: string): MaaNodePin | null {
+  const file = join(root, 'package.json')
+  if (!existsSync(file)) return null
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    for (const field of ['dependencies', 'devDependencies']) {
+      const group = j[field]
+      if (!group || typeof group !== 'object') continue
+      const v = (group as Record<string, unknown>)['@maaxyz/maa-node']
+      if (typeof v === 'string' && v.trim()) {
+        return { source: 'package.json', declared: v.trim(), exact: exactVersion(v) }
+      }
+    }
+  } catch {
+    /* package.json 坏了就当这个源没有 pin：探针不因环境残缺而失败 */
+  }
+  return null
+}
+
+function pinFromRequirements(root: string): MaaNodePin | null {
+  const file = join(root, 'requirements.txt')
+  if (!existsSync(file)) return null
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  for (const raw of text.split(/\r?\n/)) {
+    /* 注释与 environment marker 都是环境噪音，只看「包名 + 版本声明」这一截。
+       PyPI 上的绑定包名是 `MaaFW`，老项目写成 `maa`，两种都是同一个包，大小写不敏感；
+       负向前瞻保证只认独立的包名：maa-evidence-kit、maa_x、maafw2 是别的包。 */
+    const body = (raw.split('#')[0] ?? '').split(';')[0]!.trim()
+    const m = /^(?:maafw|maa)(?![\w.-])(?:\[[^\]]*\])?\s*(===|==|>=|<=|~=|!=|>|<|=)?\s*([^\s;#]*)$/i.exec(body)
+    if (!m) continue
+    return { source: 'requirements.txt', declared: body, exact: exactVersion((m[1] ?? '') + (m[2] ?? '')) }
+  }
+  return null
+}
+
+function readMaaNodePin(root: string): MaaNodePin | null {
+  const pin = pinFromPackageJson(root) ?? pinFromRequirements(root)
+  if (pin) return pin
+  /* 两个声明源都拿不到才记 uv.lock：它只说明「求解过」，不产生 warning */
+  return existsSync(join(root, 'uv.lock')) ? { source: 'uv.lock', declared: '', exact: null } : null
+}
+
+/** Windows 的路径大小写不敏感：同一份依赖不该因为盘符/目录大小写而被报成两份 */
+function samePath(a: string, b: string): boolean {
+  const na = resolve(a)
+  const nb = resolve(b)
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb
+}
+
+/**
  * 取 checkout 的 schema 快照版本。
  *
  * checkout 的版本快照用 git describe 取；取不到就是空串——探针不因环境残缺而失败。
@@ -116,8 +212,10 @@ export const envCommand: Command = {
     const projectRoot = findProjectRoot(cwd)
     const dirs = projectRoot ? pipelineDirs(projectRoot) : []
 
-    /* 运行时绑定是本包自己的依赖：按包自身解析即可；项目目录里的副本优先（项目可能 pin 了别的版本） */
-    const maaNode = resolveMaaNode(cwd) ?? resolveMaaNode(selfDir())
+    /* 运行时绑定是本包自己的依赖：self 才是 CLI 真正会 require 到的那份。
+       cwd 的副本只用来对照「项目可能 pin 了别的版本」，它不决定本 CLI 加载什么。 */
+    const self = resolveMaaNode(selfDir())
+    const cwdCopy = resolveMaaNode(cwd)
 
     const [checkoutVer, gitV, adbV, pyV] = await Promise.all([
       existsSync(maafw) ? checkoutVersion(maafw, gitBin) : Promise.resolve(''),
@@ -150,9 +248,62 @@ export const envCommand: Command = {
 
     items.push({
       key: 'maa-node',
-      status: maaNode ? 'ok' : 'missing',
-      detail: maaNode ? `${maaNode.version}  (${maaNode.path})` : '未安装（运行时命令不可用）',
+      status: self ? 'ok' : 'missing',
+      detail: self ? `${self.version}  (${self.path})` : '未安装（运行时命令不可用）',
     })
+
+    /* 并列而不是覆盖：全局安装时 cwd 的那份不会被加载，报成同一个版本会误导排查 */
+    if (cwdCopy && (!self || !samePath(self.path, cwdCopy.path))) {
+      items.push({
+        key: 'maa-node(cwd)',
+        status: 'warn',
+        detail: `${cwdCopy.version}  (${cwdCopy.path})  — 项目目录里的副本，本 CLI 不加载它`,
+      })
+    }
+
+    /* 项目 pin 只与 self 对账：比的是「正在运行的那份」，不是项目里躺着的那份 */
+    const pin = projectRoot ? readMaaNodePin(projectRoot) : null
+    const pinWarnings: string[] = []
+    if (pin && pin.source !== 'uv.lock') {
+      if (pin.exact === null) {
+        items.push({
+          key: 'maa-node pin',
+          status: 'ok',
+          detail: `${pin.declared}（${pin.source}）—— 范围声明，不比对`,
+        })
+      } else if (!self) {
+        items.push({
+          key: 'maa-node pin',
+          status: 'warn',
+          detail: `${pin.declared}（${pin.source}）—— CLI 实际加载的 maa-node 未安装，无法比对`,
+        })
+      } else {
+        /* release 与 qualifier 分开比：预发布、post 与正式版不是同一份构建，
+           报成一致会让用户以为跑的就是 pin 的那份。 */
+        const pinV = splitRelease(pin.exact)
+        const runV = splitRelease(self.version)
+        const identical = pinV && runV
+          ? pinV.release === runV.release && pinV.qualifier === runV.qualifier
+          : pin.exact === self.version
+        if (identical) {
+          items.push({
+            key: 'maa-node pin',
+            status: 'ok',
+            detail: `${pin.exact}（${pin.source}）与 CLI 实际加载一致`,
+          })
+        } else if (pinV && runV && pinV.release === runV.release) {
+          const detail =
+            `项目 pin ${pin.exact}（${pin.source}），CLI 实际加载 ${self.version}` +
+            ` —— release 线同为 ${pinV.release}，qualifier 不同（${pinV.qualifier || '无'} / ${runV.qualifier || '无'}）`
+          items.push({ key: 'maa-node pin', status: 'warn', detail })
+          pinWarnings.push(`maa-node 版本不一致：${detail}`)
+        } else {
+          const detail = `项目 pin ${pin.declared}（${pin.source}），CLI 实际加载 ${self.version}`
+          items.push({ key: 'maa-node pin', status: 'warn', detail })
+          pinWarnings.push(`maa-node 版本不一致：${detail}`)
+        }
+      }
+    }
 
     /* 显式给了源码目录才出现：应用开发者的机器上不该看到一个「缺一项」 */
     if (maafw) items.push({
@@ -214,6 +365,7 @@ export const envCommand: Command = {
 
     const missing = items.filter((i) => i.status === 'missing')
     const warnings = missing.map((i) => `${i.key}: ${i.detail}`)
+    warnings.push(...pinWarnings)
 
     return {
       exitCode: missing.length > 0 ? EXIT.ENV : EXIT.OK,
@@ -224,11 +376,15 @@ export const envCommand: Command = {
         runtime: { node: process.version, platform: process.platform, arch: process.arch },
         cwd,
         project: { root: projectRoot, pipelineDirs: dirs },
-        maaNode,
+        maaNode: self,
+        /** cwd 那份副本，仅作对照：它不是 CLI 实际加载的那份 */
+        maaNodeCwd: cwdCopy,
+        /** 项目声明的 pin：只用 package.json / requirements.txt 下结论，uv.lock 仅记来源 */
+        maaNodePin: pin,
         framework: maafw
           ? {
               checkout: { path: maafw, found: existsSync(maafw), version: checkoutVer },
-              native: maaNode?.version ?? null,
+              native: self?.version ?? null,
             }
           : null,
         tools: {

@@ -14,6 +14,10 @@ import { EXIT, fail, type Command, type CommandContext, type CommandResult, type
 import * as act from '../runtime/actions.js'
 import { defaultFramesDir, describeRecord, loadManifest, resolveFrame } from '../runtime/keyframes.js'
 import { roiOutOfBounds } from '../runtime/reco-args.js'
+import { readNodeFile, readParamFile } from '../runtime/node-source.js'
+import { describeMisses } from '../runtime/reco-verdict.js'
+import { ocrModelStatus } from '../runtime/ocr-model.js'
+import { ocrModelName, suggestThreshold } from './reco.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import { writeRunReceipt } from '../runtime/receipts.js'
 import {
@@ -46,7 +50,8 @@ const HELP = [
   '       swipe --via 走 touch_down→逐点 touch_move→touch_up：**一条笔画画折线**（中途不抬手）',
   '  press <x> <y> [--duration ms] | dbclick <x> <y> | keys <c[,c+..]> | scroll <dx> <dy> | move <dx> <dy>',
   '  touchdown <x> <y> | touchmove <x> <y> | touchup       裸触点原语（跨命令维持同一次按压）',
-  '  reco <type> [k=v ...] [--image f.png|kf:…] [--seq n] [--from-kf kf:…] [--resource-dir d] [--sweep json]',
+  '  reco <type> [k=v ...] [--param-file p.json] [--image f.png|kf:…] [--seq n] [--from-kf kf:…] [--resource-dir d] [--sweep json]',
+  '       reco [--node-file node.json | --node-name <节点名>]   （资源取整条链；节点来源与参数来源互斥）',
   '       识别单测。缺省用会话缓冲最新帧（L1 小图，roi 要按该图尺寸给）；--image 走文件',
   '       （控制器空间，roi 用 ctrl 坐标）；--from-kf 走库内留存帧、离线。roi 必须给数组：',
   '       `roi=1,2,3,4`（逗号写法即可，不必写方括号）。',
@@ -771,20 +776,63 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               out(short(await act.input(client, { kind: 'text', text: line.trim().slice(5) })))
               break
             case 'reco': {
-              const type = tokens[1] ?? 'TemplateMatch'
+              /* 类型是位置参数：下一个 token 以 `--` 开头的是选项、含 `=` 的是 k=v 参数，都不是类型。
+               * 不做这一步，`reco --param-file p.json` 会把 type 设成字符串 "--param-file"（frame 早就
+               * 按同一惯例跳过 `--` 开头）。 */
+              const first = tokens[1]
+              const type = first !== undefined && !first.startsWith('--') && !first.includes('=')
+                ? first
+                : 'TemplateMatch'
               const param = recoParam(tokens)
               const sweepRaw = readFlag(tokens, '--sweep')
-              /* 资源目录：--resource-dir 优先，其次 connect project 规划出的第一个资源路径
-               * （与 crop / annotate 同规则）。缺了它 daemon 只会给出零例数（模板/OCR 模型
-               * 都读不到）——这是 G16 证据里 `[]` 与 `ok:false` 两种签名并存的第三个混淆变量，
-               * 所以**前置拦下并说清**，不再让它静默。 */
-              const planRes = state.plan?.resource?.paths
-              const resourceDir = readFlag(tokens, '--resource-dir') ?? planRes?.[0] ?? ''
-              if (resourceDir === '') {
+              /* 节点/参数来源：与一次性 CLI 同一组互斥、同一份 JSONC 读取（判据只有一份）。
+               * REPL 的 stdin 是**命令流**，所以 `-`（stdin）在这里没有意义：直接拒绝，不去读会话输入。 */
+              const nodeFileSpec = readFlag(tokens, '--node-file')
+              const nodeName = readFlag(tokens, '--node-name')
+              const paramFileSpec = readFlag(tokens, '--param-file')
+              if (nodeFileSpec === '-' || paramFileSpec === '-') {
+                out('REPL 里 --node-file / --param-file 不接受 -：- 的意思是 stdin，而 REPL 的 stdin 是命令流。'
+                  + '给文件路径，或改用一次性命令由 shell 管 stdin')
+                break
+              }
+              if (nodeFileSpec !== undefined && nodeName !== undefined) {
+                out('--node-file 与 --node-name 互斥：一个测文件里的节点，一个按资源原名跑')
+                break
+              }
+              let node: Record<string, unknown> | undefined
+              if (nodeFileSpec !== undefined) {
+                const f = readNodeFile(nodeFileSpec)
+                if (f.error) { out(f.error + (f.hint ? '\n  hint: ' + f.hint : '')); break }
+                node = f.node
+              }
+              let paramFromFile: Record<string, unknown> | undefined
+              if (paramFileSpec !== undefined) {
+                if (Object.keys(param).length > 0) {
+                  out('k=v 参数与 --param-file 互斥：一个给字面值，一个给文件')
+                  break
+                }
+                const f = readParamFile(paramFileSpec)
+                if (f.error) { out(f.error); break }
+                paramFromFile = f.param
+              }
+              const effectiveParam = paramFromFile ?? param
+              if ((node || nodeName !== undefined) && (Object.keys(effectiveParam).length > 0 || sweepRaw !== undefined)) {
+                out('k=v 参数 / --param-file / --sweep 只作用于 <type> 路径：与 --node-file / --node-name 同给时不会生效')
+                break
+              }
+              /* 资源链：--resource-dir 是显式单包；否则取 connect project 规划出的**整条链**
+               * （resource.path[] + 控制器 attach 段——只取 [0] 会让 overlay/attach 里的节点改写、
+               * 只存在于 overlay 的模板、被 And/Or 按名引用的子节点全部消失）。缺了资源 daemon 只会
+               * 给出零例数（模板/OCR 模型都读不到）——这是 G16 证据里 `[]` 与 `ok:false` 两种签名
+               * 并存的第三个混淆变量，所以**前置拦下并说清**，不再让它静默。 */
+              const explicitDir = readFlag(tokens, '--resource-dir')
+              const chain = explicitDir !== undefined ? [explicitDir] : (state.plan?.resource?.paths ?? [])
+              if (chain.length === 0) {
                 out('缺资源目录：reco 的模板/OCR 模型要靠它加载，不给只会得到零例数（看不出病因）。'
                   + '先给 --resource-dir <dir>，或 connect project <dir>')
                 break
               }
+              const resources = chain.length > 1 ? { resourceDirs: chain } : { resourceDir: chain[0] }
               /* --image / --seq / --from-kf：图像来源三条与一次性 CLI 一致，由 daemon 按
                * 「kfSource → image → 缓冲帧」的次序取（`--image` 优先于 `--seq`，不另行报错——
                * 那会再造一套 repl/CLI 规则差）。 */
@@ -802,23 +850,61 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                 out('--seq 必须是数字（收到 ' + JSON.stringify(seqRaw) + '）')
                 break
               }
+              const nodeSource = node !== undefined || nodeName !== undefined
               const r = await act.recoTest(client, {
-                resourceDir, type, param,
+                ...resources, type,
+                ...(node ? { node } : {}),
+                ...(nodeName !== undefined ? { nodeName } : {}),
                 ...(imageRaw && !kfId ? { image: imageRaw } : {}),
                 ...(seqNum !== undefined ? { seq: seqNum } : {}),
                 ...(kfSource ? { kfSource } : {}),
-                ...(sweepRaw ? { sweep: JSON.parse(sweepRaw) } : {}),
+                ...(nodeSource ? {} : { param: effectiveParam }),
+                ...(nodeSource ? {} : (sweepRaw ? { sweep: JSON.parse(sweepRaw) } : {})),
               })
+              /* 能力边界与"查无此节点"是明确结论，不该落进"看起来像 miss" */
+              if (r.ok === false && (r.code === 'CUSTOM_NODE' || r.code === 'NODE_MISSING')) {
+                const cands = Array.isArray(r.candidates) ? (r.candidates as unknown[]).map(String) : []
+                out(String(r.error) + (r.code === 'CUSTOM_NODE'
+                  ? '\n  hint: custom/agent 识别要桥接 agent 子进程，用 run --project 验；reco 只测资源合并后的普通节点'
+                  : (cands.length
+                    ? '\n  hint: 资源里最接近的节点名：' + cands.join(' / ')
+                    : '\n  hint: 确认资源名与链（connect project 的 --resource）是否正确；手写节点用 --node-file')))
+                break
+              }
               /* roi 越界：repl 没有单命令退出码（末行统一 EXIT.OK），照本文件既有惯例
                * 「打印显式错误 + break」；一次性 CLI 侧同一判据走 EXIT.FINDINGS。 */
               const meta = r.meta as { w?: unknown; h?: unknown } | undefined
-              const oob = roiOutOfBounds(typeof param.roi === 'object' ? (param.roi as number[]) : undefined, meta?.w, meta?.h)
+              const oob = roiOutOfBounds(
+                nodeSource ? undefined : (typeof effectiveParam.roi === 'object' ? (effectiveParam.roi as number[]) : undefined),
+                meta?.w, meta?.h)
               if (oob) { out(oob); break }
               /* 离线评估（静态图/库帧）标记：防"拿旧截图出分冒充实测"（G21 同族事故）。
                * 分数可用于调参/回归，不构成真机验收证据。 */
               if ((imageRaw && !kfId) || kfSource) {
                 out('⚠ 离线评估（' + (kfSource ? '库帧 --from-kf' : '静态图 --image') +
                   '）：分数可用于调参/回归，不构成真机验收证据——验收只认真机 run 的 record.ok')
+              }
+              if (nodeName !== undefined) {
+                out('layer=resource：只到资源合并结果（run --project 还会再叠 interface 的四级 pipeline_override）')
+              }
+              /* miss 原因与计数：与一次性 CLI 同一份判据（runtime/reco-verdict）。daemon 只回原始
+               * detail，`missReason` 是本地派生的——不派生就等于没有任何输出，只能回去翻 all/filtered。 */
+              const results = (r.results as Array<{ ok: boolean; detail?: unknown }> | undefined) ?? []
+              const th = suggestThreshold(results)
+              const shownType = String(r.type ?? type)
+              /* OCR 空结果先查模型在不在链上：模型没加载时框架只回空结果，与"roi 里没有字"同形 */
+              const ocrModel = shownType === 'OCR'
+                ? ocrModelStatus(chain, ocrModelName(node, effectiveParam,
+                    r.nodeDump as { recognition?: { param?: { model?: unknown } } } | undefined))
+                : undefined
+              const verdict = describeMisses(results, shownType,
+                th ? { bestScore: th.bestScore, lowMatch: th.lowMatch } : null,
+                ocrModel ? { ocrModel } : {})
+              if (verdict.missReason) out('未命中原因：' + verdict.missReason)
+              else if (verdict.missReasons.length > 1) out('未命中原因：' + verdict.missReasons.join(' / '))
+              if (verdict.rawCount !== null) {
+                out('  候选 all=' + verdict.rawCount +
+                  (verdict.filteredCount !== null ? ' filtered=' + verdict.filteredCount : ''))
               }
               out(short(r, 800))
               break
