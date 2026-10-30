@@ -3,6 +3,45 @@
 maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **`reco --node-file` / `--param-file`（`-` = stdin，按 JSONC 读）**：整节点 JSON 以前只能走 argv，
+  Windows 上 `bash → cmd.exe`(npm shim) → node 会把 `^` 当转义符吃掉（`expected: "^解锁"` 到进程时
+  已变成 `"解锁"`，三种正则给出相同结果，一度被误判成"工具不应用 `expected` 过滤"）。文件通道绕开的
+  是**参数被 shell 改写**，不是 JSON 解析。`--node-file` 指向节点表会失败并提示改用 `--node-name`。
+- **`reco --node-name`：按资源里的原名跑，整条资源链都加载**——`resource.path[]` 按声明顺序叠加，
+  末尾追加当前控制器的 `attach_resource_path`。以前 `reco` 只加载单个 bundle，overlay 段的节点改写、
+  只存在于 overlay 的模板、被 `And`/`Or` 按名引用的子节点全会缺，验的不是项目里那个节点。回执带
+  `nodeDump`（只给人看、不注入识别）、`resource` 链与 `layer: resource`；Custom / agent 节点直接报
+  `RECO_CUSTOM_NODE`（不桥接），不当成 miss。项目模式的资源链也一并进回执。
+- **miss 原因与计数**：回执新增 `missReason` / `missReasons` / `rawCount` / `filteredCount`（逐例与
+  回执级）。按算法分口径：OCR 是"roi 内无文字" / "expected 无匹配"，模板匹配是"低于阈值" /
+  "模板与画面不匹配"——不再一律指向"模板读不到"。**OCR 的空结果还会先查模型**：链上没有
+  `model/ocr` 的 `det.onnx` + `rec.onnx` + `keys.txt` 时，原因是"OCR 模型不在资源链里"——模型缺失时
+  框架不报错、只回空结果，以前会被报成"roi 里没有字"，让人去改 roi。模型文件**损坏**则是另一条：
+  子进程捕获异常、回执 `detail: null`，原因写成"识别调用报错：<原生消息>"，不冒充未命中。
+- **`env` 报的是正在运行的那份 maa-node**：以前按 cwd 的 `node_modules` 优先解析，全局安装时实际
+  加载的却是包自带那份。现在并列 `maa-node(cwd)`，并与项目 pin（`package.json` / `requirements.txt`；
+  `uv.lock` 仅辅证）对账给 warning。
+
+### 变更
+
+- **`reco --image` 不连设备**：给了静态图就是离线评估。旧行为 `--project --image` 会 `ensureSession`
+  连一次设备，而同一份回执又把它标成"离线评估"——工具自身的口径分叉。REPL 里已有会话照旧复用。
+- **`--param` / `--param-file` / `--sweep` 只作用于 `--type` 路径**：与 `--node` / `--node-file` /
+  `--node-name` 同给时报参数错误（旧行为是静默忽略，回执看不出用了哪套）；节点来源三者互斥。
+- `repl` 的 `reco` 与一次性命令同源：资源取整条链、补 `--node-file` / `--node-name` / `--param-file`，
+  miss 原因与计数在本地派生（daemon 只回原始 `detail`，之前那条 `missReason` 是读不到的字段）；
+  `-`（stdin）在 REPL 里直接拒绝——REPL 的 stdin 是命令流。管道驱动 REPL 也能绕开 `^` 被 shell 吃掉。
+  类型是位置参数：选项 / k=v 打头时回缺省 `TemplateMatch`（`reco --param-file p.json` 不会被当成类型）。
+- `--node-name` 拼错时给**近邻节点名建议**（按资源 `node_list` 的编辑距离），不再只有一句"资源里没有"。
+- `env` 的 pin 对账认 Python 绑定的真实写法：`requirements.txt` 里的 `MaaFW` / `maafw`，以及 PEP 440
+  预发布版本（`5.15.0b1` / `5.15.0rc1`）——CLI 5.14.2 与项目 `5.15.0b1` 这类差异现在会报警。
+- 新增 `npm run accept:reco-node`：离线、真 daemon，钉住 overlay 同名节点覆盖、`attach_resource_path`
+  进链、`--node-name` 按原名跑、Custom 与查无节点两种失败；已接进 CI 与发版门禁。
+
 ## [0.3.0] - 2026-10-10
 
 来源于《重返未来：1999》活动小游戏「众声的谱成」的从零实战压测（观测 → 定标 → 交互全链路）。
