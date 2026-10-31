@@ -308,8 +308,10 @@ async function main() {
     ], { encoding: 'utf8' })
     let r1env = null
     try { r1env = JSON.parse(r1.stdout) } catch { /* 下面断言会报出来 */ }
-    check('R1a --from-kf 离线跑通：退出 0、1 例、源身份是库帧（无设备）',
-      r1.status === 0 && r1env?.data?.results?.length === 1 && r1env?.data?.meta?.source === lib.rec.id,
+    /* 模板故意不存在 → 这一例必然是未命中；未命中按 README 码表是 FINDINGS(3)，不是 0。
+     * 本组钉的是"离线库帧入口跑通了"，也就是信封内容（1 例、源身份是库帧），退出码跟着码表走。 */
+    check('R1a --from-kf 离线跑通：退出 3（未命中 → FINDINGS）、1 例、源身份是库帧（无设备）',
+      r1.status === 3 && r1env?.data?.results?.length === 1 && r1env?.data?.meta?.source === lib.rec.id,
       `status=${r1.status} meta=${JSON.stringify(r1env?.data?.meta)}`)
     check('R1b 拿不到分数 → 第三形态标记（与"分数低的未命中"分开）',
       r1env?.data?.noConfidence === true && r1env?.data?.results?.[0]?.ok === false,
@@ -329,7 +331,7 @@ async function main() {
     let r2env = null
     try { r2env = JSON.parse(r2.stdout) } catch { /* ignore */ }
     check('R2 --image kf:… 是等价入口（SKILL / roadmap 记过的写法）',
-      r2.status === 0 && r2env?.data?.meta?.source === lib.rec.id, `status=${r2.status}`)
+      r2.status === 3 && r2env?.data?.meta?.source === lib.rec.id, `status=${r2.status}`)
 
     const r3 = spawnSync(process.execPath, [
       BIN, 'reco', '--node', recoNode, '--from-kf', lib.rec.id, '--frames-dir', lib.dir, '--seq', '3',
