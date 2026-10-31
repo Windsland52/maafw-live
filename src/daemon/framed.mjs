@@ -339,6 +339,9 @@ function resolveEnum(table, value, fallback, label, warns) {
 async function cmdConnect(args) {
   const m = loadMaa()
   if (S.ctrl) { try { S.ctrl.destroy() } catch (e) { /* ignore */ } S.ctrl = null }
+  /* 旧控制器已销毁：分辨率缓存不能留到下一次连接——连接失败时它会是上一台的尺寸，
+   * 让 spaceCheck / stream_status 把旧空间当成当前空间。 */
+  S.fullW = 0; S.fullH = 0
   /* 控制器重建 = 旧流失效：显式停掉并在回执里说明（`streamStopped`），别让调用方以为流还在跑。
    * 曾经的行为是"tick 撞到空控制器后静默死掉、S.stream 仍为 true"，于是重连后的 stream_start 被
    * "已启动"挡回去，表现为一帧都不来（实测：seq 卡死，而 screencap 正常）。 */
@@ -443,8 +446,23 @@ async function cmdConnect(args) {
     if (args.longSide) ctrl.screenshot_target_long_side = Number(args.longSide)
     if (args.rawSize) ctrl.screenshot_use_raw_size = true
   } catch (e) { /* 绑定版本不支持 setter 时忽略 */ }
+  /* 连接判定：5.14.2 实测 `Job.wait()` 在连接失败时**不抛异常**，只把 status 置为 Failed（4000）。
+   * 不查 status 就会把失败当成功：S.ctrl/S.session 照设、connect 回 ok:true，下一条命令再踩
+   * 半残控制器（预热截图失败只写进 resolution.error，CLI 摘要里看不出来）。 */
+  let connJob = null
+  try {
+    connJob = ctrl.post_connection()
+    await connJob.wait()
+  } catch (e) {
+    try { ctrl.destroy() } catch (e2) { /* ignore */ }
+    return { ok: false, error: '连接失败：' + String(e && e.message || e) }
+  }
+  const connStatus = Number(connJob && connJob.status)
+  if (connStatus !== STATUS.succeeded) {
+    try { ctrl.destroy() } catch (e) { /* ignore */ }
+    return { ok: false, error: '连接失败：post_connection status=' + String(connStatus) + '（成功应为 ' + STATUS.succeeded + '）' }
+  }
   S.ctrl = ctrl
-  await ctrl.post_connection().wait()
   S.session = session
   S.connGen++
   /* 预热一次截图，取控制器分辨率（默认短边 720 的坐标系，pipeline 的 roi/模板即此空间） */

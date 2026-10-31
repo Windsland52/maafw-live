@@ -50,6 +50,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 修复
 
+- **`connect` 不再把连接失败当成功**：5.14.2 的 `post_connection().wait()` 在连接失败时照常 resolve
+  （status=4000、不抛异常），原实现不查 status 就写 `S.ctrl` / `S.session` 并回 `ok:true`，CLI 摘要
+  还显示"已连接"、下一条命令踩半残控制器。现在失败即销毁控制器、清会话并回 `ok:false`（连接成功
+  之后才登记会话状态）；新增裸协议单测钉住回执与"不留会话"。
 - **`reco` 的资源链探针不再改动会话资源**：单包也走一次性 `Resource`（加载完销毁），并把失败点名到
   具体哪一段。原先单包走 `ensureResource`，会把这一段叠进 REPL 长活会话的资源里，之后
   `run --resource-dir <别的包>` 会带着上一轮的 bundle 跑。
