@@ -464,6 +464,7 @@ export const runCommand: Command = {
     if (!Number.isFinite(timeoutMs)) {
       return fail('BAD_ARGUMENTS', '--timeout 必须是毫秒数', undefined, EXIT.USAGE)
     }
+    const presetName = typeof ctx.values.preset === 'string' ? ctx.values.preset : null
 
     try {
       return await withDaemon(async (client) => {
@@ -478,7 +479,7 @@ export const runCommand: Command = {
           const prep = act.prepareProjectRun({
             project: s.plan!,
             entry,
-            presetName: typeof ctx.values.preset === 'string' ? ctx.values.preset : null,
+            presetName,
             override,
           })
           if (!prep.ok) return fail(prep.code, prep.error, prep.hint, EXIT.FINDINGS)
@@ -488,6 +489,9 @@ export const runCommand: Command = {
           appliedLines = prep.applied
         } else {
           args = { resourceDir, entry, override, timeoutMs }
+          /* bundle 模式不载入 interface，preset 没有可应用的四级链——静默丢参数会让调用方
+           * 以为 P1 已生效；与 REPL 同一句警告。 */
+          if (presetName) extraWarns.push('--resource-dir 是 bundle 模式：--preset ' + presetName + ' 不生效（不叠 interface 四级 override）')
         }
         /* 运行期日志跟随：run 会阻塞到任务结束，期间帧流/事件都不可用（框架占住控制器），
          * 唯一还在更新的只有项目 agent 自己写的日志。给了 --watch 就在这里边跑边推。 */

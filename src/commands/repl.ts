@@ -335,7 +335,9 @@ export const replCommand: Command = {
 
     try {
       for (;;) {
-        if (process.stdin.isTTY) process.stdout.write('maa> ')
+        /* 提示符带连接状态：启动连接失败 / 主动 disconnect / daemon 层重连失败后
+         * 显示「未连接」，别让一个裸 maa> 看起来像会话可用。 */
+        if (process.stdin.isTTY) process.stdout.write(state.session === '(未连接)' ? 'maa(未连接)> ' : 'maa> ')
         const line = await ask()
         if (line === null) break
         const step = await runReplLine(line, { client, out, state, remember })
@@ -383,10 +385,18 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               break
             case 'connect': {
               let s
-              if (tokens[1] === 'project') {
-                s = await ensureSession(client, { project: tokens[2], hwnd: tokens[3], address: tokens[3] })
-              } else {
-                s = await ensureSession(client, { kind: tokens[1], target: tokens[2] })
+              try {
+                if (tokens[1] === 'project') {
+                  s = await ensureSession(client, { project: tokens[2], hwnd: tokens[3], address: tokens[3] })
+                } else {
+                  s = await ensureSession(client, { kind: tokens[1], target: tokens[2] })
+                }
+              } catch (e) {
+                /* daemon 层连接失败时旧控制器已被销毁：摘要退回未连接（提示符会显示），
+                 * 但保留 state.plan——它只是项目规划，离线 reco/crop 仍可用。规划阶段的失败
+                 * 发生在 connect 之前，旧会话/控制器还在，摘要保持原样。 */
+                if (e instanceof SessionError && e.code === 'CONNECT_FAILED') state.session = '(未连接)'
+                throw e
               }
               remember(s)
               out('已连接：' + state.session)
@@ -618,7 +628,12 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
             case 'run': {
               const entry = tokens[1]
               if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d]'); break }
-              const timeout = Number(readFlag(tokens, '--timeout') ?? 30000)
+              const rawTimeout = readFlag(tokens, '--timeout')
+              const timeout = rawTimeout === undefined ? 30000 : Number(rawTimeout)
+              if (!Number.isFinite(timeout)) {
+                out('--timeout 必须是毫秒数（收到 ' + JSON.stringify(rawTimeout) + '）')
+                break
+              }
               const overrideRaw = readFlag(tokens, '--override')
               let override: Record<string, unknown> = {}
               if (overrideRaw) {
@@ -629,17 +644,26 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                * 的项目规划，与一次性 CLI 共用 prepareProjectRun（入口解析 / task 适用性 /
                * 四级 pipeline_override / agent 桥接都在那一个函数里）。 */
               const explicitDir = readFlag(tokens, '--resource-dir')
+              const presetRaw = readFlag(tokens, '--preset')
               const plan = state.plan
+              /* --resource-dir 只换资源来源，**不换入口解析**：connect project 之后即使覆盖了
+               * 资源目录，interface 的中文任务名仍要解析成 task.entry（旧行为，别在短路分支里丢）。 */
+              const task = plan?.loaded.tasks.find((t) => t.name === entry || t.entry === entry)
               let args: Record<string, unknown>
-              let resolvedEntry = entry
-              let taskName: string | null = null
+              let resolvedEntry = task?.entry ?? entry
+              let taskName: string | null = task?.name ?? null
               if (explicitDir) {
-                args = { resourceDir: explicitDir, entry, override, timeoutMs: timeout }
+                /* bundle 模式不叠 interface 四级链：--preset 没有地方生效，必须说出来，
+                 * 否则调用方会以为 P1 已经选中（静默丢参数比报错更难查）。 */
+                if (presetRaw !== undefined) {
+                  out('警告：--resource-dir 是 bundle 模式，不叠 interface 四级 override——--preset ' + presetRaw + ' 不生效')
+                }
+                args = { resourceDir: explicitDir, entry: resolvedEntry, override, timeoutMs: timeout }
               } else if (plan) {
                 const prep = act.prepareProjectRun({
                   project: plan,
                   entry,
-                  presetName: readFlag(tokens, '--preset') ?? null,
+                  presetName: presetRaw ?? null,
                   override,
                 })
                 if (!prep.ok) {

@@ -55,9 +55,17 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   还显示"已连接"、下一条命令踩半残控制器。现在失败即销毁控制器、清会话并回 `ok:false`（连接成功
   之后才登记会话状态）；新增裸协议单测钉住回执与"不留会话"。
 - **REPL `run` 与一次性 `run --project` 走同一条装配链**：REPL 以前只吃 `--override`，同项目同入口的
-  option / default_case 在会话里静默不生效（preset 甚至没有入口）。现在 `connect project` 之后 `run`
+  option / default_case 在会话里静默不生效（REPL 没有 `--preset` 入口）。现在 `connect project` 之后 `run`
   调同一个 `prepareProjectRun`：入口解析、task 适用性、四级 pipeline_override、pretask/agent 提示与
   `--preset` 全部与 CLI 一致，提交前打印生效的 `override:` 行。新增装配层单测与 REPL/CLI 双端回执对照。
+- **REPL `run --resource-dir` 仍解析 interface 任务名**：收口时入口解析被短路进了项目分支，
+  `connect project` 后显式覆盖资源目录会把中文 task 名原样发给 daemon（`task not exist`）。
+  现在 `--resource-dir` 只换资源来源，入口解析仍按 `state.plan`；顺带 REPL `--timeout` 非数字
+  也像 CLI 一样直接报用法，不再把 NaN 往下传。新增 `--resource-dir` 回归测与 timeout/agents 断言。
+- **`run --resource-dir` + `--preset` 不再静默丢参数**：bundle 模式不叠 interface 四级链，preset
+  没有可应用的地方；REPL 打一行警告，CLI 写进 `warnings`，不再让人以为 P1 已生效。
+- **REPL 提示符显示连接状态**：启动连接失败、daemon 层重连失败（`CONNECT_FAILED`）或主动
+  `disconnect` 后显示 `maa(未连接)>`；规划阶段失败发生在 connect 之前、旧会话还在，提示符保持连接态。
 - **`reco` 的资源链探针不再改动会话资源**：单包也走一次性 `Resource`（加载完销毁），并把失败点名到
   具体哪一段。原先单包走 `ensureResource`，会把这一段叠进 REPL 长活会话的资源里，之后
   `run --resource-dir <别的包>` 会带着上一轮的 bundle 跑。
@@ -84,9 +92,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 - `docs/daemon-protocol.md` 补齐合同：新增 `events_list`（此前已落地并被 CLI `events` 调用，命令表里
   却没有）；`connect` 的 kind 集补 `playcover` / `macos` / `linux` 与平台限制、`target` 形态、各 kind
-  可用的可选参数；修正 reply 的 `ok:false` 语义（它只对应 daemon 抛异常；业务失败通常是外层
-  `ok:true` + `data.ok:false`），并写明连接失败不登记会话；"新增命令要更新哪里"改指向
-  `src/runtime/actions.ts` 的封装（客户端本身是泛型 `call`）。
+  可用的可选参数；修正 macos 的输入合同为"未接 `MacOSInputMethod`、不可选"，并写明 `device_list`
+  只枚举 adb/win32、其它平台必须显式给 target/config；修正 reply 的 `ok:false` 语义（它只对应
+  daemon 抛异常；业务失败通常是外层 `ok:true` + `data.ok:false`），并写明连接失败不登记会话；
+  "新增命令要更新哪里"改指向 `src/runtime/actions.ts` 的封装（客户端本身是泛型 `call`）。
 
 ## [0.3.0] - 2026-10-10
 
