@@ -440,8 +440,11 @@ export const recoCommand: Command = {
             ...(d?.failed ? { failed: true } : {}),
           }
         })
+        /* 退出码对齐文档契约（README 的码表、protocol.ts 的 FINDINGS 注释都写着"reco 未命中 → 3"）：
+         * 未命中与调用报错都算"跑成了但发现了问题"；全部命中才是 0。 */
+        const anyMiss = results.length > 0 && results.some((x) => x.ok !== true)
         return {
-          exitCode: r.ok === false ? EXIT.FINDINGS : EXIT.OK,
+          exitCode: r.ok === false || anyMiss ? EXIT.FINDINGS : EXIT.OK,
           human,
           data: {
             ...r,

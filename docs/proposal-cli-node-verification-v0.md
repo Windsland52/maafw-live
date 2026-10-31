@@ -106,8 +106,7 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 > `load_recer` 各自遍历 roots）——只看"某一段三件套齐全"会把拆分存放误报成缺模型。
 > 第三种空结果也在这条线上：模型文件存在但**损坏**时子进程会捕获异常（实测
 > `No graph was found in the protobuf.`），回执 `detail: null`——那要走"识别调用报错"，不能算未命中。
-> 逐例行标 `[报错]`、机器侧置 `failed: true`；**退出码本版仍是 0**（§3 冻结了退出码语义，调用方要按
-> `missReason` / `failed` 判，别只看码或 `[未中]`）。
+> 逐例行标 `[报错]`、机器侧置 `failed: true`；退出码按文档契约给 FINDINGS(3)（见 §3 末条）。
 
 外加 `rawCount` / `filteredCount`（从 `detail.detail.{all,filtered}` 派生）。
 
@@ -144,7 +143,7 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 | cwd 在项目里自动探测资源 | 与"行为不变"冲突；cwd 碰巧在某个 Maa 项目里会让 OCR 模型/模板静默换源。快速层继续显式 `--resource-dir`；真实层显式 `--project`。`--resource` 已存在于 `CONNECT_OPTIONS`（`src/commands/runtime.ts:19-29`） |
 | `--matrix` | 输入形状、与 `--node`/`--param`/`--sweep`/`candidates` 的互斥、N 上限、信封形状都未定义，无法验收。另：`--sweep` 并非只能扫 `threshold`（`src/daemon/framed.mjs:1632` 是 `sweep.key \|\| 'threshold'`），缺的是**离散变体**；daemon 侧 `candidates` 已存在（`:1605-1613`），先考虑复用 |
 | 改 `resource[0]` fallback 语义 | "多资源且未指定就报错"会让最常用路径变重；保持现状，仅把链名打进回执 |
-| **reco 未命中的退出码** | **已知文档/实现冲突**：README `:181`、`src/protocol.ts:31` 都写 miss → FINDINGS(3)，而实现与 `test/unit-reco-cli.mjs:82,93` 钉的是 `ok:true` → 0，测试注释自陈「识别类命令的退出码语义不在本次修复面内」。本版**不动**（改退出码是调用方可见的行为变更，需单独评估），但 §2.4 不能让差异变大；列入 §5 待修 |
+| **reco 未命中的退出码** | **已对齐（review 后改）**：README `:181`、`src/protocol.ts` 的 FINDINGS 注释都写 miss → FINDINGS(3)，而实现与旧用例钉的是 0。现在：**未命中或识别调用报错 → 3**，全部命中 → 0；`--act` 失败、`RECO_CUSTOM_NODE`、`RECO_NODE_MISSING` 仍是 3。这是调用方可见的行为变更，用例与 CHANGELOG 已同步 |
 
 ## 4. 互斥与作用域（写死，避免实现时吵）
 
@@ -175,7 +174,7 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 - `--act` + `--node-name`：`run` 会桥接 agent 子进程，`reco_test` 不会（见 §2.3 的 Custom 处理）。
 - 离散变体对比（原 `--matrix` 的合理内核）。
 - **`crop` / `annotate` 仍只用 `paths[0]`**：本提案不碰。记在这里，避免有人"顺手"改到识别验证之外。
-- reco 未命中退出码与文档契约的对齐（见 §3 末条）。
+- reco 未命中退出码与文档契约的对齐：**已在 v0 收口时做掉**（见 §3 末条）。
 
 ## 7. 实现与验收（v0，2026-10-30）
 
@@ -213,10 +212,13 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
     pre-release 的两种拼写，算一致；而正式版 `5.14.2` 与同线预发布 `5.14.2b1` 是两份不同构建，要报）；
     两处声明都读，**精确优先于范围**，不让 `package.json` 的范围声明顶掉 Python 侧精确 pin。
   - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，一次性 CLI 与 REPL 都单独点名"这不是未命中"；
-    同一回执里报错与真未命中并存时两行都给（退出码仍按 §3 不动）。
+    同一回执里报错与真未命中并存时两行都给。
   - And / Or 嵌套的 Custom 子识别也走 `RECO_CUSTOM_NODE`，回执 `customPaths` 指出位置；dump 里 V1
     字符串形态（`recognition: "Custom"`）同样不漏判——但只认**识别类型位**上的字符串（`recognition` /
     `type`），`expected: "Custom"` 这类参数值不会误报。
-- **未做**：真机上的 `--act` 回归（本机无设备），见 §6；`reco` 未命中 / 调用报错的**退出码**语义（§3 冻结）；
-  `run --resource-dir` 的资源生命周期（仍走 `ensureResource`，长活会话里上一轮 bundle 会残留——与本次探针
-  修的是同一类问题，但要单独改 `run`，不在 v0 面内）。
+- **收口时补做的两项（review 后决定）**：
+  - **资源生命周期**：删掉会话级的"当前资源"共享态（`S.res` 没有读者），`run` 与 `reco --act` 每次按本次
+    的资源来源新建 `Resource`——单包 `run` 不再带着上一轮的 bundle 跑（原先只有项目模式是新建的）。
+  - **退出码**：`reco` 未命中或识别调用报错 → `FINDINGS(3)`，全部命中才 0（与 README 码表 / `protocol.ts`
+    的 FINDINGS 注释对齐，见 §3 末条）。
+- **未做**：真机上的 `--act` 回归（本机无设备），见 §6。

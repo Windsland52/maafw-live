@@ -1047,19 +1047,13 @@ function cmdFrameDiff(args) {
 }
 
 /* ────────────────────────── 资源 / 运行 / 识别 ────────────────────────── */
-async function ensureResource(dir) {
-  if (!S.res) {
-    const m = loadMaa()
-    S.res = new m.Resource()
-  }
-  if (dir) await S.res.post_bundle(dir).wait()
-  return S.res
-}
 /**
- * 项目驱动的多路径资源：interface.json 的 resource.path[] + attach_resource_path
- * 按顺序叠加、后者覆盖前者（MaaPiCli Configurator 的语义），对应逐个 post_bundle。
- * 每次运行都新建 Resource——复用旧实例会把上一次运行的 bundle 残留进来
- * （比如上次加载了皮肤包这次没选，残留会让 override 关系错乱）。
+ * 资源加载的唯一入口：`dirs` 是整条链（`resource.path[]` + attach，按序叠加、后者覆盖前者，
+ * 对应逐个 `post_bundle`），单包就是长度为 1 的链。
+ *
+ * **每次都新建 Resource**：`post_bundle` 是叠加语义，复用旧实例会把上一次运行的 bundle 残留进来
+ * （上次加载了皮肤包这次没选，残留会让 override 关系错乱）；单包若复用会话资源，长活会话里
+ * `run --resource-dir B` 还会带着上一轮 A 的节点/模板跑。会话不该有一份"当前资源"的共享态。
  */
 async function buildResource(dirs) {
   const m = loadMaa()
@@ -1071,10 +1065,8 @@ async function buildResource(dirs) {
 /**
  * 资源链可加载性先验：识别本身在子进程里重跑，这里只需要一段**可丢弃**的探针。
  *
- * 为什么单包也不走 ensureResource：那是长活会话的资源（REPL），`post_bundle` 会把这一段叠进去，
- * 之后 `run --resource-dir <别的包>` 在同一份资源上再加一段，跑的就不是声明的那个包
- * （`buildResource` 注释里写的正是"复用旧实例会把上一次的 bundle 残留进来"）。
- * 探针用完即销毁，不给会话留半个 bundle。
+ * 探针只回答"这段链读不读得进"，所以用完即销毁：`post_bundle` 是叠加语义，任何一处留下
+ * 半截 bundle，后面的命令就会带着它跑（`buildResource` 注释里写的正是这个残留）。
  *
  * 逐段加载并点名失败的那一段：整链一起报只会说"加载失败"，看不出是哪一层读不进。
  */
@@ -1206,14 +1198,13 @@ function pickNodeName(m) {
 async function cmdRun(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   if (S.runActive) return { ok: false, error: '已有任务在运行（先 maa_run_stop）' }
-  let res
-  if (Array.isArray(args.resourceDirs) && args.resourceDirs.length) {
-    res = await buildResource(args.resourceDirs.map(String))
-    S.res = res
-  } else {
-    if (!args.resourceDir) return { ok: false, error: '缺少 resourceDir（或 resourceDirs 数组）' }
-    res = await ensureResource(args.resourceDir)
-  }
+  /* 本次运行用自己的 Resource：项目模式是整条链，单包就是一段；两种都新建，
+   * 不把上一轮的 bundle 留在任何会话态里（见 buildResource 注释）。 */
+  const resDirs = Array.isArray(args.resourceDirs) && args.resourceDirs.length
+    ? args.resourceDirs.map(String)
+    : (args.resourceDir ? [String(args.resourceDir)] : [])
+  if (!resDirs.length) return { ok: false, error: '缺少 resourceDir（或 resourceDirs 数组）' }
+  const res = await buildResource(resDirs)
   /* agent 桥接：项目声明了 agent（PI interface 的 child_exec/child_args）就先连上——
    * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
   let agentInfo = null
@@ -1536,9 +1527,9 @@ function stripDetail(d) {
  * （也是 action-before 边界锚点），动作执行后的画面另抓 action-after——效果可复核。
  */
 async function recoActTest(args, node, dirs) {
-  /* 资源链与识别路径同一份：节点里的模板/被引用子节点可能只在 overlay 段里 */
-  const res = dirs.length > 1 ? await buildResource(dirs) : await ensureResource(dirs[0])
-  if (dirs.length > 1) S.res = res
+  /* 资源链与识别路径同一份：节点里的模板/被引用子节点可能只在 overlay 段里。
+   * 同样每次新建，不与会话里任何资源共享（act 会注册/注销 custom action，复用更不可取）。 */
+  const res = await buildResource(dirs)
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl

@@ -36,6 +36,9 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   miss 原因与计数在本地派生（daemon 只回原始 `detail`，之前那条 `missReason` 是读不到的字段）；
   `-`（stdin）在 REPL 里直接拒绝——REPL 的 stdin 是命令流。管道驱动 REPL 也能绕开 `^` 被 shell 吃掉。
   类型是位置参数：选项 / k=v 打头时回缺省 `TemplateMatch`（`reco --param-file p.json` 不会被当成类型）。
+- **`reco` 的退出码对齐文档契约**：未命中 / 识别调用报错 → `FINDINGS(3)`，全部命中才是 0
+  （README 码表与 `protocol.ts` 的 FINDINGS 注释一直这么写，实现此前钉的是 0）。**这是调用方可见的
+  行为变更**：只看退出码的脚本会开始看到 3；`--act` 失败、`RECO_CUSTOM_NODE`、`RECO_NODE_MISSING` 仍是 3。
 - `--node-name` 拼错时给**近邻节点名建议**（按资源 `node_list` 的编辑距离），不再只有一句"资源里没有"。
 - `env` 的 pin 对账认 Python 绑定的真实写法：`requirements.txt` 里的 `MaaFW` / `maafw`，以及 PEP 440
   预发布版本（`5.15.0b1` / `5.15.0rc1`）——CLI 5.14.2 与项目 `5.15.0b1` 这类差异现在会报警。
@@ -61,8 +64,9 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   不再落回 miss 或"调用报错"；dump 里 V1 字符串形态的 `recognition: "Custom"` 也不漏判——
   但只有落在**识别类型位**（`recognition` / `type`）的字符串才算，`expected: "Custom"` 这类参数值
   不会被误认成 Custom 识别。
-- **已知残余**：`run --resource-dir` 仍走 `ensureResource`，长活会话里上一轮的 bundle 会残留到下一次
-  单包 `run`（与 `buildResource` 注释里记的是同一类问题，需要单独改 `run` 的资源生命周期）。
+- **资源的会话共享态已删除**：`run` 与 `reco --act` 每次按本次的资源来源新建 `Resource`（原先单包走
+  会话资源，长活 REPL 里上一轮的 bundle 会残留到下一次 `run --resource-dir`）；`crop` / `annotate`
+  本来就各自 spawn 识别子进程，不受影响。
 
 ## [0.3.0] - 2026-10-10
 

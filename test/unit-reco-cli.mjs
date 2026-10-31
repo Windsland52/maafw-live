@@ -133,9 +133,9 @@ test('CLI reco：零置信度回执 → 提示语把 roi 空间列为首要疑�
       '--param', '{"template":"x.png","roi":[0,0,100,50]}'],
     { reco_test: { meta: { source: IMAGE, w: 480, h: 270 }, results: [{ param: { roi: [0, 0, 100, 50] }, ms: 230, ok: false }] } },
   )
-  /* 退出码仍 0：这是 daemon 回 `ok:true` 的既有口径（"跑了、每例未中"不算命令失败），
-   * 本用例只钉提示语；识别类命令的退出码语义不在本次修复面内。 */
-  assert.equal(code, 0, out)
+  /* 未命中按文档契约给 FINDINGS(3)（README 码表与 protocol.ts 的 FINDINGS 注释都写着
+   * "reco 未命中 → 3"）；本用例同时钉提示语。 */
+  assert.equal(code, 3, out)
   assert.match(out, /识别未返回任何置信度/, out)
   assert.ok(out.includes('roi 是否越出所用图的尺寸'), '首要疑因要是 roi 空间：' + out)
   /* 提示段内部次序：roi 空间要先于"模板读不到"。逐例原因行也会出现"模板/资源"字样，
@@ -172,9 +172,10 @@ test('CLI reco：--node-file 按 JSONC 读（注释 + 尾随逗号），节点�
 })
 
 test('CLI reco：--param-file 支持 stdin（`-`）——`^` 这类会被 cmd.exe 吃掉的字符原样到达', async () => {
+  /* 桩回执给"命中"，让这条用例只钉参数运输（未命中的退出码另有用例） */
   const { code, requests, err } = await runCli(
     ['reco', '--type', 'OCR', '--resource-dir', HERE, '--image', IMAGE, '--param-file', '-'],
-    { reco_test: { type: 'OCR', meta: { source: IMAGE, w: 8, h: 8 }, results: [{ param: {}, ms: 5, ok: false }] } },
+    { reco_test: { type: 'OCR', meta: { source: IMAGE, w: 8, h: 8 }, results: [{ param: {}, ms: 5, ok: true }] } },
     '{"expected": "^解锁"}',
   )
   assert.equal(code, 0, err)
@@ -306,7 +307,7 @@ test('CLI reco：OCR 未命中——all 为空是"roi 内无文字"，all 非空
       ['reco', '--type', 'OCR', '--resource-dir', res, '--image', IMAGE, '--param', '{"expected":"x"}', '--json'],
       ocrReply([]),
     )
-    assert.equal(r.code, 0, r.err)
+    assert.equal(r.code, 3, '未命中 → FINDINGS(3)：' + r.out)
     let env = JSON.parse(r.out)
     assert.equal(env.data.missReason, 'roi 内无文字', r.out)
     assert.equal(env.data.rawCount, 0)
@@ -333,7 +334,7 @@ test('CLI reco：OCR 空结果且链上没有模型 → 原因指向模型，不
     ['reco', '--type', 'OCR', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"expected":"x"}', '--json'],
     ocrReply([]),
   )
-  assert.equal(code, 0, out)
+  assert.equal(code, 3, out)
   const env = JSON.parse(out)
   assert.match(String(env.data.missReason), /OCR 模型不在资源链里/, out)
   assert.equal(env.data.rawCount, 0)
@@ -361,7 +362,7 @@ test('CLI reco：模板匹配未命中且无分数 → noConfidence + 原因指�
       },
     },
   )
-  assert.equal(code, 0, out)
+  assert.equal(code, 3, out)
   const env = JSON.parse(out)
   assert.equal(env.data.noConfidence, true)
   assert.match(String(env.data.missReason), /未返回任何置信度/)
@@ -376,10 +377,12 @@ test('CLI reco：模板匹配有分数但不够 → 原因按"低分不匹配 / 
   })
   const low = await runCli(['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"template":"x.png"}', '--json'], reply(0.1234))
   const lowEnv = JSON.parse(low.out)
+  assert.equal(low.code, 3, '有分但不够也是未命中 → FINDINGS(3)')
   assert.match(String(lowEnv.data.missReason), /模板与画面不匹配（最高置信度 0\.123）/, low.out)
 
   const high = await runCli(['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"template":"x.png"}', '--json'], reply(0.83))
   const highEnv = JSON.parse(high.out)
+  assert.equal(high.code, 3, '未命中 → FINDINGS(3)：' + high.out)
   assert.match(String(highEnv.data.missReason), /低于阈值（最高置信度 0\.83）/, high.out)
   assert.equal(highEnv.data.noConfidence, undefined, '有分数就不是"无置信度"：' + high.out)
 })
@@ -391,7 +394,7 @@ test('CLI reco：逐例行把 miss 原因写在结果后面（人能一眼读到
       ['reco', '--type', 'OCR', '--resource-dir', res, '--image', IMAGE, '--param', '{"expected":"x"}'],
       ocrReply([]),
     )
-    assert.equal(code, 0, out)
+    assert.equal(code, 3, out)
     assert.match(out, /\[未中\].*← roi 内无文字/, out)
   } finally {
     rmSync(res, { recursive: true, force: true })
@@ -460,7 +463,7 @@ test('CLI reco：识别子进程抛异常（detail 为 null）→ 标 [报错] +
     ['reco', '--type', 'OCR', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"expected":"x"}'],
     replies,
   )
-  assert.equal(code, 0, out)
+  assert.equal(code, 3, '调用报错也是 FINDINGS(3)：' + out)
   assert.match(out, /识别调用报错：No graph was found in the protobuf\./, out)
   assert.match(out, /\[报错\]/, '逐例行要标 [报错]，不能打 [未中]：' + out)
   assert.doesNotMatch(out, /\[未中\]/, out)

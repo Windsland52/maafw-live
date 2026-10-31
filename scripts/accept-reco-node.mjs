@@ -218,7 +218,7 @@ try {
   console.log('⑦ OCR 空结果：链上没有 model/ocr 时，原因指向模型而不是"roi 里没有字"')
   const a9 = reco(['--type', 'OCR', '--project', dir, '--image', PNG, '--param', '{"expected":"x"}'])
   const d9 = a9.env?.data
-  check('A9a 退出 0（OCR 跑完了，只是未命中）', a9.code === 0, diag(a9))
+  check('A9a 退出 3（未命中 → FINDINGS，与 README 码表一致）', a9.code === 3, diag(a9))
   check('A9b missReason 指向 "OCR 模型不在资源链里"',
     /OCR 模型不在资源链里/.test(String(d9?.missReason)), diag(a9) + ' missReason=' + j(d9?.missReason))
   check('A9c rawCount === 0（空结果确实是空结果）', d9?.rawCount === 0, diag(a9))
@@ -268,7 +268,7 @@ try {
   console.log('⑪ OCR 的 expected 恰好是 "Custom"：不能被认成 Custom 子识别')
   const a13 = reco(['--project', dir, '--node-name', 'ExpectedCustomText', '--image', PNG])
   const d13 = a13.env?.data
-  check('A13a 退出 0（OCR 正常跑完，只是未命中）', a13.code === 0, diag(a13))
+  check('A13a 退出 3（OCR 未命中 → FINDINGS）', a13.code === 3, diag(a13))
   check('A13b 没有 RECO_CUSTOM_NODE（参数值不是识别类型位）',
     a13.env?.error?.code !== 'RECO_CUSTOM_NODE', diag(a13))
   check('A13c missReason 指向 OCR 模型缺失',
