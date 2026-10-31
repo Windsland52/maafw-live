@@ -227,7 +227,10 @@ const KF_QUOTA_DEFAULT = (() => {
   return Number.isFinite(v) && v > 0 ? v : 1024 * 1024 * 1024
 })()
 const S = {
-  ctrl: null, res: null, tasker: null,
+  ctrl: null, tasker: null,
+  /* 最近一次 run / --act 的 Resource：只作释放点（换新时 destroy 上一份、disconnect 时销毁），
+   * 不当"当前资源"共享——那会让下一次命令带着上一轮的 bundle 跑。 */
+  runRes: null,
   session: null,                       // { kind, target, method }
   daemonId: randomUUID(),              // 本 daemon 实例身份（留存记录的 session.daemon）
   connGen: 0,                          // 连接代次：每次 connect 成功 +1（留存记录定位用）
@@ -467,6 +470,8 @@ async function cmdDisconnect() {
   if (S.stream) await cmdStreamStop()
   await cleanupAgents()
   if (S.tasker) { try { S.tasker.destroy() } catch (e) { /* ignore */ } S.tasker = null }
+  /* tasker 收掉之后再放 Resource：顺序反了会让还在引用的 tasker 拿到已销毁的句柄 */
+  if (S.runRes) { try { S.runRes.destroy() } catch (e) { /* ignore */ } S.runRes = null }
   if (S.ctrl) { try { S.ctrl.destroy() } catch (e) { /* ignore */ } S.ctrl = null }
   S.session = null
   return { ok: true }
@@ -1058,8 +1063,31 @@ function cmdFrameDiff(args) {
 async function buildResource(dirs) {
   const m = loadMaa()
   const res = new m.Resource()
-  for (const d of dirs) await res.post_bundle(d).wait()
+  try {
+    for (const d of dirs) await res.post_bundle(d).wait()
+  } catch (e) {
+    /* 加载中途失败也要把句柄收掉：否则每次失败的 run 都在 native 侧留一份 */
+    try { res.destroy() } catch (e2) { /* ignore */ }
+    throw e
+  }
   return res
+}
+
+/**
+ * 换掉"最近一次 run / --act 的 Resource"并销毁上一份。
+ *
+ * 每次新建保证了资源隔离（单包不再叠上一轮 bundle），但 native 句柄必须有释放点——否则长活
+ * REPL 里每 run 一次就多留一份（OCR 模型尤其重）。单线程下这么做安全的前提是"没有任务在飞"：
+ * `cmdRun` 有 `runActive` 守卫，`reco --act` 也是同步跑完；且 `tasker.resource` 已先指向新对象。
+ */
+function adoptRunResource(res) {
+  const prev = S.runRes
+  S.runRes = res
+  if (!prev || prev === res) return
+  /* 有任务在飞时不销毁上一份：tasker 可能仍引用它（act 可以在 run 期间被调用）。
+   * 那份会在下一次替换或 disconnect 时收掉——宁可晚收，不可早收。 */
+  if (S.runActive) return
+  try { prev.destroy() } catch (e) { /* ignore */ }
 }
 
 /**
@@ -1198,13 +1226,16 @@ function pickNodeName(m) {
 async function cmdRun(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   if (S.runActive) return { ok: false, error: '已有任务在运行（先 maa_run_stop）' }
-  /* 本次运行用自己的 Resource：项目模式是整条链，单包就是一段；两种都新建，
-   * 不把上一轮的 bundle 留在任何会话态里（见 buildResource 注释）。 */
   const resDirs = Array.isArray(args.resourceDirs) && args.resourceDirs.length
     ? args.resourceDirs.map(String)
     : (args.resourceDir ? [String(args.resourceDir)] : [])
   if (!resDirs.length) return { ok: false, error: '缺少 resourceDir（或 resourceDirs 数组）' }
+  /* 上一轮的 agent 子进程与 Resource 在这里收掉：走到这行必然没有任务在飞（runActive 守卫），
+   * 这一轮也不存在可复用的资源对象。放在参数校验之后——调用参数错了不该把上一份资源也丢掉。 */
+  await cleanupAgents()
+  if (S.runRes) { try { S.runRes.destroy() } catch (e) { /* ignore */ } S.runRes = null }
   const res = await buildResource(resDirs)
+  S.runRes = res
   /* agent 桥接：项目声明了 agent（PI interface 的 child_exec/child_args）就先连上——
    * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
   let agentInfo = null
@@ -1530,6 +1561,7 @@ async function recoActTest(args, node, dirs) {
   /* 资源链与识别路径同一份：节点里的模板/被引用子节点可能只在 overlay 段里。
    * 同样每次新建，不与会话里任何资源共享（act 会注册/注销 custom action，复用更不可取）。 */
   const res = await buildResource(dirs)
+  adoptRunResource(res)
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl

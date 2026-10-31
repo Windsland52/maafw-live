@@ -263,7 +263,7 @@ export const recoCommand: Command = {
           return fail('BAD_ARGUMENTS', '缺少资源目录：给 --resource-dir <dir>，或用 --project <dir> 让 interface.json 决定',
             nodeName !== undefined ? '--node-name 按资源里的原名跑，没有资源就没有节点可查' : undefined, EXIT.USAGE)
         }
-        /* 单包沿用旧字段名（daemon 侧走 ensureResource 复用）；整链才送 resourceDirs */
+        /* 单包沿用旧字段名 resourceDir（daemon 两种写法都收：单段还是整链）；整链才送 resourceDirs */
         const resources = chain.paths.length > 1 ? { resourceDirs: chain.paths } : { resourceDir: chain.paths[0] }
 
         if (act) {
@@ -403,7 +403,7 @@ export const recoCommand: Command = {
         /* 单例时逐例行已经写了原因，不再重复；多例（扫描）才给一条汇总 */
         if (verdict.missReason && results.length > 1) human.push('  未命中原因：' + verdict.missReason)
         else if (verdict.missReasons.length > 1) human.push('  未命中原因：' + verdict.missReasons.join(' / '))
-        /* 调用报错与未命中必须分开读：前者是"没跑成"，先看原生消息；退出码口径本版不动（提案 §3） */
+        /* 调用报错与未命中必须分开读：前者是"没跑成"，先看原生消息；两者都算 FINDINGS（见下方退出码） */
         const failedCount = verdict.perResult.filter((d) => d.failed).length
         if (failedCount > 0) {
           human.push('  识别调用报错 ' + failedCount + ' 例（上面标 [报错]）：这不是未命中，先处理原生消息，' +

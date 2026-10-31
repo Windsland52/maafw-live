@@ -143,7 +143,7 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 | cwd 在项目里自动探测资源 | 与"行为不变"冲突；cwd 碰巧在某个 Maa 项目里会让 OCR 模型/模板静默换源。快速层继续显式 `--resource-dir`；真实层显式 `--project`。`--resource` 已存在于 `CONNECT_OPTIONS`（`src/commands/runtime.ts:19-29`） |
 | `--matrix` | 输入形状、与 `--node`/`--param`/`--sweep`/`candidates` 的互斥、N 上限、信封形状都未定义，无法验收。另：`--sweep` 并非只能扫 `threshold`（`src/daemon/framed.mjs:1632` 是 `sweep.key \|\| 'threshold'`），缺的是**离散变体**；daemon 侧 `candidates` 已存在（`:1605-1613`），先考虑复用 |
 | 改 `resource[0]` fallback 语义 | "多资源且未指定就报错"会让最常用路径变重；保持现状，仅把链名打进回执 |
-| **reco 未命中的退出码** | **已对齐（review 后改）**：README `:181`、`src/protocol.ts` 的 FINDINGS 注释都写 miss → FINDINGS(3)，而实现与旧用例钉的是 0。现在：**未命中或识别调用报错 → 3**，全部命中 → 0；`--act` 失败、`RECO_CUSTOM_NODE`、`RECO_NODE_MISSING` 仍是 3。这是调用方可见的行为变更，用例与 CHANGELOG 已同步 |
+| **reco 未命中的退出码** | **已对齐（review 后改）**：README `:181`、`src/protocol.ts` 的 FINDINGS 注释都写 miss → FINDINGS(3)，而实现与旧用例钉的是 0。现在：**未命中或识别调用报错 → 3**，全部命中 → 0；多例按"任一例未中"判（`--sweep` 通常退 3）；`--act` 失败、`RECO_CUSTOM_NODE`、`RECO_NODE_MISSING` 仍是 3。这是调用方可见的行为变更，用例与 CHANGELOG 已同步 |
 
 ## 4. 互斥与作用域（写死，避免实现时吵）
 
@@ -219,6 +219,9 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 - **收口时补做的两项（review 后决定）**：
   - **资源生命周期**：删掉会话级的"当前资源"共享态（`S.res` 没有读者），`run` 与 `reco --act` 每次按本次
     的资源来源新建 `Resource`——单包 `run` 不再带着上一轮的 bundle 跑（原先只有项目模式是新建的）。
+    native 句柄有释放点：换新时销毁上一份、`disconnect` 时销毁、加载中途失败也回收；
+    有任务在飞时不提前销毁（`adoptRunResource` 的注释写清了前提）。**没有自动化回归**——`run` 要真设备，
+    这条不变量目前只靠所有权约定与注释。
   - **退出码**：`reco` 未命中或识别调用报错 → `FINDINGS(3)`，全部命中才 0（与 README 码表 / `protocol.ts`
-    的 FINDINGS 注释对齐，见 §3 末条）。
+    的 FINDINGS 注释对齐，见 §3 末条）；多例按"任一例未中"判，所以 `--sweep` 通常退 3。
 - **未做**：真机上的 `--act` 回归（本机无设备），见 §6。

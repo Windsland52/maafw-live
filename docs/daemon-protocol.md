@@ -16,7 +16,9 @@
 - **stderr**：同样是原生日志。
 - 不带 `--child` 时该模块无副作用，可直接 import（`__test` 导出纯函数用于无设备回归）。
 
-一进程一会话：**一个 daemon 子进程 = 一个设备会话**（一个 Controller + Resource + Tasker + 帧流）。
+一进程一会话：**一个 daemon 子进程 = 一个设备会话**（一个 Controller + Tasker + 帧流）。
+Resource 不是会话态：每次 `run` / `reco_test --act` 都按本次声明的资源来源新建，加载完的旧句柄
+会被销毁——同一份 Resource 上反复 `post_bundle` 是叠加语义，留着它会让下一次命令带着上一轮的 bundle 跑。
 同一台设备同一时刻只允许一个所有者；需要多设备就起多个子进程，但占用规则由调用方负责。
 
 ## 消息

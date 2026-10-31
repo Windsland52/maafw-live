@@ -485,3 +485,37 @@ test('CLI reco：--node-file 是缺 recognition 的单节点 → 报缺字段，
   assert.match(err, /缺少 recognition/, err)
   assert.doesNotMatch(err, /节点表/, '单节点缺字段不等于"文件里是节点表"：' + err)
 })
+
+test('CLI reco：多例（--sweep）任一例未命中 → FINDINGS(3)，全中才是 0', async () => {
+  /* 阈值扫描几乎必然有未中例：若按"最后一例/多数例"判，sweep 的退出码会随机漂。口径是"任一例未中"。 */
+  const replies = {
+    reco_test: {
+      type: 'TemplateMatch', meta: { source: IMAGE, w: 480, h: 270 },
+      results: [
+        { param: { threshold: 0.7 }, ms: 9, ok: true, detail: { hit: true, detail: { all: [{ score: 0.9 }] } } },
+        { param: { threshold: 0.9 }, ms: 9, ok: false, detail: { hit: false, detail: { all: [{ score: 0.82 }] } } },
+      ],
+    },
+  }
+  const mixed = await runCli(
+    ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,
+      '--sweep', '{"min":0.7,"max":0.9,"step":0.2}', '--json'],
+    replies,
+  )
+  assert.equal(mixed.code, 3, '9 中 1 不中 → 3：' + mixed.out)
+
+  const allHit = await runCli(
+    ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,
+      '--sweep', '{"min":0.7,"max":0.9,"step":0.2}', '--json'],
+    {
+      reco_test: {
+        type: 'TemplateMatch', meta: { source: IMAGE, w: 480, h: 270 },
+        results: [
+          { param: { threshold: 0.7 }, ms: 9, ok: true, detail: { hit: true, detail: { all: [{ score: 0.9 }] } } },
+          { param: { threshold: 0.9 }, ms: 9, ok: true, detail: { hit: true, detail: { all: [{ score: 0.9 }] } } },
+        ],
+      },
+    },
+  )
+  assert.equal(allHit.code, 0, '全中 → 0：' + allHit.out)
+})

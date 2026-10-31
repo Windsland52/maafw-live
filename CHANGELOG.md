@@ -39,6 +39,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **`reco` 的退出码对齐文档契约**：未命中 / 识别调用报错 → `FINDINGS(3)`，全部命中才是 0
   （README 码表与 `protocol.ts` 的 FINDINGS 注释一直这么写，实现此前钉的是 0）。**这是调用方可见的
   行为变更**：只看退出码的脚本会开始看到 3；`--act` 失败、`RECO_CUSTOM_NODE`、`RECO_NODE_MISSING` 仍是 3。
+  多例（`--sweep` / 候选批量）按"**任一例**未中"判——阈值扫描几乎必然有未中例，所以 sweep 通常退 3，
+  这是有意的：扫描结果本来就该被当"有发现"读。
 - `--node-name` 拼错时给**近邻节点名建议**（按资源 `node_list` 的编辑距离），不再只有一句"资源里没有"。
 - `env` 的 pin 对账认 Python 绑定的真实写法：`requirements.txt` 里的 `MaaFW` / `maafw`，以及 PEP 440
   预发布版本（`5.15.0b1` / `5.15.0rc1`）——CLI 5.14.2 与项目 `5.15.0b1` 这类差异现在会报警。
@@ -59,14 +61,14 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `^5.14.2` 顶掉 `requirements.txt` 里的精确 pin）。
 - **识别调用报错与未命中分开读**：子进程捕获异常时逐例标 `[报错]`、回执置 `failed: true`（一次性
   CLI 与 REPL 一致：REPL 单独一行，不再写成"未命中原因"）；同一回执里两种都有时两行都给，报错不会
-  把另一例的真未命中吞掉。退出码语义本版未改（未命中仍是 0）。
+  把另一例的真未命中吞掉。退出码随后已改为 `FINDINGS(3)`（见「变更」）。
 - **And / Or 里嵌的 Custom 子识别**同样报 `RECO_CUSTOM_NODE`（回执 `customPaths` 指出位置），
   不再落回 miss 或"调用报错"；dump 里 V1 字符串形态的 `recognition: "Custom"` 也不漏判——
   但只有落在**识别类型位**（`recognition` / `type`）的字符串才算，`expected: "Custom"` 这类参数值
   不会被误认成 Custom 识别。
 - **资源的会话共享态已删除**：`run` 与 `reco --act` 每次按本次的资源来源新建 `Resource`（原先单包走
-  会话资源，长活 REPL 里上一轮的 bundle 会残留到下一次 `run --resource-dir`）；`crop` / `annotate`
-  本来就各自 spawn 识别子进程，不受影响。
+  会话资源，长活 REPL 里上一轮的 bundle 会残留到下一次 `run --resource-dir`）；上一份在换新时销毁、
+  `disconnect` 时销毁，加载中途失败也不留句柄。`crop` / `annotate` 本来就各自 spawn 识别子进程，不受影响。
 
 ## [0.3.0] - 2026-10-10
 
