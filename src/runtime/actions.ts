@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import {
-  loadInterface, planController, resolveResourcePaths,
+  computePipelineOverride, loadInterface, mergeOverride, planController, resolveResourcePaths,
   type ControllerPlan, type DeviceLike, type LoadedInterface,
 } from '../interface/index.js'
 import { spawnDaemon, type DaemonClient, type SpawnOptions } from '../client/daemon.js'
@@ -214,4 +214,120 @@ export async function planProject(
   }, devices)
   const resource = resolveResourcePaths(loaded, controllerName ?? undefined, overrides.resource)
   return { loaded, plan, controllerName, resource }
+}
+
+/** `run` 的项目模式装配：入口解析、任务适用性、四级 override、agent 桥接。 */
+export interface ProjectRunInput {
+  /** 已规划的项目（`planProject` / REPL `connect project` 的产物） */
+  project: ProjectPlan
+  /** interface 的 task 名或 pipeline 入口名（两者都认，与一次性 CLI 同规则） */
+  entry: string
+  /** preset 名：取值覆盖 default_case（PI v2.3.0） */
+  presetName?: string | null
+  /** 用户 --override：最后覆盖合成结果 */
+  override?: Record<string, unknown>
+}
+
+/** 装配结果：要么可直接交给 `act.run`，要么是一份可行动的错误（不抛异常）。 */
+export type ProjectRunPrep =
+  | {
+      ok: true
+      /** 直接交给 act.run 的参数（资源整链 + 入口 + 合成 override + agent 声明） */
+      args: Record<string, unknown>
+      /** 解析后的 pipeline 入口名（interface task 名 → task.entry） */
+      entry: string
+      taskName: string | null
+      /** 生效记录：option=值（级别，via preset/default） */
+      applied: string[]
+      /** 需要人工注意的事项（option 无取值、pretask 未执行等） */
+      warns: string[]
+    }
+  | {
+      ok: false
+      code: string
+      error: string
+      hint?: string
+      warns: string[]
+    }
+
+/**
+ * 项目模式 run 的唯一装配点：一次性 CLI 与 REPL `run` 都走这里。
+ *
+ * 为什么必须共享：REPL 曾经只吃 `--override`、不叠 interface 的四级链，同一项目同一入口
+ * 在 REPL 里 option / preset / default_case 全部不生效——agent 主路径与一次性命令跑出两套
+ * 行为，而且不报错。入口解析、task 适用性、pretask/agent 警示也一并收口，避免第二份规则。
+ */
+export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
+  const { project, entry } = input
+  const { loaded } = project
+  const warns: string[] = []
+  const paths = project.resource?.paths ?? []
+  if (!paths.length) {
+    return {
+      ok: false,
+      code: 'RESOURCE_NOT_FOUND',
+      error: '项目里没有解析出资源路径：检查 interface.json 的 resource[] 声明',
+      warns,
+    }
+  }
+
+  const task = loaded.tasks.find((t) => t.name === entry || t.entry === entry)
+  const resolvedEntry = task?.entry ?? entry
+  const ctrlName = project.controllerName ?? null
+  const resName = project.resource?.selected ?? null
+
+  /* task 适用性（task.controller / task.resource 声明） */
+  if (task?.controller?.length && ctrlName && !task.controller.includes(ctrlName)) {
+    return {
+      ok: false,
+      code: 'TASK_NOT_APPLICABLE',
+      error: '任务 ' + task.name + ' 不支持当前控制器 ' + ctrlName + '（声明：' + task.controller.join(' / ') + '）',
+      hint: '换控制器（CLI 用 --controller <名>，REPL 重新 connect project）或选别的任务',
+      warns,
+    }
+  }
+  if (task?.resource?.length && resName && !task.resource.includes(resName)) {
+    warns.push('任务 ' + task.name + ' 声明资源 ' + task.resource.join(' / ') + '，当前选中的是 ' + resName)
+  }
+
+  /* pipeline_override 四级合并链（preset > default_case 取值） + 用户 --override 最后覆盖 */
+  const chain = computePipelineOverride({
+    loaded,
+    controllerName: ctrlName,
+    resourceName: resName,
+    taskName: task?.name ?? null,
+    presetName: input.presetName ?? null,
+  })
+  warns.push(...chain.warns)
+
+  if (loaded.pretask.length) {
+    warns.push('项目声明了 ' + loaded.pretask.length + ' 条 pretask（' +
+      loaded.pretask.map((p) => p.exec ?? p.name ?? '?').join(' , ') +
+      '），本工具不执行——需自行保证前置条件')
+  }
+  const agents = loaded.agents
+  if (agents.length) {
+    warns.push('项目声明了 ' + agents.length + ' 个 agent 子进程（' +
+      agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') +
+      '），run 时自动 spawn 并桥接——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
+  }
+
+  const override: Record<string, unknown> = { ...chain.override }
+  if (input.override) mergeOverride(override, input.override)
+
+  return {
+    ok: true,
+    args: {
+      resourceDirs: paths,
+      entry: resolvedEntry,
+      override,
+      /* agent 桥接：daemon spawn 子进程（identifier 追加为末参）并 bind/connect 到本次 Resource */
+      agents: agents.map((a) => ({ exec: a.exec, args: a.args })),
+      agentCwd: loaded.dir ?? undefined,
+    },
+    entry: resolvedEntry,
+    taskName: task?.name ?? null,
+    applied: chain.applied,
+    warns,
+  }
 }

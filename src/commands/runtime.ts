@@ -8,7 +8,6 @@ import { mkdirSync } from 'node:fs'
 import { watchLogs } from '../runtime/log-watch.js'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { defaultRunDir } from '../client/daemon.js'
-import { computePipelineOverride, mergeOverride } from '../interface/index.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
@@ -471,62 +470,24 @@ export const runCommand: Command = {
         const s = await ensureSession(client, o)
         let args: Record<string, unknown>
         let resolvedEntry: string = entry
-        let chain: ReturnType<typeof computePipelineOverride> | null = null
         let extraWarns: string[] = []
         let appliedLines: string[] = []
         if (o.project) {
-          const paths = s.plan?.resource?.paths ?? []
-          if (!paths.length) {
-            return fail('RESOURCE_NOT_FOUND', '项目里没有解析出资源路径：检查 interface.json 的 resource[] 声明', undefined, EXIT.FINDINGS)
-          }
-          const task = s.plan?.loaded.tasks.find((t) => t.name === entry || t.entry === entry)
-          resolvedEntry = task?.entry ?? entry
-          /* task 适用性（task.controller / task.resource 声明） */
-          const ctrlName = s.plan?.controllerName ?? null
-          const resName = s.plan?.resource?.selected ?? null
-          if (task?.controller?.length && ctrlName && !task.controller.includes(ctrlName)) {
-            return fail('TASK_NOT_APPLICABLE',
-              '任务 ' + task.name + ' 不支持当前控制器 ' + ctrlName + '（声明：' + task.controller.join(' / ') + '）',
-              '换 --controller ' + task.controller[0] + '，或选别的任务', EXIT.FINDINGS)
-          }
-          if (task?.resource?.length && resName && !task.resource.includes(resName)) {
-            extraWarns.push('任务 ' + task.name + ' 声明资源 ' + task.resource.join(' / ') + '，当前选中的是 ' + resName)
-          }
-          /* pipeline_override 四级合并链（preset > default_case 取值） + 用户 --override 最后覆盖 */
-          chain = computePipelineOverride({
-            loaded: s.plan!.loaded,
-            controllerName: ctrlName,
-            resourceName: resName,
-            taskName: task?.name ?? null,
+          /* 入口解析 / task 适用性 / 四级 override / agent 桥接只有一份实现：
+           * REPL `run` 调的是同一个 prepareProjectRun，不再各长一套规则。 */
+          const prep = act.prepareProjectRun({
+            project: s.plan!,
+            entry,
             presetName: typeof ctx.values.preset === 'string' ? ctx.values.preset : null,
+            override,
           })
-          extraWarns = [...extraWarns, ...chain.warns]
-          appliedLines = chain.applied
-          const pt = s.plan!.loaded.pretask
-          if (pt.length) {
-            extraWarns.push('项目声明了 ' + pt.length + ' 条 pretask（' + pt.map((p) => p.exec ?? p.name ?? '?').join(' , ') + '），本 CLI 不执行——需自行保证前置条件')
-          }
-          const agents = s.plan!.loaded.agents
-          if (agents.length) {
-            extraWarns.push('项目声明了 ' + agents.length + ' 个 agent 子进程（' +
-              agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') +
-              '），run 时自动 spawn 并桥接——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
-          }
-          args = {
-            resourceDirs: paths,
-            entry: resolvedEntry,
-            override: { ...chain.override },
-            timeoutMs,
-            /* agent 桥接：daemon spawn 子进程（identifier 追加为末参）并 bind/connect 到本次 Resource */
-            agents: s.plan!.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })),
-            agentCwd: s.plan!.loaded.dir ?? undefined,
-          }
+          if (!prep.ok) return fail(prep.code, prep.error, prep.hint, EXIT.FINDINGS)
+          args = prep.args
+          resolvedEntry = prep.entry
+          extraWarns = prep.warns
+          appliedLines = prep.applied
         } else {
           args = { resourceDir, entry, override, timeoutMs }
-        }
-        if (o.project && chain) {
-          /* 用户 --override 最后覆盖合成结果；与四级链共用同一份合并实现（非对象值原样替换） */
-          mergeOverride(args.override as Record<string, unknown>, override)
         }
         /* 运行期日志跟随：run 会阻塞到任务结束，期间帧流/事件都不可用（框架占住控制器），
          * 唯一还在更新的只有项目 agent 自己写的日志。给了 --watch 就在这里边跑边推。 */

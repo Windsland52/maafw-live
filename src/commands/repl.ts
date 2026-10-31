@@ -44,7 +44,7 @@ const HELP = [
   '  annotate [--out f.png] [--som-limit n] [--som-max-area-ratio r] [--from-kf kf:...]   SoM 候选与编号回画（回画优先全分辨率；库帧路径离线、diff 不可用）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
-  '  run <entry> [--timeout ms|0] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符）',
+  '  run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符；项目模式叠四级 override）',
   '  stop                           停止运行中的任务',
   '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] [--via "x,y;x,y"] | key <code> | text <string>',
   '       swipe --via 走 touch_down→逐点 touch_move→touch_up：**一条笔画画折线**（中途不抬手）',
@@ -617,11 +617,7 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
             }
             case 'run': {
               const entry = tokens[1]
-              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--override json] [--resource-dir d]'); break }
-              /* 任务名 → pipeline 入口解析（与一次性 CLI 同规则）：interface 的 task 名（如中文
-               * "启动游戏"）不是 pipeline 节点名，不解析会 task not exist 秒败 */
-              const task = state.plan?.loaded.tasks.find((t) => t.name === entry || t.entry === entry)
-              const resolvedEntry = task?.entry ?? entry
+              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d]'); break }
               const timeout = Number(readFlag(tokens, '--timeout') ?? 30000)
               const overrideRaw = readFlag(tokens, '--override')
               let override: Record<string, unknown> = {}
@@ -629,24 +625,42 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                 try { override = JSON.parse(overrideRaw) as Record<string, unknown> }
                 catch { out('--override 不是合法 JSON'); break }
               }
-              /* 资源目录：--resource-dir 优先，其次当前项目规划（connect project 的 interface.json） */
-              const resDirs = state.plan?.resource?.paths ?? []
+              /* 资源与 override：--resource-dir 显式单包（bundle 模式）；否则走 connect project
+               * 的项目规划，与一次性 CLI 共用 prepareProjectRun（入口解析 / task 适用性 /
+               * 四级 pipeline_override / agent 桥接都在那一个函数里）。 */
               const explicitDir = readFlag(tokens, '--resource-dir')
-              if (!explicitDir && !resDirs.length) {
+              const plan = state.plan
+              let args: Record<string, unknown>
+              let resolvedEntry = entry
+              let taskName: string | null = null
+              if (explicitDir) {
+                args = { resourceDir: explicitDir, entry, override, timeoutMs: timeout }
+              } else if (plan) {
+                const prep = act.prepareProjectRun({
+                  project: plan,
+                  entry,
+                  presetName: readFlag(tokens, '--preset') ?? null,
+                  override,
+                })
+                if (!prep.ok) {
+                  out('run 拒绝：' + prep.error + (prep.hint ? '\n  hint: ' + prep.hint : ''))
+                  for (const w of prep.warns) out('  警告：' + w)
+                  break
+                }
+                args = prep.args
+                resolvedEntry = prep.entry
+                taskName = prep.taskName
+                /* 生效记录与警示：与一次性 CLI 同一份。REPL 过去只有裸 --override，
+                 * 项目里的 GUI 选项在会话里静默不生效——调用方看不到任何差异。 */
+                for (const l of prep.applied) out('  override: ' + l)
+                for (const w of prep.warns) out('  警告：' + w)
+              } else {
                 out('缺资源：给 --resource-dir <dir>，或先 connect project <dir>')
                 break
               }
               /* 异步执行不阻塞提示符：--timeout 0 的长任务靠 stop 中断（同一条客户端连接） */
-              out('已提交 ' + resolvedEntry + (task && task.name !== resolvedEntry ? '（任务 ' + task.name + '）' : '') + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
-              const plan = state.plan
-              act.run(client, explicitDir
-                ? { resourceDir: explicitDir, entry: resolvedEntry, override, timeoutMs: timeout }
-                : {
-                    resourceDirs: resDirs, entry: resolvedEntry, override, timeoutMs: timeout,
-                    ...(plan?.loaded.agents.length
-                      ? { agents: plan.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })), agentCwd: plan.loaded.dir ?? undefined }
-                      : {}),
-                  }, timeout)
+              out('已提交 ' + resolvedEntry + (taskName && taskName !== resolvedEntry ? '（任务 ' + taskName + '）' : '') + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
+              act.run(client, args, timeout)
                 .then((r) => {
                   /* 回执不再 short() 截断（0.3.x 实测：截断让 record.nodes[] 在会话里永远不可见，
                    * "跑失败"变成"看不懂为什么失败"）。三件套替代：结论行（保住「run 完成：任务级 X」

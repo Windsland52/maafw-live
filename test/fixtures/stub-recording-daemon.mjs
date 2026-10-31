@@ -87,9 +87,10 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   const base = SHAPES[m.cmd] ?? { ok: true }
   const rule = RULES.find((r) => r && r.cmd === m.cmd && matches(m, r.when))
   const extra = rule ? rule.data : EXTRA[m.cmd]
-  const merged = extra && typeof extra === 'object' ? { ...base, ...extra } : base
-  const batch = extra && typeof extra === 'object' ? batchResults(m, extra) : null
+  /* 数组回执（`device_list` 这类按约定就是数组）不做对象合并，直接原样发出。 */
+  const merged = Array.isArray(extra) ? extra : extra && typeof extra === 'object' ? { ...base, ...extra } : base
+  const batch = !Array.isArray(extra) && extra && typeof extra === 'object' ? batchResults(m, extra) : null
   if (batch) merged.results = batch
-  delete merged.perCase
+  if (!Array.isArray(merged)) delete merged.perCase
   send({ kind: 'reply', id: m.id, ok: true, data: merged })
 })
