@@ -208,8 +208,13 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
     `ensureResource`，会把这一段叠进 REPL 长活会话的 `S.res`，之后 `run --resource-dir <别的包>` 就带着
     上一轮的 bundle 跑（`buildResource` 注释记的正是这个残留）。
   - OCR 模型判据按**合并规则**（见 §2.4 注）：`det` 与 `rec` 可跨段，`rec` 与 `keys` 必须同段。
-  - `env` 的 pin 对账：同 release 线只比 release（`5.15.0b1` 与 `5.15.0-beta.1` 是同一 pre-release 的两种
-    拼写，不算不一致）；两处声明都读，**精确优先于范围**，不让 `package.json` 的范围声明顶掉 Python 侧精确 pin。
-  - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，并在 human 里点名"这不是未命中"（退出码仍按 §3 不动）。
-  - And / Or 嵌套的 Custom 子识别也走 `RECO_CUSTOM_NODE`，回执 `customPaths` 指出位置。
-- **未做**：真机上的 `--act` 回归（本机无设备），见 §6；`reco` 未命中 / 调用报错的**退出码**语义（§3 冻结）。
+  - `env` 的 pin 对账：release 线与 **归一化后的** qualifier 都比（`5.15.0b1` 与 `5.15.0-beta.1` 是同一
+    pre-release 的两种拼写，算一致；而正式版 `5.14.2` 与同线预发布 `5.14.2b1` 是两份不同构建，要报）；
+    两处声明都读，**精确优先于范围**，不让 `package.json` 的范围声明顶掉 Python 侧精确 pin。
+  - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，一次性 CLI 与 REPL 都单独点名"这不是未命中"
+    （退出码仍按 §3 不动）。
+  - And / Or 嵌套的 Custom 子识别也走 `RECO_CUSTOM_NODE`，回执 `customPaths` 指出位置；dump 里 V1
+    字符串形态（`recognition: "Custom"`）同样不漏判。
+- **未做**：真机上的 `--act` 回归（本机无设备），见 §6；`reco` 未命中 / 调用报错的**退出码**语义（§3 冻结）；
+  `run --resource-dir` 的资源生命周期（仍走 `ensureResource`，长活会话里上一轮 bundle 会残留——与本次探针
+  修的是同一类问题，但要单独改 `run`，不在 v0 面内）。

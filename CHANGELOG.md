@@ -50,13 +50,17 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `run --resource-dir <别的包>` 会带着上一轮的 bundle 跑。
 - **OCR 模型判据按框架的合并规则**：`det.onnx` 与 `rec.onnx` 可以来自不同资源段，`rec.onnx` 与
   `keys.txt` 必须同段；只看"某一段三件套齐全"会把拆分存放误报成"模型不在资源链里"。
-- **`env` 的 pin 对账不误报**：同 release 线只比 release（`5.15.0b1` 与 `5.15.0-beta.1` 是同一
-  pre-release 的两种拼写）；两处声明都读，精确声明优先于范围声明（不让 `package.json` 的 `^5.14.2`
-  顶掉 `requirements.txt` 里的精确 pin）。
-- **识别调用报错与未命中分开读**：子进程捕获异常时逐例标 `[报错]`、回执置 `failed: true`，并给一条
-  "这不是未命中"的提示；退出码语义本版未改（未命中仍是 0）。
+- **`env` 的 pin 对账不误报也不漏报**：release 线与**归一化后的** qualifier 都比——`5.15.0b1` 与
+  `5.15.0-beta.1` 是同一 pre-release 的两种生态拼写（算一致），而正式版 `5.14.2` 与同线预发布
+  `5.14.2b1` 是两份不同构建（要报）；两处声明都读，精确声明优先于范围声明（不让 `package.json` 的
+  `^5.14.2` 顶掉 `requirements.txt` 里的精确 pin）。
+- **识别调用报错与未命中分开读**：子进程捕获异常时逐例标 `[报错]`、回执置 `failed: true`（一次性
+  CLI 与 REPL 一致：REPL 单独一行，不再写成"未命中原因"），并给一条"这不是未命中"的提示；
+  退出码语义本版未改（未命中仍是 0）。
 - **And / Or 里嵌的 Custom 子识别**同样报 `RECO_CUSTOM_NODE`（回执 `customPaths` 指出位置），
-  不再落回 miss 或"调用报错"。
+  不再落回 miss 或"调用报错"；dump 里 V1 字符串形态的 `recognition: "Custom"` 也不再漏判。
+- **已知残余**：`run --resource-dir` 仍走 `ensureResource`，长活会话里上一轮的 bundle 会残留到下一次
+  单包 `run`（与 `buildResource` 注释里记的是同一类问题，需要单独改 `run` 的资源生命周期）。
 
 ## [0.3.0] - 2026-10-10
 

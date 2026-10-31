@@ -130,7 +130,13 @@ function nearestNames(names, target, limit) {
 function customHits(dump) {
   const hits = []
   const walk = (v, path, depth) => {
-    if (hits.length >= 8 || depth > 6 || !v || typeof v !== "object") return
+    if (hits.length >= 8 || depth > 6 || v === null || v === undefined) return
+    if (typeof v === "string") {
+      /* V1 形态：dump 正常是 V2 对象，但 `recognition: "Custom"` 这种字符串形态不能漏 */
+      if (v === "Custom") hits.push(path)
+      return
+    }
+    if (typeof v !== "object") return
     if (Array.isArray(v)) {
       v.forEach((x, i) => walk(x, path + "[" + i + "]", depth + 1))
       return

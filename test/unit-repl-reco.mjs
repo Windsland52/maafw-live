@@ -434,3 +434,20 @@ test('repl reco：类型是位置参数——选项/ k=v 打头时回缺省类�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('repl reco：调用报错单独一行，不混进"未命中原因"', async () => {
+  const { out, code } = await runRepl(
+    ['reco OCR --resource-dir R', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: {
+          type: 'OCR', meta: { seq: 2, w: 480, h: 270 },
+          results: [{ param: {}, ms: 257, ok: false, error: 'No graph was found in the protobuf.', detail: null }],
+        },
+      }),
+    },
+  )
+  assert.equal(code, 0, out)
+  assert.match(out, /识别调用报错 1 例（\[报错\]，不是未命中）/, out)
+  assert.doesNotMatch(out, /未命中原因：识别调用报错/, '别把它说成未命中：' + out)
+})

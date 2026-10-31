@@ -106,14 +106,36 @@ function exactVersion(spec: string): string | null {
 }
 
 /**
- * 把精确版本拆成 release 线与 qualifier：`5.15.0b1` → `5.15.0` + `b1`。
- *
- * 对账要分别看两段：release 线不同是换了个版本，qualifier 不同是同一条线上另一份构建。
- * 只比字符串会把 `5.15.0` 与 `5.15.0b1` 当成无关，只比 release 又会把预发布报成一致。
+ * qualifier 归一化：同一个 pre-release 在两个生态里写法不同，比较前先落到同一形态。
+ *   `-beta.1` / `beta.1` / `beta1` / `b1` → `b1`；`alpha` → `a`；`rc` / `pre` / `preview` → `rc`；
+ *   `.dev1` → `dev1`；`.post1` → `post1`；没有后缀 → 空串（正式版）。
+ * 认不出的后缀原样保留：宁可把它判成不一致，也不要凭猜测把两个不相干的后缀当同一个。
  */
-function splitRelease(version: string): { release: string; qualifier: string } | null {
+export function normalizeQualifier(qualifier: string): string {
+  const body = qualifier.trim().toLowerCase().replace(/^[-+_.]/, '')
+  if (body === '') return ''
+  const m = /^(alpha|beta|pre|preview|rc|a|b|c|post|dev)\.?(\d*)$/.exec(body)
+  if (!m) return body
+  const kind = m[1]!
+  const num = m[2] ?? ''
+  const canon = kind === 'alpha' ? 'a'
+    : kind === 'beta' ? 'b'
+      : kind === 'pre' || kind === 'preview' ? 'rc'
+        : kind
+  return canon + num
+}
+
+/**
+ * 把精确版本拆成 release 线与**归一化后的** qualifier：`5.15.0b1` → `5.15.0` + `b1`，
+ * `5.15.0-beta.1` 同样落到 `5.15.0` + `b1`。
+ *
+ * 对账要分别看两段：release 线不同是换了个版本；release 相同而 qualifier 不同是**同一条线上的
+ * 另一份构建**（正式版 vs 预发布、b1 vs rc1 都是）。只比字符串会把两种拼写当不一致；
+ * 只比 release 又会把正式版与预发布报成一致——两头都错。
+ */
+export function splitRelease(version: string): { release: string; qualifier: string } | null {
   const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(version.trim())
-  return m ? { release: m[1]!, qualifier: m[2] ?? '' } : null
+  return m ? { release: m[1]!, qualifier: normalizeQualifier(m[2] ?? '') } : null
 }
 
 function pinFromPackageJson(root: string): MaaNodePin | null {
@@ -285,9 +307,9 @@ export const envCommand: Command = {
           detail: `${pin.declared}（${pin.source}）—— CLI 实际加载的 maa-node 未安装，无法比对`,
         })
       } else {
-        /* 只按 release 线判：`5.15.0b1` 与 `5.15.0-beta.1` 是同一条线上的同一份构建，只差两个
-           生态的写法；报成不一致，用户会去改一条本来正确的 pin。qualifier 的差别只在 detail
-           里陈述，不升级成 warning。 */
+        /* 两段都比、且 qualifier 先归一化：`5.15.0b1` 与 `5.15.0-beta.1` 是同一份构建的两种
+           生态写法（不算不一致）；而正式版 `5.14.2` 与预发布 `5.14.2b1` 是同一条线上的两份
+           不同构建（要报）。只比字符串会把前者误报、只比 release 会把后者漏报。 */
         const pinV = splitRelease(pin.exact)
         const runV = splitRelease(self.version)
         const mismatch = (): void => {
@@ -308,7 +330,11 @@ export const envCommand: Command = {
           }
         } else if (pinV.release !== runV.release) {
           mismatch()
-        } else if (pinV.qualifier === runV.qualifier) {
+        } else if (pinV.qualifier !== runV.qualifier) {
+          /* 同 release 线但 qualifier 不同 = 同一条线上的另一份构建（正式版 vs b1、b1 vs rc1），
+           * 仍然是"跑的不是 pin 的那份"，要报。归一化只抹平两个生态的拼写（b1 / beta.1）。 */
+          mismatch()
+        } else if (pin.exact === self.version) {
           items.push({
             key: 'maa-node pin',
             status: 'ok',
@@ -319,8 +345,8 @@ export const envCommand: Command = {
             key: 'maa-node pin',
             status: 'ok',
             detail:
-              `同 release 线 ${pinV.release}：声明 ${pin.exact} / 实际 ${self.version}` +
-              `（拼写不同不算不一致）`,
+              `同版本 ${pinV.release}${pinV.qualifier ? '-' + pinV.qualifier : ''}：` +
+              `声明 ${pin.exact} / 实际 ${self.version}（两种拼写指向同一份构建）`,
           })
         }
       }

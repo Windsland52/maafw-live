@@ -8,7 +8,8 @@
  *    的精确 pin——范围回答不了「跑的是不是同一版」这个等式；
  * 3. requirements.txt 里真正的包名是 `MaaFW`（PyPI），版本是 PEP 440 的 `5.15.0b1` 这类预发布：
  *    包名要大小写不敏感、预发布要算精确版本；同 release 线的 qualifier 拼写差异
- *    （`5.15.0b1` 与 `5.15.0-beta.1`）指的是同一份构建，不算不一致。
+ *    （`5.15.0b1` 与 `5.15.0-beta.1`）指的是同一份构建，不算不一致；而正式版与同线预发布
+ *    （`5.14.2` vs `5.14.2b1`）是两份不同构建，要报。
  *
  * 「CLI 实际加载的版本」现场从仓库根跑一次 env 读出，不硬编码：依赖升级不该让这组用例假红/假绿。
  */
@@ -231,7 +232,7 @@ test('env：PEP 440 的 5.15.0rc1 也判精确（不是范围声明）', { timeo
   )
 })
 
-test('env：同 release 线、qualifier 拼写不同 → ok，不算不一致', { timeout: 60000 }, async (t) => {
+test('env：同 release 线、qualifier 不同（正式版 vs 预发布）→ 不一致，要报', { timeout: 60000 }, async (t) => {
   const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(SELF_VERSION)
   assert.ok(m, 'self 版本不是 x.y.z 形态：' + SELF_VERSION)
   /* 造一个「同 release 线、qualifier 一定不同」的 pin：self 无后缀就加 b1，有后缀就剥掉 */
@@ -239,11 +240,15 @@ test('env：同 release 线、qualifier 拼写不同 → ok，不算不一致', 
   const dir = makeProject(t, { requirements: `MaaFW==${PIN}\n` })
   const { env } = await envelope(['env'], dir)
   assert.equal(env.data.maaNodePin.exact, PIN)
-  assert.deepEqual(env.warnings, [], '同 release 线的拼写差异不是不一致：' + JSON.stringify(env.warnings))
+  assert.equal(
+    env.warnings.filter((w) => w.includes('maa-node')).length,
+    1,
+    '正式版与同线预发布是两份构建，要报：' + JSON.stringify(env.warnings),
+  )
   const { out } = await runCli(['env'], dir)
   const line = itemLine(out, 'maa-node pin')
   assert.ok(line, '缺少 maa-node pin 行：' + out)
-  assert.match(line, /\[\s*ok\s*\]/, line)
+  assert.match(line, /\[\s*warn\s*\]/, line)
   assert.ok(line.includes(PIN) && line.includes(SELF_VERSION), '两个完整版本都要写进 detail：' + line)
 })
 
@@ -263,18 +268,36 @@ test('env：package.json 只有范围时，requirements.txt 的精确 pin 不能
   assert.ok(env.warnings[0].includes(SELF_VERSION), '要报出 CLI 实际加载的版本：' + env.warnings[0])
 })
 
-test('env：package.json 写 npm 预发布拼写 5.14.2-beta.1 → 同 release 线，ok 且无 warning', { timeout: 60000 }, async (t) => {
+test('env：package.json 写 npm 预发布拼写 5.14.2-beta.1 → 预发布 ≠ 同 release 线的正式版，要报', { timeout: 60000 }, async (t) => {
   const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(SELF_VERSION)
   assert.ok(m, 'self 版本不是 x.y.z 形态：' + SELF_VERSION)
-  const PIN = `${m[1]}-beta.1`
+  /* 与 self 的 qualifier 拉开：self 是稳定版就用 beta，self 本身是 beta 就换 rc */
+  const selfQ = m[2] ? m[2].toLowerCase() : ''
+  const PIN = selfQ.includes('beta') || selfQ.includes('b1') ? `${m[1]}-rc.1` : `${m[1]}-beta.1`
   const dir = makeProject(t, { pin: PIN })
   const { env } = await envelope(['env'], dir)
   assert.deepEqual(env.data.maaNodePin, { source: 'package.json', declared: PIN, exact: PIN })
-  assert.deepEqual(env.warnings, [], '同 release 线不产生 warning：' + JSON.stringify(env.warnings))
+  assert.equal(env.warnings.length, 1, '同 release 线但 qualifier 不同要报：' + JSON.stringify(env.warnings))
   const { out } = await runCli(['env'], dir)
   const line = itemLine(out, 'maa-node pin')
   assert.ok(line, '缺少 maa-node pin 行：' + out)
-  assert.match(line, /\[\s*ok\s*\]/, line)
+  assert.match(line, /\[\s*warn\s*\]/, line)
   assert.ok(line.includes(PIN), 'detail 要写出声明的完整版本：' + line)
   if (PIN !== SELF_VERSION) assert.ok(line.includes(SELF_VERSION), 'detail 要写出实际版本：' + line)
+})
+
+test('unit: qualifier 拼写归一化——b1 / beta.1 / beta1 是同一份构建，正式版与预发布不是', async () => {
+  const { splitRelease } = await import('../lib/commands/env.js')
+  const py = splitRelease('5.15.0b1')
+  const npm = splitRelease('5.15.0-beta.1')
+  assert.deepEqual(py, npm, '两种生态拼写要落到同一形态：' + JSON.stringify([py, npm]))
+  assert.equal(py.release, '5.15.0')
+  assert.equal(py.qualifier, 'b1')
+
+  assert.equal(splitRelease('5.14.2').qualifier, '', '无后缀 = 正式版')
+  assert.notDeepEqual(splitRelease('5.14.2'), splitRelease('5.14.2b1'), '正式版与同线预发布不是同一份构建')
+  assert.equal(splitRelease('5.14.2rc1').qualifier, 'rc1')
+  assert.equal(splitRelease('5.14.2.dev1').qualifier, 'dev1')
+  assert.equal(splitRelease('5.14.2-alpha.2').qualifier, 'a2')
+  assert.notDeepEqual(splitRelease('5.14.2b1'), splitRelease('5.14.2rc1'), '同一 release 线的不同预发布要分得开')
 })
