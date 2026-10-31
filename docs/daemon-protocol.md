@@ -27,7 +27,7 @@ Resource 不是会话态：每次 `run` / `reco_test --act` 都按本次声明�
 |---|---|---|
 | `{ id, cmd, ...args }` | 调用方 → daemon | 请求；`id` 由调用方自增，`-1` 可作一次性通知 |
 | `{ kind:'reply', id, ok, data }` | daemon → 调用方 | 应答成功 |
-| `{ kind:'reply', id, ok:false, error }` | daemon → 调用方 | 应答失败（业务失败也是这一形状，不抛异常） |
+| `{ kind:'reply', id, ok:false, error }` | daemon → 调用方 | 命令在 daemon 侧**抛异常**（客户端 `call` 会 reject）；**业务失败通常是外层 `ok:true` + 回执 `data.ok:false`**（各命令在回执里自述 error），消费方按 `data.ok` 判业务结果，别把外层 `ok` 当结论 |
 | `{ kind:'frame', meta, preview? }` | daemon → 调用方 | 每接受一帧的元数据；`preview` 是预览帧 PNG 路径 |
 | `{ kind:'event', ev }` | daemon → 调用方 | 画面变化/稳定事件与 Tasker 节点消息（按帧序对齐） |
 | `{ kind:'stream_error', error }` | daemon → 调用方 | 帧流自身出错（设备掉线等），流可能已停 |
@@ -46,11 +46,12 @@ Resource 不是会话态：每次 `run` / `reco_test --act` 都按本次声明�
 | `init` | `runDir`、`kfQuotaBytes?`（字节，>0 生效；缺省 1GiB，env `MAAFW_KF_QUOTA_BYTES` 亦可覆盖；env `MAAFW_NOTIFY_DUMP=<file>` 把框架原始通知逐行 JSON 落盘，用于诊断"记录字段到底是谁填的"，默认关） | `{ ok, previewPath, daemonId, framesDir, kfQuota }`；设定预览帧落盘路径与关键帧库磁盘配额。应在 spawn 后立刻发一次——本仓客户端把它当**握手**（`client.init()`）：回执里的 framesDir / daemonId / kfQuota 对宿主可见，无应答或失败会如实回报并进错误环，不再被静默丢弃 |
 | `probe` | — | `{ version, adb, win32, errors[] }`：绑定版本与设备发现数 |
 | `device_list` | `kind: all\|adb\|win32` | 设备数组：`{ kind, id, name, cls?, adbPath? }` |
-| `connect` | `kind: adb\|win32\|gamepad`，`target`，可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session, streamStopped? }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller**——因此若上一轮在跑帧流，本次连接会**显式停掉它并回 `streamStopped:true`**，同时向订阅者推一条 `stream_stopped`（要看帧就重新 `stream_start`；旧行为是流循环静默死掉而状态仍报"在跑"） |
+| `connect` | `kind: adb\|win32\|gamepad\|playcover\|macos\|linux`（playcover/macos 仅 macOS，linux 仅 Linux），`target`（adb 地址 / win32·gamepad hwnd·窗口标题·类名 / playcover `<address>/<uuid>` / macos 窗口 id·标题 / linux config JSON），可选 `screencap`/`mouse`/`keyboard`/`gamepadType`（枚举名；`screencap` 用于 win32/gamepad/macos，`mouse`/`keyboard` 仅 win32，`gamepadType` 仅 gamepad；macos 的输入方法当前不开放选择（用绑定默认 GlobalEvent））、`uuid?`（playcover，也可写在 target 里）、`config?`（linux，等价于 target 的 JSON），可选 `shortSide`/`longSide`/`rawSize` | `{ ok, session, streamStopped? }`；`session` 含 `kind/target/name/cls/method/resolution/warns`。**会先销毁已有 Controller**——因此若上一轮在跑帧流，本次连接会**显式停掉它并回 `streamStopped:true`**，同时向订阅者推一条 `stream_stopped`（要看帧就重新 `stream_start`；旧行为是流循环静默死掉而状态仍报"在跑"）；连接失败（`post_connection` 非成功）回 `data.ok:false` 的 `{ok:false,error}`，不登记控制器/会话 |
 | `disconnect` | — | `{ ok }`；停流、销毁 Tasker/Controller。adb 的 destroy 偶发阻塞 → 客户端超时后硬杀自愈 |
 | `screencap` | `out` | `{ ok, path, bytes }` 或 `{ error }` |
 | `stream_start` | `fps`(1-30)、`scale`(160-1280)、`maxFrames`(20-600)；可选 `l0Roll`/`l0Anchor`/`l0Bytes`/`blockThresh`/`changeGlobal`（L0 与变化检测调优） | `{ ok, fps, scale, maxFrames }` |
 | `stream_stop` / `stream_status` | — | 状态含 `running, fps, scale, maxFrames, seq, ring, events, full, session` |
+| `events_list` | `since?`（只取 `seq > since` 的事件）、`limit?`（只取尾部，默认 20） | `{ ok, total, matched, cap, truncated, events[] }`；事件环活在 daemon 里，而一次性 CLI 退出即断连——所以由 daemon 按需吐出（与 REPL 的 `events` 是同一份 `S.events`，上限 1200 条）。`total` 是环内总数、`matched` 是 `since` 过滤后的条数、`truncated` 表示被 `limit` 截过（只截尾部）；`events[].frame` 是画面锚点（`{seq, retained: 'l0'\|'gone', source?, w?, h?}`；`l0` 时带尺寸、`gone` 时只有 seq），据此再 `frame_get`。CLI `maafw-live events` 走这条命令 |
 | `frame_get` | `seq?`（缺省最新）、`roi?: [x,y,w,h]`、`out?`、**`src?: auto\|full\|ring`**（缺省 `auto`） | `{ ok, path, bytes, w, h, seq, t, diff, ctrlW, ctrlH, source, sourceResolution, degraded, requested?, warn? }`。`roi` 是**控制器分辨率坐标**，与 pipeline 里的 roi 同空间。<br>**带 `roi` 时**：`auto` 先从该 seq 的 L0 全分辨率原图 1:1 裁（`source:"l0-full"`、`sourceResolution:1`），L0 已淘汰才退环形缓冲小图（`source:"l1-ring"`）并**附 warn**；`full` 只要原图，淘汰即报错——**绝不拿一张缩小图冒充**；`ring` 强制小图（显式选择，不附警告）。<br>**不带 `roi`（整帧）时**：**只有显式 `full` 才是 L0 原图**；`auto` / `ring` 一律给环形缓冲那一帧（既有契约，`sourceResolution` 如实标注）——整帧小图是缺省行为而非降级，**不警告、不判 findings**，否则最普通的 `frame get`（不带 roi）会时不时退 3。<br>**`degraded`** 是**相对"调用方要什么"**的判断，不是"分辨率 < 1"：带 `roi` 的 `auto` 退成小图才算降级（`true` + warn，CLI 退出 3）；显式 `ring` 与整帧小图都是预期行为（`false`）。消费方按这个字段决定要不要报警，别拿 `sourceResolution` 自己反推。<br>**⚠ 行为变更（0.2.0 → 未发布）**：**仅**带 `roi` 的缺省路径由"必走 L1 小图"变为"有 L0 就用控制器分辨率原图"；不带 `roi` 的整帧行为**未变**。依赖 `w/h` 恒为小图尺寸的消费方请显式传 `src=ring`，或改读 `sourceResolution` |
 | `frame_diff` | `a`、`b`（两个缓冲 seq）、`rois: [[x,y,w,h],…]`（控制器分辨率） | `{ ok, a, b, dtMs, rois[{roi,meanDiff,maxDiff,pixels}], ranked, sourceResolution, note }`。**回答"这一步究竟改了哪几块 / 哪几格"**——帧流事件只给整帧 bbox，而离散网格（棋盘 / 背包 / 技能格）要的是每格变了多少。`ranked` 按 `meanDiff` 降序给 roi；`meanDiff` 是 0..255 的平均亮度差，**判"变了/没变"的闸门要先用静止画面实测**（同 calibrate 的思路），不当普适常数用 |
 | `wait` | `mode: stable\|change`、`timeout?`（ms，200–120000，默认 10000）、`quiet?`（ms，默认 600）、`roi?`、`threshold?`（默认 3） | `{ ok, mode, satisfied, waitedMs, seq, quietMs, roi?, threshold?, lastRoiMeanDiff?, warn? }`。**状态谓词：等到条件成立再往下读，取代调用方硬睡时钟**。判据复用帧流同一套（最近 `quietMs` 内有无 `change` 事件 + 可选 ROI 内逐帧均值差 `>= threshold` 记为"在动"），不另立阈值口径。**超时不是命令失败**：`ok:true` + `satisfied:false`（CLI 退出码 3）——"没等到"是观测结果。环形缓冲一帧都没有时**直接报错**，不空转到超时再给"画面持续变化"这种假原因。`change` 的回看窗口含命令开始前 `quietMs` 内的事件，所以紧接 `click` 之后的 `wait change` 可能秒满足——它说的是"**动了**"，不说明"到了目标界面"；到了哪一屏要用识别或留存帧复核 |
@@ -96,7 +97,7 @@ Resource 不是会话态：每次 `run` / `reco_test --act` 都按本次声明�
 ## 稳定性约定
 
 - 命令**只增不改**：参数名与返回字段名一律不重命名，删字段等于静默破坏所有消费者。
-- 新增命令请同时更新本文件与 `src/client/daemon.ts` 的类型。
+- 新增命令请同时更新本文件与 `src/runtime/actions.ts` 的封装/类型（客户端是泛型 `call`；逐命令回执类型在 actions 层）。
 - 帧元数据与事件的字段同样只增不改（面板与 timing 反推都按字段名读取）。
 
 ## 复用示例

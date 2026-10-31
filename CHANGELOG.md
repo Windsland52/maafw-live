@@ -80,6 +80,14 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （加载失败时上一份原样保留）；`reco --act` 在有任务运行时直接拒绝——它会改写 `tasker.resource`，
   等于把正在跑的任务的资源换掉。`crop` / `annotate` 本来就各自 spawn 识别子进程，不受影响。
 
+### 文档
+
+- `docs/daemon-protocol.md` 补齐合同：新增 `events_list`（此前已落地并被 CLI `events` 调用，命令表里
+  却没有）；`connect` 的 kind 集补 `playcover` / `macos` / `linux` 与平台限制、`target` 形态、各 kind
+  可用的可选参数；修正 reply 的 `ok:false` 语义（它只对应 daemon 抛异常；业务失败通常是外层
+  `ok:true` + `data.ok:false`），并写明连接失败不登记会话；"新增命令要更新哪里"改指向
+  `src/runtime/actions.ts` 的封装（客户端本身是泛型 `call`）。
+
 ## [0.3.0] - 2026-10-10
 
 来源于《重返未来：1999》活动小游戏「众声的谱成」的从零实战压测（观测 → 定标 → 交互全链路）。
