@@ -129,23 +129,25 @@ function nearestNames(names, target, limit) {
  */
 function customHits(dump) {
   const hits = []
-  const walk = (v, path, depth) => {
+  /* key 要一起带下来：字符串 `"Custom"` 只有落在**识别类型位**上才算（V1 的 `recognition` / V2 的
+   * `type`）。整棵子树里任何字符串都认会把 `expected: "Custom"`（OCR 要认的文字）和名字恰好叫
+   * Custom 的引用节点误判成 Custom 子识别。 */
+  const walk = (v, path, key, depth) => {
     if (hits.length >= 8 || depth > 6 || v === null || v === undefined) return
     if (typeof v === "string") {
-      /* V1 形态：dump 正常是 V2 对象，但 `recognition: "Custom"` 这种字符串形态不能漏 */
-      if (v === "Custom") hits.push(path)
+      if (v === "Custom" && (key === "recognition" || key === "type")) hits.push(path)
       return
     }
     if (typeof v !== "object") return
     if (Array.isArray(v)) {
-      v.forEach((x, i) => walk(x, path + "[" + i + "]", depth + 1))
+      v.forEach((x, i) => walk(x, path + "[" + i + "]", null, depth + 1))
       return
     }
     if (typeof v.type === "string" && v.type === "Custom") { hits.push(path + ".type"); return }
     if (v.custom_recognition !== undefined) { hits.push(path + ".custom_recognition"); return }
-    for (const [k, x] of Object.entries(v)) walk(x, path === "" ? k : path + "." + k, depth + 1)
+    for (const [k, x] of Object.entries(v)) walk(x, path === "" ? k : path + "." + k, k, depth + 1)
   }
-  walk(dump && dump.recognition, "recognition", 0)
+  walk(dump && dump.recognition, "recognition", "recognition", 0)
   return hits
 }
 
@@ -198,7 +200,8 @@ async function main() {
      * And / Or 里嵌的子识别同样算——它们会在 run_recognition 里被真的走到。 */
     const customs = customHits(nodeDump)
     if (customs.length > 0) {
-      const onlyTop = customs.length === 1 && customs[0] === "recognition.type"
+      const onlyTop = customs.length === 1
+        && (customs[0] === "recognition.type" || customs[0] === "recognition")
       writeOut({
         ok: false, code: "CUSTOM_NODE", nodeName: cfg.nodeName, nodeDump, resourceDirs: dirs, customPaths: customs,
         error: onlyTop

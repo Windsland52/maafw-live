@@ -21,6 +21,7 @@
  *  I10 近邻节点名来自真实 node_list：拼错一个字能建议回正确名字（A10）
  *  I11 等价性：nodeDump 落文件再 `--node-file`，hit / box 与 `--node-name` 一致（A11）
  *  I12 And 里嵌的 Custom 子识别同样走 RECO_CUSTOM_NODE，不落回 miss（A12）
+ *  I13 参数值 / 引用名里的 "Custom" 不是识别类型位，不能被认成 Custom 子识别（A13）
  *
  * 临时项目建在系统临时目录、结束递归删除；不写仓库目录、不连设备。
  *
@@ -112,6 +113,8 @@ try {
       recognition: 'And',
       all_of: [{ recognition: 'DirectHit' }, { recognition: 'Custom', custom_recognition: 'NoSuchReco' }],
     },
+    /* 名字碰巧是 Custom 的**参数值**（OCR 要认的文字）：不是 Custom 识别，不能被认成子识别 */
+    ExpectedCustomText: { recognition: 'OCR', expected: 'Custom' },
   })
   /* 同名改写：overlay 段里 BaseDirect 换成 ColorMatch——用来证明"后声明的覆盖先声明的" */
   writeJson(path.join(OVERLAY, 'pipeline', 'overlay.json'), {
@@ -260,6 +263,16 @@ try {
     a12.env?.error?.code === 'RECO_CUSTOM_NODE', diag(a12))
   check('A12c 回执 customPaths 指向嵌套位置',
     j(d12?.customPaths).includes('all_of'), diag(a12) + ' customPaths=' + j(d12?.customPaths))
+
+  /* ── ⑪ 参数值里的 "Custom" 不是 Custom 识别 ─────────────────────────── */
+  console.log('⑪ OCR 的 expected 恰好是 "Custom"：不能被认成 Custom 子识别')
+  const a13 = reco(['--project', dir, '--node-name', 'ExpectedCustomText', '--image', PNG])
+  const d13 = a13.env?.data
+  check('A13a 退出 0（OCR 正常跑完，只是未命中）', a13.code === 0, diag(a13))
+  check('A13b 没有 RECO_CUSTOM_NODE（参数值不是识别类型位）',
+    a13.env?.error?.code !== 'RECO_CUSTOM_NODE', diag(a13))
+  check('A13c missReason 指向 OCR 模型缺失',
+    /OCR 模型不在资源链里/.test(String(d13?.missReason)), diag(a13) + ' missReason=' + j(d13?.missReason))
 } finally {
   fs.rmSync(dir, { recursive: true, force: true })
 }

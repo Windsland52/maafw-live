@@ -198,8 +198,9 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
   `readNodeFile` / `readParamFile`），并有 `--param-file`；`-`（stdin）在 REPL 里直接拒绝（stdin 是命令流）。
 - **可重复验收**：`npm run accept:reco-node`（`scripts/accept-reco-node.mjs`）用真 daemon 离线起
   base + overlay + attach 的最小项目，钉住 overlay 覆盖、attach 进链、Custom 与查无节点两种失败、
-  近邻节点名（真 `node_list` 上的编辑距离）、OCR 模型缺失，以及 §5 的等价性——把 `nodeDump`
-  落成文件再 `--node-file` 跑一遍，`hit` / `box` 与 `--node-name` 一致。
+  近邻节点名（真 `node_list` 上的编辑距离）、OCR 模型缺失、And 内嵌 Custom、参数值里的 `"Custom"`
+  不算识别类型，以及 §5 的等价性——把 `nodeDump` 落成文件再 `--node-file` 跑一遍，`hit` / `box`
+  与 `--node-name` 一致。
 - **实现期修掉的两处口径**：REPL 的 `reco` 类型是位置参数，选项 / k=v 打头时回缺省 `TemplateMatch`
   （旧写法会把 `--param-file` 当成类型）；`--node-file` 的"节点表"判定要求至少一个值带 `recognition`，
   免得把缺字段的单节点（`{"action":{…}}`）误报成节点表。
@@ -211,10 +212,11 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
   - `env` 的 pin 对账：release 线与 **归一化后的** qualifier 都比（`5.15.0b1` 与 `5.15.0-beta.1` 是同一
     pre-release 的两种拼写，算一致；而正式版 `5.14.2` 与同线预发布 `5.14.2b1` 是两份不同构建，要报）；
     两处声明都读，**精确优先于范围**，不让 `package.json` 的范围声明顶掉 Python 侧精确 pin。
-  - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，一次性 CLI 与 REPL 都单独点名"这不是未命中"
-    （退出码仍按 §3 不动）。
+  - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，一次性 CLI 与 REPL 都单独点名"这不是未命中"；
+    同一回执里报错与真未命中并存时两行都给（退出码仍按 §3 不动）。
   - And / Or 嵌套的 Custom 子识别也走 `RECO_CUSTOM_NODE`，回执 `customPaths` 指出位置；dump 里 V1
-    字符串形态（`recognition: "Custom"`）同样不漏判。
+    字符串形态（`recognition: "Custom"`）同样不漏判——但只认**识别类型位**上的字符串（`recognition` /
+    `type`），`expected: "Custom"` 这类参数值不会误报。
 - **未做**：真机上的 `--act` 回归（本机无设备），见 §6；`reco` 未命中 / 调用报错的**退出码**语义（§3 冻结）；
   `run --resource-dir` 的资源生命周期（仍走 `ensureResource`，长活会话里上一轮 bundle 会残留——与本次探针
   修的是同一类问题，但要单独改 `run`，不在 v0 面内）。

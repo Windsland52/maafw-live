@@ -900,15 +900,18 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               const verdict = describeMisses(results, shownType,
                 th ? { bestScore: th.bestScore, lowMatch: th.lowMatch } : null,
                 ocrModel ? { ocrModel } : {})
-              /* 调用报错与未命中分开读：前者是"没跑成"，别混进"未命中原因"那一行 */
+              /* 调用报错与未命中分开读：前者是"没跑成"，别混进"未命中原因"那一行；
+               * 两者可以同时出现（扫描里一例报错、另一例真未命中），不能因为报了错就吞掉后者。 */
               const failed = verdict.perResult.filter((d) => d.failed)
               if (failed.length > 0) {
-                out('识别调用报错 ' + failed.length + ' 例（[报错]，不是未命中）：' + String(failed[0].missReason ?? ''))
-              } else if (verdict.missReason) {
-                out('未命中原因：' + verdict.missReason)
-              } else if (verdict.missReasons.length > 1) {
-                out('未命中原因：' + verdict.missReasons.join(' / '))
+                const msgs = [...new Set(failed.map((d) => String(d.missReason ?? '')))]
+                out('识别调用报错 ' + failed.length + ' 例（[报错]，不是未命中）：' +
+                  msgs.slice(0, 2).join(' / ') + (msgs.length > 2 ? ' …' : ''))
               }
+              const missReasons = [...new Set(verdict.perResult
+                .filter((d) => !d.failed && d.missReason)
+                .map((d) => String(d.missReason)))]
+              if (missReasons.length > 0) out('未命中原因：' + missReasons.join(' / '))
               if (verdict.rawCount !== null) {
                 out('  候选 all=' + verdict.rawCount +
                   (verdict.filteredCount !== null ? ' filtered=' + verdict.filteredCount : ''))

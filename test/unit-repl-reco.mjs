@@ -451,3 +451,23 @@ test('repl reco：调用报错单独一行，不混进"未命中原因"', async 
   assert.match(out, /识别调用报错 1 例（\[报错\]，不是未命中）/, out)
   assert.doesNotMatch(out, /未命中原因：识别调用报错/, '别把它说成未命中：' + out)
 })
+
+test('repl reco：一例报错 + 一例真未命中 → 两行都给（报错不吞未命中）', async () => {
+  const { out, code } = await runRepl(
+    ['reco OCR --resource-dir R', 'quit'],
+    {
+      MAAFW_STUB_REPLIES: JSON.stringify({
+        reco_test: {
+          type: 'OCR', meta: { seq: 2, w: 480, h: 270 },
+          results: [
+            { param: {}, ms: 257, ok: false, error: 'boom', detail: null },
+            { param: {}, ms: 9, ok: false, detail: { hit: false, detail: { all: [], filtered: [] } } },
+          ],
+        },
+      }),
+    },
+  )
+  assert.equal(code, 0, out)
+  assert.match(out, /识别调用报错 1 例（\[报错\]，不是未命中）：识别调用报错：boom/, out)
+  assert.match(out, /未命中原因：OCR 模型不在资源链里/, '报错不能把另一例的真未命中吞掉：' + out)
+})

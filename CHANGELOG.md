@@ -55,10 +55,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `5.14.2b1` 是两份不同构建（要报）；两处声明都读，精确声明优先于范围声明（不让 `package.json` 的
   `^5.14.2` 顶掉 `requirements.txt` 里的精确 pin）。
 - **识别调用报错与未命中分开读**：子进程捕获异常时逐例标 `[报错]`、回执置 `failed: true`（一次性
-  CLI 与 REPL 一致：REPL 单独一行，不再写成"未命中原因"），并给一条"这不是未命中"的提示；
-  退出码语义本版未改（未命中仍是 0）。
+  CLI 与 REPL 一致：REPL 单独一行，不再写成"未命中原因"）；同一回执里两种都有时两行都给，报错不会
+  把另一例的真未命中吞掉。退出码语义本版未改（未命中仍是 0）。
 - **And / Or 里嵌的 Custom 子识别**同样报 `RECO_CUSTOM_NODE`（回执 `customPaths` 指出位置），
-  不再落回 miss 或"调用报错"；dump 里 V1 字符串形态的 `recognition: "Custom"` 也不再漏判。
+  不再落回 miss 或"调用报错"；dump 里 V1 字符串形态的 `recognition: "Custom"` 也不漏判——
+  但只有落在**识别类型位**（`recognition` / `type`）的字符串才算，`expected: "Custom"` 这类参数值
+  不会被误认成 Custom 识别。
 - **已知残余**：`run --resource-dir` 仍走 `ensureResource`，长活会话里上一轮的 bundle 会残留到下一次
   单包 `run`（与 `buildResource` 注释里记的是同一类问题，需要单独改 `run` 的资源生命周期）。
 
