@@ -502,7 +502,7 @@ test('CLI reco：多例（--sweep）任一例未命中 → FINDINGS(3)，全中�
       '--sweep', '{"min":0.7,"max":0.9,"step":0.2}', '--json'],
     replies,
   )
-  assert.equal(mixed.code, 3, '9 中 1 不中 → 3：' + mixed.out)
+  assert.equal(mixed.code, 3, '2 例中 1 例未中 → 3：' + mixed.out)
 
   const allHit = await runCli(
     ['reco', '--type', 'TemplateMatch', '--resource-dir', HERE, '--image', IMAGE,

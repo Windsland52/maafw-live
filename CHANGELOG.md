@@ -68,7 +68,9 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   不会被误认成 Custom 识别。
 - **资源的会话共享态已删除**：`run` 与 `reco --act` 每次按本次的资源来源新建 `Resource`（原先单包走
   会话资源，长活 REPL 里上一轮的 bundle 会残留到下一次 `run --resource-dir`）；上一份在换新时销毁、
-  `disconnect` 时销毁，加载中途失败也不留句柄。`crop` / `annotate` 本来就各自 spawn 识别子进程，不受影响。
+  `disconnect` 时销毁，加载中途失败也不留句柄。销毁顺序是硬约束：**先让 tasker 指向新对象再销毁上一份**
+  （加载失败时上一份原样保留）；`reco --act` 在有任务运行时直接拒绝——它会改写 `tasker.resource`，
+  等于把正在跑的任务的资源换掉。`crop` / `annotate` 本来就各自 spawn 识别子进程，不受影响。
 
 ## [0.3.0] - 2026-10-10
 

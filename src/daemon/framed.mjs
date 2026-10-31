@@ -1077,16 +1077,16 @@ async function buildResource(dirs) {
  * 换掉"最近一次 run / --act 的 Resource"并销毁上一份。
  *
  * 每次新建保证了资源隔离（单包不再叠上一轮 bundle），但 native 句柄必须有释放点——否则长活
- * REPL 里每 run 一次就多留一份（OCR 模型尤其重）。单线程下这么做安全的前提是"没有任务在飞"：
- * `cmdRun` 有 `runActive` 守卫，`reco --act` 也是同步跑完；且 `tasker.resource` 已先指向新对象。
+ * REPL 里每 run 一次就多留一份（OCR 模型尤其重）。
+ *
+ * **调用前提由调用方保证**，不在这里重试：(1) 没有任务在飞（`cmdRun` 开头有 `runActive` 守卫、
+ * `reco --act` 自己拒绝运行中的任务）；(2) `tasker.resource` 已指向新对象。满足这两条才能立刻
+ * 销毁上一份——早于 (2) 销毁会让 tasker 拿着死句柄，晚于 (1) 会踩到正在跑的任务。
  */
 function adoptRunResource(res) {
   const prev = S.runRes
   S.runRes = res
   if (!prev || prev === res) return
-  /* 有任务在飞时不销毁上一份：tasker 可能仍引用它（act 可以在 run 期间被调用）。
-   * 那份会在下一次替换或 disconnect 时收掉——宁可晚收，不可早收。 */
-  if (S.runActive) return
   try { prev.destroy() } catch (e) { /* ignore */ }
 }
 
@@ -1232,10 +1232,9 @@ async function cmdRun(args) {
   if (!resDirs.length) return { ok: false, error: '缺少 resourceDir（或 resourceDirs 数组）' }
   /* 上一轮的 agent 子进程与 Resource 在这里收掉：走到这行必然没有任务在飞（runActive 守卫），
    * 这一轮也不存在可复用的资源对象。放在参数校验之后——调用参数错了不该把上一份资源也丢掉。 */
+  /* 上一轮 agent 子进程先断掉：这一轮会新建 Resource，绑定不可能复用。 */
   await cleanupAgents()
-  if (S.runRes) { try { S.runRes.destroy() } catch (e) { /* ignore */ } S.runRes = null }
   const res = await buildResource(resDirs)
-  S.runRes = res
   /* agent 桥接：项目声明了 agent（PI interface 的 child_exec/child_args）就先连上——
    * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
   let agentInfo = null
@@ -1248,6 +1247,9 @@ async function cmdRun(args) {
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl
+  /* 顺序是硬约束：先让 tasker 指向新对象，再销毁上一份。反过来（或加载失败前就销毁）会让还握着
+   * 旧句柄的 tasker 拿到已销毁的资源。buildResource 抛错时上一份原样留着。 */
+  adoptRunResource(res)
   /* timeoutMs=0：不自动 post_stop，停止权交调用方（LLM 看事件流自行判断 + run_stop）。
    * >0 时沿用超时保护（防 JumpBack 死循环）。300s 硬上限已移除——长任务用 0。 */
   const rawT = Number(args.timeoutMs)
@@ -1558,13 +1560,17 @@ function stripDetail(d) {
  * （也是 action-before 边界锚点），动作执行后的画面另抓 action-after——效果可复核。
  */
 async function recoActTest(args, node, dirs) {
+  /* 有任务在飞时不换资源：act 会改写 tasker.resource，等于把正在跑的任务的资源换掉。
+   * 这条路径本来也不该在 run 期间用（要真机动作就等任务结束）。 */
+  if (S.runActive) return { ok: false, error: '有任务正在运行：先 maa_run_stop 再跑 --act（改资源会打断在跑的任务）' }
   /* 资源链与识别路径同一份：节点里的模板/被引用子节点可能只在 overlay 段里。
    * 同样每次新建，不与会话里任何资源共享（act 会注册/注销 custom action，复用更不可取）。 */
   const res = await buildResource(dirs)
-  adoptRunResource(res)
   const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl
+  /* 先让 tasker 指向新对象，再销毁上一份（见 adoptRunResource 的调用前提） */
+  adoptRunResource(res)
   const before = await captureNow('action-before')
   if (!before.ok) return { ok: false, error: '识别输入抓帧失败：' + before.error }
   const imgBuf = S.l0.roll[S.l0.roll.length - 1].png

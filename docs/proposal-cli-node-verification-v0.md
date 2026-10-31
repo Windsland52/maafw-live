@@ -219,9 +219,9 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 - **收口时补做的两项（review 后决定）**：
   - **资源生命周期**：删掉会话级的"当前资源"共享态（`S.res` 没有读者），`run` 与 `reco --act` 每次按本次
     的资源来源新建 `Resource`——单包 `run` 不再带着上一轮的 bundle 跑（原先只有项目模式是新建的）。
-    native 句柄有释放点：换新时销毁上一份、`disconnect` 时销毁、加载中途失败也回收；
-    有任务在飞时不提前销毁（`adoptRunResource` 的注释写清了前提）。**没有自动化回归**——`run` 要真设备，
-    这条不变量目前只靠所有权约定与注释。
+    native 句柄有释放点：换新时销毁上一份、`disconnect` 时销毁、加载中途失败也回收；**先让 tasker 指向
+    新对象再销毁上一份**（加载失败时上一份原样保留），`--act` 在有任务运行时直接拒绝（否则等于换掉在跑
+    任务的资源）。**没有自动化回归**——`run` 要真设备，这条不变量目前只靠所有权约定与注释。
   - **退出码**：`reco` 未命中或识别调用报错 → `FINDINGS(3)`，全部命中才 0（与 README 码表 / `protocol.ts`
     的 FINDINGS 注释对齐，见 §3 末条）；多例按"任一例未中"判，所以 `--sweep` 通常退 3。
 - **未做**：真机上的 `--act` 回归（本机无设备），见 §6。

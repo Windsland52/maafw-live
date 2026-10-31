@@ -50,7 +50,7 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live probe` | 自检运行时：绑定版本、adb / win32 设备发现数 |
 | `maafw-live device` | 列出可连接的设备（adb 设备与 win32 窗口） |
 | `maafw-live connect` | 连接设备（进程态；多步操作用 repl） |
-| `maafw-live disconnect` | 断开并销毁 Tasker / Controller |
+| `maafw-live disconnect` | 断开并销毁 Tasker / Resource / Controller |
 | `maafw-live screencap` | 截一帧并落盘（同时进 L0 缓存，有捕获身份可升格） |
 | `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI，按该帧捕获时尺寸换算）；`--src full` 取控制器分辨率原图，降级为小图会明说并判 findings |
 | `maafw-live wait` | 状态谓词：`stable`（画面静下来）/ `change`（画面动了）——取代调用方硬睡时钟；**超时不是失败**，是观测结果（退出 3） |

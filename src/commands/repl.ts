@@ -32,7 +32,7 @@ const HELP = [
   '  device [all|adb|win32]         列设备',
   '  connect <win32|adb|gamepad> [target]   手动连接',
   '  connect project <dir> [hwnd|address]   按 interface.json 规划连接（推荐）',
-  '  disconnect                     断开并销毁 Tasker/Controller',
+  '  disconnect                     断开并销毁 Tasker/Resource/Controller',
   '  screencap [out.png] | screencap --out out.png    截一帧落盘（同时进 L0，可升格）',
   '  stream start [--fps n] [--scale n] [--l0-roll n] [--l0-anchor n] [--max-frames n] [--block-thresh n] [--change-global n] [--l0-bytes n]',
   '  stream stop | stream status',
