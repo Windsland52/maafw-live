@@ -96,6 +96,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   只枚举 adb/win32、其它平台必须显式给 target/config；修正 reply 的 `ok:false` 语义（它只对应
   daemon 抛异常；业务失败通常是外层 `ok:true` + `data.ok:false`），并写明连接失败不登记会话；
   "新增命令要更新哪里"改指向 `src/runtime/actions.ts` 的封装（客户端本身是泛型 `call`）。
+- 删掉实现前的关键帧核查和已落地的 reco 提案。留存契约 §7 改为现行消费口径：L0、跨会话
+  `kf:` ID、带 `roi` 的 `frame_get` 缺省走原图都已落地。
+- skill 写明两处和 `reco` 整链不一致的口径：`crop` / `annotate` 只加载 `resource.path[0]`；
+  `--act` 不接受 `--node-name`。并写明 `connect project` 之后 REPL `run` 与一次性 `run --project`
+  走同一条装配（四级 `pipeline_override`、`--preset`）。
 
 ## [0.3.0] - 2026-10-10
 

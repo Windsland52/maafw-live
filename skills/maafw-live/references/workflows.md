@@ -56,6 +56,9 @@ maa> stream start --fps 6 --block-thresh <推荐> --change-global <推荐>
   V1 扁平与 V2 嵌套不做转换。字段语义有问题就查 MaaLLMWiki 的协议原文，不要在本工具层猜。
 - `--sweep` 用来找阈值起点，不是用来"调到达标"：扫描结果的最高分若 < 0.5，说明模板与画面不匹配。
 - `--act` 会先识别、再动作；识别未命中时动作半不执行（如实报在 `stage`）——不要把"没执行"读成"执行了但没效果"。
+  它只接受 `--node` / `--node-file`，不接受 `--node-name`。按资源原名验识别用 `--node-name`；要连动作一起验，用 `run`。
+- `connect project` 之后，REPL 的 `run` 与一次性 `run --project` 叠同一套四级 `pipeline_override` 和 `--preset`。
+  `--resource-dir` 只换资源来源；和 `--preset` 同给时 preset 不生效，命令会说明。
 - 图像是判据的一部分：小图空间里算出的 box **不能**直接抄成 pipeline 的 roi。
 
 ## C. 模板裁剪：输入怎么给、结果怎么判
@@ -109,6 +112,8 @@ maa> stream start --fps 6 --block-thresh <推荐> --change-global <推荐>
 ```
 
 出处里**没有**设备地址/目标——L2 是要提交进仓库的交付物，设备来源留在本地 manifest。
+
+`--project` 时自匹配资源只取 `resource.path[0]`。要测的 pipeline 在后面的 bundle 里，显式给 `--resource-dir`。
 
 ## D. 留存与离线裁剪：时间线
 

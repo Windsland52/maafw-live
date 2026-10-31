@@ -135,6 +135,9 @@ maa> frame diff --a 120 --b 135 --rois "x,y,w,h;x,y,w,h"   # 这一步到底改�
   候选按源理解：OCR 贴文字（带 `score`）、连通域偏亮连通区、边缘密度看梯度——都没有就走点选。
 - 事后（没设备 / 状态已消失）仍可在**库帧**上跑：`annotate --from-kf <完整 ID>`。该路径没有会话事件，
   **diff 源不可用**（工具如实报 `sourcesUnavailable`）；要看"哪里变了"得用实时会话。
+- `annotate` 的 OCR 候选只加载 `resource.path[0]`（或你显式给的 `--resource-dir`）。`reco --project` /
+  `--node-name` 才加载整条链，含后面的 bundle 和 `attach_resource_path`。模型不在第一段时，候选表会像
+  画面上没有字；验文字用 `reco`，或把 `--resource-dir` 指到模型所在的那一段。
 - 探色用 `color`（ROI 实测均值/HSV/主色），选完色再 `reco --type ColorMatch` 出框——不要让模型"报色值"。
 - **动手时**：坐标必须来自**同一次测量**（硬护栏 9）。点完/滑完立刻用动作回执自带的
   `retention.before/after` 或 `wait stable` 复核，**不要拿旧截图当现场**（硬护栏 10）。
@@ -176,10 +179,14 @@ maafw-live reco --type TemplateMatch --image frame.png --resource-dir ./resource
 - `repl` 里的 `reco` 是同一组能力（`--node-file` / `--node-name` / `--param-file`，资源取
   `connect project` 的整条链），miss 原因与计数同样给；`-`（stdin）只在一次性命令里有意义，
   REPL 里会直接拒绝（它的 stdin 是命令流）。
-- `--node-name` 的 `layer` 恒为 `resource`（资源合并结果）：`run --project` 还会再叠 interface 的
-  四级 `pipeline_override`，GUI 选项改过同一字段时两者对不上是**预期行为**。Custom / agent 节点
-  不桥接，回执直接给 `code: RECO_CUSTOM_NODE`——不是 miss，改用 `run --project` 验。
-- `--act` 是"识别拿框 → 用框真机执行动作"的半链路，验证 target 框语义与落点；它会**真的动设备**。
+- `--node-name` 的 `layer` 恒为 `resource`（资源合并结果）：`run` 还会再叠 interface 的
+  四级 `pipeline_override`，GUI 选项改过同一字段时两者对不上是**预期行为**。`connect project`
+  之后，REPL 里的 `run` 与一次性 `run --project` 是同一条装配（入口、四级覆盖、`--preset`）。
+  `--resource-dir` 只换资源来源；和 `--preset` 同给时 preset 没有可应用的四级链，REPL 打警告、
+  CLI 写进 `warnings`。Custom / agent 节点不桥接，回执直接给 `code: RECO_CUSTOM_NODE`——不是 miss，
+  改用 `run` 验。
+- `--act` 只接受 `--node` / `--node-file`（节点要带 action），不接受 `--node-name`。它是
+  "识别拿框 → 用框真机执行动作"的半链路，会**真的动设备**。
   判据两层：识别 `hit` + 动作 `success`，且**落点在命中框内**；动作边界帧在 `retention.before/after`，
   取"点之前/点之后"的画面用它，不要事后重截冒充。识别未命中时动作半不执行（`stage=recognition`）。
 - 一次只改一个变量，改完立刻复测并留记录；多处同改后结果变化无法归因。
@@ -200,6 +207,8 @@ maafw-live crop --point 700,340 --pad 24 --project ./my-maa-project --out tpl.pn
   CCOEFF_NORMED 得分是噪声，得分高也可能位置错。
 - 连接真机时会自动做**跨帧验证**（另抓一帧再匹配）；得分大幅衰减或位置漂移 → 模板对动态区域敏感，慎用。
 - 只从**控制器分辨率原图**裁；绝不从降采样小图裁，也绝不上采样冒充原图。
+- 自匹配用的资源同样只取 `resource.path[0]`（或显式 `--resource-dir`），不走 `reco` 那条整链。
+  第一段没有可加载的 pipeline 时，自匹配起不来：回执是「没跑起来」，不是「模板不独特」。
 
 ## 4. 动线 D：不可复现状态 → 留存 → 离线裁模板
 

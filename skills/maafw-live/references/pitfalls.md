@@ -1,8 +1,8 @@
 # 反模式与真实教训
 
-每条都是踩过的：症状 → 原因 → 怎么做。协议字段的逐条消费注意见
-[daemon-protocol.md](https://github.com/Windsland52/maafw-live/blob/main/docs/daemon-protocol.md)
-与[留存契约 §7](https://github.com/Windsland52/maafw-live/blob/main/docs/keyframe-retention-contract-v0.md)。
+每条都是踩过的：症状 → 原因 → 怎么做。协议字段见
+[daemon-protocol.md](https://github.com/Windsland52/maafw-live/blob/main/docs/daemon-protocol.md)。
+留存结论怎么读见[留存契约 §7](https://github.com/Windsland52/maafw-live/blob/main/docs/keyframe-retention-contract-v0.md)。
 
 ## 1. 判定与结果消费
 
@@ -105,6 +105,12 @@
 
 ## 7. 本工具的已知边界（会随时间收敛，遇到先按"如实报告"处理）
 
+- **`crop` / `annotate` 只加载 `resource.path[0]`**（或显式 `--resource-dir`）。`reco --project` /
+  `--node-name` 才加载整条链。OCR 模型或 pipeline 在后面的 bundle / `attach_resource_path` 里时，
+  `annotate` 会像画面上没有字，`crop` 的自匹配会报「没跑起来」。验节点用 `reco`；要让这两条命令用到
+  那一段资源，显式给 `--resource-dir`。
+- **`--act` 不接受 `--node-name`**。按资源原名验识别用 `--node-name`；动作半要 `--node` / `--node-file`，
+  或直接 `run`（才会桥接 agent 子进程）。
 - 自匹配要加载资源：`crop` 必须能解析到资源目录（`--project` 或 `--resource-dir`）；
   库帧路径可以用 `--project` 离线解析资源（不连设备）。
 - **资源包里没有任何 pipeline 时，`crop` 会明确报"自匹配没跑起来"**（识别子进程一个结果都没回），
