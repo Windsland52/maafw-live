@@ -78,6 +78,8 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 - **Custom / agent 节点**：dump 的 `recognition.type === "Custom"`（或含 `custom_recognition`）时，
   直接返回明确的 FINDINGS/USAGE「`reco_test` 不桥接 custom/agent 节点」，
   **不要让它看起来像 miss**。这条不依赖 `--act`，第一天就会碰到。
+  **And / Or 里嵌的 Custom 子识别同样算**：dump 是嵌套的（`recognition.param.all_of[…].recognition.type`），
+  只判顶层会让嵌套的那种落回 miss 或"识别调用报错"；回执用 `customPaths` 指出命中位置。
 - **回执必须标 `layer`**：本命令给的是 `resource`（资源合并结果）；
   `run --project` 还会再叠 interface 的四级 `pipeline_override`（global → resource → controller → task）。
   若 GUI 选项改过同一字段，`--node-name` 与 `run` 对不上是**预期行为**，靠 `layer` 说明，不冒充"真实"。
@@ -100,8 +102,12 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 > 约 200ms——与"roi 里真的没有字"完全一致。判据放在 `src/runtime/ocr-model.ts`：查链上
 > `model/ocr/<model>/` 有没有 `det.onnx` + `rec.onnx` + `keys.txt`（`<model>` 取自节点/参数，缺省空串）。
 > 只查存在性、不解析 onnx：回答的是"框架会不会找到它"，不是"模型能不能跑"。
+> **判据按框架的合并规则**：`det` 与 `rec` 可以来自不同段，`rec` 与 `keys.txt` 必须同段（`load_deter` /
+> `load_recer` 各自遍历 roots）——只看"某一段三件套齐全"会把拆分存放误报成缺模型。
 > 第三种空结果也在这条线上：模型文件存在但**损坏**时子进程会捕获异常（实测
 > `No graph was found in the protobuf.`），回执 `detail: null`——那要走"识别调用报错"，不能算未命中。
+> 逐例行标 `[报错]`、机器侧置 `failed: true`；**退出码本版仍是 0**（§3 冻结了退出码语义，调用方要按
+> `missReason` / `failed` 判，别只看码或 `[未中]`）。
 
 外加 `rawCount` / `filteredCount`（从 `detail.detail.{all,filtered}` 派生）。
 
@@ -197,4 +203,13 @@ reco --resource-dir ./resource/base --node-name AP_NavUnlockButton --image a.png
 - **实现期修掉的两处口径**：REPL 的 `reco` 类型是位置参数，选项 / k=v 打头时回缺省 `TemplateMatch`
   （旧写法会把 `--param-file` 当成类型）；`--node-file` 的"节点表"判定要求至少一个值带 `recognition`，
   免得把缺字段的单节点（`{"action":{…}}`）误报成节点表。
-- **未做**：真机上的 `--act` 回归（本机无设备），见 §6。
+- **review 后修的五处**（都不改主链路，但会改结论）：
+  - 资源链探针**一律用一次性 `Resource`**（单包也走），加载完销毁、逐段点名失败段：原先单包走
+    `ensureResource`，会把这一段叠进 REPL 长活会话的 `S.res`，之后 `run --resource-dir <别的包>` 就带着
+    上一轮的 bundle 跑（`buildResource` 注释记的正是这个残留）。
+  - OCR 模型判据按**合并规则**（见 §2.4 注）：`det` 与 `rec` 可跨段，`rec` 与 `keys` 必须同段。
+  - `env` 的 pin 对账：同 release 线只比 release（`5.15.0b1` 与 `5.15.0-beta.1` 是同一 pre-release 的两种
+    拼写，不算不一致）；两处声明都读，**精确优先于范围**，不让 `package.json` 的范围声明顶掉 Python 侧精确 pin。
+  - 调用报错这一形态：逐例标 `[报错]`、`failed: true`，并在 human 里点名"这不是未命中"（退出码仍按 §3 不动）。
+  - And / Or 嵌套的 Custom 子识别也走 `RECO_CUSTOM_NODE`，回执 `customPaths` 指出位置。
+- **未做**：真机上的 `--act` 回归（本机无设备），见 §6；`reco` 未命中 / 调用报错的**退出码**语义（§3 冻结）。

@@ -40,7 +40,23 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - `env` 的 pin 对账认 Python 绑定的真实写法：`requirements.txt` 里的 `MaaFW` / `maafw`，以及 PEP 440
   预发布版本（`5.15.0b1` / `5.15.0rc1`）——CLI 5.14.2 与项目 `5.15.0b1` 这类差异现在会报警。
 - 新增 `npm run accept:reco-node`：离线、真 daemon，钉住 overlay 同名节点覆盖、`attach_resource_path`
-  进链、`--node-name` 按原名跑、Custom 与查无节点两种失败；已接进 CI 与发版门禁。
+  进链、`--node-name` 按原名跑、Custom 与查无节点两种失败、近邻节点名、OCR 模型缺失、`nodeDump`
+  落文件再 `--node-file` 与 `--node-name` 的 hit/box 等价、And 内嵌 Custom；已接进 CI 与发版门禁。
+
+### 修复
+
+- **`reco` 的资源链探针不再改动会话资源**：单包也走一次性 `Resource`（加载完销毁），并把失败点名到
+  具体哪一段。原先单包走 `ensureResource`，会把这一段叠进 REPL 长活会话的资源里，之后
+  `run --resource-dir <别的包>` 会带着上一轮的 bundle 跑。
+- **OCR 模型判据按框架的合并规则**：`det.onnx` 与 `rec.onnx` 可以来自不同资源段，`rec.onnx` 与
+  `keys.txt` 必须同段；只看"某一段三件套齐全"会把拆分存放误报成"模型不在资源链里"。
+- **`env` 的 pin 对账不误报**：同 release 线只比 release（`5.15.0b1` 与 `5.15.0-beta.1` 是同一
+  pre-release 的两种拼写）；两处声明都读，精确声明优先于范围声明（不让 `package.json` 的 `^5.14.2`
+  顶掉 `requirements.txt` 里的精确 pin）。
+- **识别调用报错与未命中分开读**：子进程捕获异常时逐例标 `[报错]`、回执置 `failed: true`，并给一条
+  "这不是未命中"的提示；退出码语义本版未改（未命中仍是 0）。
+- **And / Or 里嵌的 Custom 子识别**同样报 `RECO_CUSTOM_NODE`（回执 `customPaths` 指出位置），
+  不再落回 miss 或"调用报错"。
 
 ## [0.3.0] - 2026-10-10
 

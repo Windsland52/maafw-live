@@ -1069,26 +1069,38 @@ async function buildResource(dirs) {
 }
 
 /**
- * 资源链可加载性先验：识别本身在子进程里重跑，这里只为把"哪一段读不进"提前说清
- * （子进程的原生报错只有一句 message，看不出是链上哪一段）。单包沿用 ensureResource
- * 以便复用 S.res；整链用一次性 Resource，加载完即销毁，不把半截 bundle 留给后续命令。
+ * 资源链可加载性先验：识别本身在子进程里重跑，这里只需要一段**可丢弃**的探针。
+ *
+ * 为什么单包也不走 ensureResource：那是长活会话的资源（REPL），`post_bundle` 会把这一段叠进去，
+ * 之后 `run --resource-dir <别的包>` 在同一份资源上再加一段，跑的就不是声明的那个包
+ * （`buildResource` 注释里写的正是"复用旧实例会把上一次的 bundle 残留进来"）。
+ * 探针用完即销毁，不给会话留半个 bundle。
+ *
+ * 逐段加载并点名失败的那一段：整链一起报只会说"加载失败"，看不出是哪一层读不进。
  */
 async function probeResourceChain(dirs) {
+  const m = loadMaa()
+  const res = new m.Resource()
   try {
-    if (dirs.length === 1) {
-      await ensureResource(dirs[0])
-      return null
-    }
-    const m = loadMaa()
-    const res = new m.Resource()
-    try {
-      for (const d of dirs) await res.post_bundle(d).wait()
-    } finally {
-      try { res.destroy() } catch (e) { /* ignore */ }
+    for (let i = 0; i < dirs.length; i++) {
+      const where = '第 ' + (i + 1) + '/' + dirs.length + ' 段（' + dirs[i] + '）'
+      let job = null
+      try {
+        job = res.post_bundle(dirs[i])
+        await job.wait()
+      } catch (e) {
+        return { ok: false, error: '资源链加载失败：' + where + '：' + String(e && e.message || e) }
+      }
+      /* wait() 的返回值跨绑定不一致（这里回的是 Job 本身），状态从 job.status 读；
+       * 读不到就不断言——宁可放过，也不要伪造"加载失败" */
+      const st = Number(job && job.status)
+      if (Number.isFinite(st) && st !== STATUS.succeeded) {
+        return { ok: false, error: '资源链加载失败：' + where + '返回 status=' + st + '（成功应为 ' + STATUS.succeeded + '）' }
+      }
     }
     return null
-  } catch (e) {
-    return { ok: false, error: '资源链加载失败（链：' + dirs.join(' + ') + '）：' + String(e && e.message || e) }
+  } finally {
+    try { res.destroy() } catch (e) { /* ignore */ }
   }
 }
 
@@ -1710,6 +1722,8 @@ async function cmdRecoTest(args) {
     ...(r && r.code ? { code: String(r.code) } : {}),
     /* 近邻节点名：`--node-name` 拼错时给出"是不是想跑这个"，CLI/REPL 直接把它变成 hint */
     ...(r && Array.isArray(r.candidates) && r.candidates.length ? { candidates: r.candidates.map(String) } : {}),
+    /* 嵌套 custom 的命中位置：让人知道是节点自己，还是 And/Or 里的子识别 */
+    ...(r && Array.isArray(r.customPaths) && r.customPaths.length ? { customPaths: r.customPaths.map(String) } : {}),
     ...(nodeName ? { nodeName } : {}),
     ...(r && r.nodeDump ? { nodeDump: r.nodeDump } : {}),
   }

@@ -2,8 +2,9 @@
  * OCR 模型在不在资源链上（纯文件系统判据，无设备）。
  *
  * 这条判据存在的理由：OCR 模型缺失时框架**不报错**，只回空结果，与"roi 里真的没有字"同形。
- * 依据见 src/runtime/ocr-model.ts 的注释（MaaFW 5.11.2 pinned source 的 OCRResMgr：
- * `model/ocr/<model>/` 下 det.onnx + rec.onnx + keys.txt 三件套齐全才算能加载）。
+ * 依据见 src/runtime/ocr-model.ts 的注释（MaaFW 5.11.2 pinned source 的 OCRResMgr）：
+ * 每个 bundle 的 `model/ocr/` 是一个 root，`load_deter` 与 `load_recer` 各自扫 roots 找第一个
+ * 命中的，`load_ocrer` 要两者都拿到。所以 det 与 rec 可以来自不同段，rec 与 keys 必须同段。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -63,7 +64,7 @@ test('自定义模型名：文件在 model/ocr/v4 下且名字对得上才算 pr
   }
 })
 
-test('资源链：只在某一段里有也算 present（后加载的段覆盖前一段）', () => {
+test('资源链：任一整段齐全即 present（roots 是逐个找，不是后一段覆盖前一段）', () => {
   const empty = bundle([{ dir: 'pipeline', files: ['a.json'] }])
   const withModel = bundle([{ dir: 'model/ocr', files: FILES }])
   try {
@@ -73,5 +74,44 @@ test('资源链：只在某一段里有也算 present（后加载的段覆盖前
   } finally {
     rmSync(empty, { recursive: true, force: true })
     rmSync(withModel, { recursive: true, force: true })
+  }
+})
+
+test('拆分：det 在 base、rec+keys 在 overlay → present（det 与 rec 允许来自不同段）', () => {
+  const base = bundle([{ dir: 'model/ocr', files: ['det.onnx'] }])
+  const overlay = bundle([{ dir: 'model/ocr', files: ['rec.onnx', 'keys.txt'] }])
+  try {
+    // 这是最容易被误判的一种布局：按"某一段三件套齐全"会报 missing，但框架实际能加载。
+    assert.equal(ocrModelStatus([base, overlay]), 'present')
+    assert.equal(ocrModelStatus([overlay, base]), 'present', 'roots 逐个找，段序不影响结论')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+    rmSync(overlay, { recursive: true, force: true })
+  }
+})
+
+test('拆分但 rec 与 keys 不同段 → missing：load_recer 要同一 root 下两项同时存在', () => {
+  const detOnly = bundle([{ dir: 'model/ocr', files: ['det.onnx'] }])
+  const recOnly = bundle([{ dir: 'model/ocr', files: ['rec.onnx'] }])
+  const keysOnly = bundle([{ dir: 'model/ocr', files: ['keys.txt'] }])
+  try {
+    assert.equal(ocrModelStatus([detOnly, recOnly, keysOnly]), 'missing')
+    assert.equal(ocrModelStatus([recOnly, keysOnly]), 'missing', '没有 det 时连 deter 都拿不到')
+  } finally {
+    rmSync(detOnly, { recursive: true, force: true })
+    rmSync(recOnly, { recursive: true, force: true })
+    rmSync(keysOnly, { recursive: true, force: true })
+  }
+})
+
+test('自定义模型名 + 拆分：model/ocr/v4 的 det 在 base、rec+keys 在 overlay → present', () => {
+  const base = bundle([{ dir: 'model/ocr/v4', files: ['det.onnx'] }])
+  const overlay = bundle([{ dir: 'model/ocr/v4', files: ['rec.onnx', 'keys.txt'] }])
+  try {
+    assert.equal(ocrModelStatus([base, overlay], 'v4'), 'present')
+    assert.equal(ocrModelStatus([base, overlay]), 'missing', '缺省空串只看 model/ocr 根下，不看 v4')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+    rmSync(overlay, { recursive: true, force: true })
   }
 })

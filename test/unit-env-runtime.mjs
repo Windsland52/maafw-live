@@ -4,9 +4,11 @@
  * 1. 临时项目里放一份 5.0.0 的假 `@maaxyz/maa-node`：`maa-node` 必须是 CLI 自己解析到的那份，
  *    副本另起一行 `maa-node(cwd)` 并列报出——全局安装时报成 cwd 版本正是这里要防的回归；
  * 2. 项目 pin 只与 self 对账：精确 pin 不等给 warning，范围 pin（`^5.0.0`）不判等、`exact` 为 null，
- *    因为判范围要 semver 解析，判错比不判更坏；
+ *    因为判范围要 semver 解析，判错比不判更坏；package.json 的范围声明也不能顶掉 requirements.txt
+ *    的精确 pin——范围回答不了「跑的是不是同一版」这个等式；
  * 3. requirements.txt 里真正的包名是 `MaaFW`（PyPI），版本是 PEP 440 的 `5.15.0b1` 这类预发布：
- *    包名要大小写不敏感、预发布要算精确版本，且同 release 线不同 qualifier 不能报成一致。
+ *    包名要大小写不敏感、预发布要算精确版本；同 release 线的 qualifier 拼写差异
+ *    （`5.15.0b1` 与 `5.15.0-beta.1`）指的是同一份构建，不算不一致。
  *
  * 「CLI 实际加载的版本」现场从仓库根跑一次 env 读出，不硬编码：依赖升级不该让这组用例假红/假绿。
  */
@@ -229,7 +231,7 @@ test('env：PEP 440 的 5.15.0rc1 也判精确（不是范围声明）', { timeo
   )
 })
 
-test('env：同 release 线、qualifier 不同 → 仍要 warn（跑的不是 pin 的那份）', { timeout: 60000 }, async (t) => {
+test('env：同 release 线、qualifier 拼写不同 → ok，不算不一致', { timeout: 60000 }, async (t) => {
   const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(SELF_VERSION)
   assert.ok(m, 'self 版本不是 x.y.z 形态：' + SELF_VERSION)
   /* 造一个「同 release 线、qualifier 一定不同」的 pin：self 无后缀就加 b1，有后缀就剥掉 */
@@ -237,12 +239,42 @@ test('env：同 release 线、qualifier 不同 → 仍要 warn（跑的不是 pi
   const dir = makeProject(t, { requirements: `MaaFW==${PIN}\n` })
   const { env } = await envelope(['env'], dir)
   assert.equal(env.data.maaNodePin.exact, PIN)
-  assert.equal(env.warnings.length, 1, JSON.stringify(env.warnings))
-  assert.ok(env.warnings[0].includes(PIN), '要报出项目 pin：' + env.warnings[0])
-  assert.ok(env.warnings[0].includes(SELF_VERSION), '要报出 CLI 实际加载的版本：' + env.warnings[0])
+  assert.deepEqual(env.warnings, [], '同 release 线的拼写差异不是不一致：' + JSON.stringify(env.warnings))
   const { out } = await runCli(['env'], dir)
   const line = itemLine(out, 'maa-node pin')
   assert.ok(line, '缺少 maa-node pin 行：' + out)
-  assert.match(line, /\[warn\]/, line)
-  assert.ok(line.includes(PIN) && line.includes(SELF_VERSION), '两个完整版本都要写出来：' + line)
+  assert.match(line, /\[\s*ok\s*\]/, line)
+  assert.ok(line.includes(PIN) && line.includes(SELF_VERSION), '两个完整版本都要写进 detail：' + line)
+})
+
+test('env：package.json 只有范围时，requirements.txt 的精确 pin 不能被顶掉', { timeout: 60000 }, async (t) => {
+  const PIN = '5.15.0b1'
+  const dir = makeProject(t, { pin: '^5.14.2', requirements: `MaaFW==${PIN}\n` })
+  const { env } = await envelope(['env'], dir)
+  assert.equal(env.data.maaNodePin.source, 'requirements.txt', JSON.stringify(env.data.maaNodePin))
+  assert.equal(env.data.maaNodePin.exact, PIN, '范围声明回答不了等式，精确声明优先')
+  const selfRelease = /^(\d+\.\d+\.\d+)/.exec(SELF_VERSION)?.[1]
+  if (selfRelease === '5.15.0') {
+    t.diagnostic(`现场 self ${SELF_VERSION} 也落在 5.15.0 线：按 release 判等，跳过不一致断言`)
+    return
+  }
+  assert.equal(env.warnings.length, 1, '有且仅有一条 pin warning：' + JSON.stringify(env.warnings))
+  assert.ok(env.warnings[0].includes(PIN), '要报出精确 pin：' + env.warnings[0])
+  assert.ok(env.warnings[0].includes(SELF_VERSION), '要报出 CLI 实际加载的版本：' + env.warnings[0])
+})
+
+test('env：package.json 写 npm 预发布拼写 5.14.2-beta.1 → 同 release 线，ok 且无 warning', { timeout: 60000 }, async (t) => {
+  const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(SELF_VERSION)
+  assert.ok(m, 'self 版本不是 x.y.z 形态：' + SELF_VERSION)
+  const PIN = `${m[1]}-beta.1`
+  const dir = makeProject(t, { pin: PIN })
+  const { env } = await envelope(['env'], dir)
+  assert.deepEqual(env.data.maaNodePin, { source: 'package.json', declared: PIN, exact: PIN })
+  assert.deepEqual(env.warnings, [], '同 release 线不产生 warning：' + JSON.stringify(env.warnings))
+  const { out } = await runCli(['env'], dir)
+  const line = itemLine(out, 'maa-node pin')
+  assert.ok(line, '缺少 maa-node pin 行：' + out)
+  assert.match(line, /\[\s*ok\s*\]/, line)
+  assert.ok(line.includes(PIN), 'detail 要写出声明的完整版本：' + line)
+  if (PIN !== SELF_VERSION) assert.ok(line.includes(SELF_VERSION), 'detail 要写出实际版本：' + line)
 })

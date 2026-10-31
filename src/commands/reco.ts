@@ -395,13 +395,20 @@ export const recoCommand: Command = {
             const counts: string[] = []
             if (d?.rawCount !== null && d?.rawCount !== undefined) counts.push('all=' + d.rawCount)
             if (d?.filteredCount !== null && d?.filteredCount !== undefined) counts.push('filtered=' + d.filteredCount)
-            return '  ' + (x.ok ? '[命中]' : '[未中]') + ' ' + JSON.stringify(x.param) + '  ' + x.ms + 'ms' +
+            const mark = x.ok ? '[命中]' : (d?.failed ? '[报错]' : '[未中]')
+            return '  ' + mark + ' ' + JSON.stringify(x.param) + '  ' + x.ms + 'ms' +
               (counts.length ? '  ' + counts.join(' ') : '') + (d?.missReason ? '  ← ' + d.missReason : '')
           }),
         ]
         /* 单例时逐例行已经写了原因，不再重复；多例（扫描）才给一条汇总 */
         if (verdict.missReason && results.length > 1) human.push('  未命中原因：' + verdict.missReason)
         else if (verdict.missReasons.length > 1) human.push('  未命中原因：' + verdict.missReasons.join(' / '))
+        /* 调用报错与未命中必须分开读：前者是"没跑成"，先看原生消息；退出码口径本版不动（提案 §3） */
+        const failedCount = verdict.perResult.filter((d) => d.failed).length
+        if (failedCount > 0) {
+          human.push('  识别调用报错 ' + failedCount + ' 例（上面标 [报错]）：这不是未命中，先处理原生消息，' +
+            '别去调阈值/改 roi')
+        }
         if (th && th.suggest !== null) {
           human.push('  实测最高置信度 ' + th.bestScore + ' → threshold 起点建议 ' + th.suggest +
             '（实测 − 0.1 留余量，换场景会掉；ROI 收紧可再提）')
@@ -429,6 +436,8 @@ export const recoCommand: Command = {
             ...(d?.missReason ? { missReason: d.missReason } : {}),
             ...(d?.rawCount !== null && d?.rawCount !== undefined ? { rawCount: d.rawCount } : {}),
             ...(d?.filteredCount !== null && d?.filteredCount !== undefined ? { filteredCount: d.filteredCount } : {}),
+            /* 机器侧要能区分"没跑成"与"未命中"：miss 也会带 missReason，`failed` 只给调用报错 */
+            ...(d?.failed ? { failed: true } : {}),
           }
         })
         return {

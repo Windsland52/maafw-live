@@ -110,3 +110,14 @@ test('命中优先于报错口径（ok:true 不写原因）', () => {
   const v = describeMisses([{ ok: true, error: 'x', detail: null }], 'OCR', null)
   assert.equal(v.missReason, null)
 })
+
+test('failed 标志：只有 detail 缺失才算"没跑成"，普通 miss 与命中都不置位', () => {
+  const failed = describeMisses([{ ok: false, error: 'x', detail: null }], 'OCR', null, { ocrModel: 'present' })
+  assert.equal(failed.perResult[0].failed, true)
+
+  const plainMiss = describeMisses([miss([])], 'OCR', null, { ocrModel: 'present' })
+  assert.equal(plainMiss.perResult[0].failed, false, '正常未命中不是"没跑成"')
+
+  const hitResult = describeMisses([{ ok: true, error: 'x', detail: null }], 'OCR', null)
+  assert.equal(hitResult.perResult[0].failed, false, '命中优先')
+})

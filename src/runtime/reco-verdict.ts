@@ -38,6 +38,8 @@ export interface MissDetail {
   missReason: string | null
   rawCount: number | null
   filteredCount: number | null
+  /** 识别调用本身报错（detail 缺失），不是"未命中"——渲染层要分开标，别打 [未中] */
+  failed: boolean
 }
 
 export interface MissVerdict {
@@ -109,6 +111,7 @@ export function describeMisses(
         failure && failure.length > 160 ? failure.slice(0, 160) + ' …' : failure),
       rawCount,
       filteredCount,
+      failed: failure !== null && r.ok !== true,
     }
   })
   const reasons: string[] = []

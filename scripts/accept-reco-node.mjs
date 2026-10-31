@@ -20,6 +20,7 @@
  *  I9 OCR 空结果先查模型：链上没有 `model/ocr` 三件套时，原因指向模型而不是 roi（A9）
  *  I10 近邻节点名来自真实 node_list：拼错一个字能建议回正确名字（A10）
  *  I11 等价性：nodeDump 落文件再 `--node-file`，hit / box 与 `--node-name` 一致（A11）
+ *  I12 And 里嵌的 Custom 子识别同样走 RECO_CUSTOM_NODE，不落回 miss（A12）
  *
  * 临时项目建在系统临时目录、结束递归删除；不写仓库目录、不连设备。
  *
@@ -106,6 +107,11 @@ try {
   writeJson(path.join(BASE, 'pipeline', 'base.json'), {
     BaseDirect: { recognition: 'DirectHit' },
     CustomProbe: { recognition: 'Custom', custom_recognition: 'NoSuchReco' },
+    /* And 里嵌一个 Custom 子识别：能力边界在嵌套层同样成立，不能落回 miss */
+    NestedCustom: {
+      recognition: 'And',
+      all_of: [{ recognition: 'DirectHit' }, { recognition: 'Custom', custom_recognition: 'NoSuchReco' }],
+    },
   })
   /* 同名改写：overlay 段里 BaseDirect 换成 ColorMatch——用来证明"后声明的覆盖先声明的" */
   writeJson(path.join(OVERLAY, 'pipeline', 'overlay.json'), {
@@ -244,6 +250,16 @@ try {
   check('A11d box 相同',
     j(r11?.detail?.box) === j(r11n?.detail?.box),
     diag(byFile) + ' byName box=' + j(r11n?.detail?.box) + ' byFile box=' + j(r11?.detail?.box))
+
+  /* ── ⑩ And 里嵌的 Custom 也是能力边界 ─────────────────────────────── */
+  console.log('⑩ And 里嵌 Custom 子识别：同样报能力边界，不落回 miss')
+  const a12 = reco(['--project', dir, '--node-name', 'NestedCustom', '--image', PNG])
+  const d12 = a12.env?.data
+  check('A12a 退出 3', a12.code === 3, diag(a12))
+  check("A12b error.code === 'RECO_CUSTOM_NODE'（不是 miss / 不是调用报错）",
+    a12.env?.error?.code === 'RECO_CUSTOM_NODE', diag(a12))
+  check('A12c 回执 customPaths 指向嵌套位置',
+    j(d12?.customPaths).includes('all_of'), diag(a12) + ' customPaths=' + j(d12?.customPaths))
 } finally {
   fs.rmSync(dir, { recursive: true, force: true })
 }

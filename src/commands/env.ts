@@ -157,8 +157,15 @@ function pinFromRequirements(root: string): MaaNodePin | null {
 }
 
 function readMaaNodePin(root: string): MaaNodePin | null {
-  const pin = pinFromPackageJson(root) ?? pinFromRequirements(root)
-  if (pin) return pin
+  const pkg = pinFromPackageJson(root)
+  const req = pinFromRequirements(root)
+  /* 两处都读：范围声明回答不了「跑的是不是同一版」这个等式，只能回答「落没落在区间里」，
+     精确声明才能。所以按 package.json 精确 → requirements.txt 精确 → package.json 范围 →
+     requirements.txt 范围取第一个；见到 package.json 的任何声明就收工，会把另一处的精确 pin
+     顶掉，而不一致正是靠那个精确 pin 才发现的。 */
+  for (const candidate of [pkg?.exact ? pkg : null, req?.exact ? req : null, pkg, req]) {
+    if (candidate) return candidate
+  }
   /* 两个声明源都拿不到才记 uv.lock：它只说明「求解过」，不产生 warning */
   return existsSync(join(root, 'uv.lock')) ? { source: 'uv.lock', declared: '', exact: null } : null
 }
@@ -278,29 +285,43 @@ export const envCommand: Command = {
           detail: `${pin.declared}（${pin.source}）—— CLI 实际加载的 maa-node 未安装，无法比对`,
         })
       } else {
-        /* release 与 qualifier 分开比：预发布、post 与正式版不是同一份构建，
-           报成一致会让用户以为跑的就是 pin 的那份。 */
+        /* 只按 release 线判：`5.15.0b1` 与 `5.15.0-beta.1` 是同一条线上的同一份构建，只差两个
+           生态的写法；报成不一致，用户会去改一条本来正确的 pin。qualifier 的差别只在 detail
+           里陈述，不升级成 warning。 */
         const pinV = splitRelease(pin.exact)
         const runV = splitRelease(self.version)
-        const identical = pinV && runV
-          ? pinV.release === runV.release && pinV.qualifier === runV.qualifier
-          : pin.exact === self.version
-        if (identical) {
+        const mismatch = (): void => {
+          const detail = `项目 pin ${pin.declared}（${pin.source}），CLI 实际加载 ${self.version}`
+          items.push({ key: 'maa-node pin', status: 'warn', detail })
+          pinWarnings.push(`maa-node 版本不一致：${detail}`)
+        }
+        if (!pinV || !runV) {
+          /* 有一边不是 x.y.z 形态（自定义构建号之类）：没有 release 线可比，只能退回整串 */
+          if (pin.exact === self.version) {
+            items.push({
+              key: 'maa-node pin',
+              status: 'ok',
+              detail: `${pin.exact}（${pin.source}）与 CLI 实际加载一致`,
+            })
+          } else {
+            mismatch()
+          }
+        } else if (pinV.release !== runV.release) {
+          mismatch()
+        } else if (pinV.qualifier === runV.qualifier) {
           items.push({
             key: 'maa-node pin',
             status: 'ok',
             detail: `${pin.exact}（${pin.source}）与 CLI 实际加载一致`,
           })
-        } else if (pinV && runV && pinV.release === runV.release) {
-          const detail =
-            `项目 pin ${pin.exact}（${pin.source}），CLI 实际加载 ${self.version}` +
-            ` —— release 线同为 ${pinV.release}，qualifier 不同（${pinV.qualifier || '无'} / ${runV.qualifier || '无'}）`
-          items.push({ key: 'maa-node pin', status: 'warn', detail })
-          pinWarnings.push(`maa-node 版本不一致：${detail}`)
         } else {
-          const detail = `项目 pin ${pin.declared}（${pin.source}），CLI 实际加载 ${self.version}`
-          items.push({ key: 'maa-node pin', status: 'warn', detail })
-          pinWarnings.push(`maa-node 版本不一致：${detail}`)
+          items.push({
+            key: 'maa-node pin',
+            status: 'ok',
+            detail:
+              `同 release 线 ${pinV.release}：声明 ${pin.exact} / 实际 ${self.version}` +
+              `（拼写不同不算不一致）`,
+          })
         }
       }
     }

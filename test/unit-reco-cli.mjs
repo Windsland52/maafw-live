@@ -447,20 +447,32 @@ test('CLI reco：--help 的用法是真正的多行（字面 \\n 会把它压成
   assert.match(out, /--node-name <节点名>/, out)
 })
 
-test('CLI reco：识别子进程抛异常（detail 为 null）→ 原因写明调用报错，不冒充未命中', async () => {
+test('CLI reco：识别子进程抛异常（detail 为 null）→ 标 [报错] + failed，不冒充未命中', async () => {
   /* 实测签名：OCR 模型文件损坏时子进程捕获到 "No graph was found in the protobuf."，
-   * 回执 detail=null、ok:false、无 error 码——不写原因就只剩一个 [未中]。 */
+   * 回执 detail=null、ok:false、无 error 码——只写原因还不够，逐例行也不能打 [未中]。 */
+  const replies = {
+    reco_test: {
+      type: 'OCR', meta: { source: IMAGE, w: 480, h: 270 },
+      results: [{ param: { expected: 'x' }, ms: 257, ok: false, error: 'No graph was found in the protobuf.', detail: null }],
+    },
+  }
   const { code, out } = await runCli(
     ['reco', '--type', 'OCR', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"expected":"x"}'],
-    {
-      reco_test: {
-        type: 'OCR', meta: { source: IMAGE, w: 480, h: 270 },
-        results: [{ param: { expected: 'x' }, ms: 257, ok: false, error: 'No graph was found in the protobuf.', detail: null }],
-      },
-    },
+    replies,
   )
   assert.equal(code, 0, out)
   assert.match(out, /识别调用报错：No graph was found in the protobuf\./, out)
+  assert.match(out, /\[报错\]/, '逐例行要标 [报错]，不能打 [未中]：' + out)
+  assert.doesNotMatch(out, /\[未中\]/, out)
+  assert.match(out, /识别调用报错 1 例（上面标 \[报错\]）/, out)
+
+  const jsonRun = await runCli(
+    ['reco', '--type', 'OCR', '--resource-dir', HERE, '--image', IMAGE, '--param', '{"expected":"x"}', '--json'],
+    replies,
+  )
+  const env = JSON.parse(jsonRun.out)
+  assert.equal(env.data.results[0].failed, true, '机器侧要能区分"没跑成"与"未命中"：' + jsonRun.out)
+  assert.match(String(env.data.missReason), /识别调用报错/)
 })
 
 test('CLI reco：--node-file 是缺 recognition 的单节点 → 报缺字段，不误报成节点表', async () => {

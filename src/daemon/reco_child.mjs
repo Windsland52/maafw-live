@@ -121,6 +121,28 @@ function nearestNames(names, target, limit) {
   return scored.sort((x, y) => x.d - y.d || x.n.localeCompare(y.n)).slice(0, limit).map((x) => x.n)
 }
 
+/**
+ * dump 里的 Custom 识别：顶层 `type: "Custom"` / V1 的 `custom_recognition`，**以及 And / Or 里嵌的
+ * 子识别**。只看顶层会让"And 里挂了一个 custom 子识别"落回 miss 或"识别调用报错"，看起来像没命中，
+ * 而它其实和顶层 custom 是同一条能力边界（reco_test 不桥接 agent 子进程）。
+ * 返回命中位置（便于在报错里说清是哪一层），深度与条数都封顶，避免异常 dump 撑爆回执。
+ */
+function customHits(dump) {
+  const hits = []
+  const walk = (v, path, depth) => {
+    if (hits.length >= 8 || depth > 6 || !v || typeof v !== "object") return
+    if (Array.isArray(v)) {
+      v.forEach((x, i) => walk(x, path + "[" + i + "]", depth + 1))
+      return
+    }
+    if (typeof v.type === "string" && v.type === "Custom") { hits.push(path + ".type"); return }
+    if (v.custom_recognition !== undefined) { hits.push(path + ".custom_recognition"); return }
+    for (const [k, x] of Object.entries(v)) walk(x, path === "" ? k : path + "." + k, depth + 1)
+  }
+  walk(dump && dump.recognition, "recognition", 0)
+  return hits
+}
+
 async function main() {
   const maa = require("@maaxyz/maa-node")
   const image = toArrayBuffer(fs.readFileSync(cfg.image))
@@ -166,11 +188,18 @@ async function main() {
       })
       return
     }
-    /* custom / agent 节点：reco_test 不桥接 agent 子进程（run 才桥接），明确报能力边界而不是让它看起来像 miss */
-    if (recoTypeOf(nodeDump) === "Custom") {
+    /* custom / agent 节点：reco_test 不桥接 agent 子进程（run 才桥接），明确报能力边界而不是让它看起来像 miss。
+     * And / Or 里嵌的子识别同样算——它们会在 run_recognition 里被真的走到。 */
+    const customs = customHits(nodeDump)
+    if (customs.length > 0) {
+      const onlyTop = customs.length === 1 && customs[0] === "recognition.type"
       writeOut({
-        ok: false, code: "CUSTOM_NODE", nodeName: cfg.nodeName, nodeDump, resourceDirs: dirs,
-        error: "节点 " + cfg.nodeName + " 的识别是 Custom：reco_test 不桥接 custom/agent 识别（run --project 才桥接 agent 子进程）",
+        ok: false, code: "CUSTOM_NODE", nodeName: cfg.nodeName, nodeDump, resourceDirs: dirs, customPaths: customs,
+        error: onlyTop
+          ? "节点 " + cfg.nodeName + " 的识别是 Custom：reco_test 不桥接 custom/agent 识别（run --project 才桥接 agent 子进程）"
+          : "节点 " + cfg.nodeName + " 的识别含 Custom 子识别（" + customs.length + " 处："
+            + customs.slice(0, 3).join(" / ") + (customs.length > 3 ? " …" : "")
+            + "）：reco_test 不桥接 custom/agent 识别（run --project 才桥接 agent 子进程）",
       })
       return
     }
