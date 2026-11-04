@@ -13,6 +13,7 @@ import {
   type ControllerPlan, type DeviceLike, type LoadedInterface,
 } from '../interface/index.js'
 import { spawnDaemon, type DaemonClient, type SpawnOptions } from '../client/daemon.js'
+import { buildAgentEnv } from './pi-env.js'
 
 /** 设备会话的连接参数（手动路径）。kind/target 之外全部来自 maafw 的控制器能力。 */
 export interface ManualConnect {
@@ -310,10 +311,16 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
       '），本工具不执行——需自行保证前置条件')
   }
   const agents = loaded.agents
+  /* agent 子进程要的环境：PI_* 按 interface.json 的**当前选择**生成（控制器 / 资源 / 项目版本）。
+   * 不注入时 agent 不会报错，只会落到自带默认值——这是最安静的一种"跑的不是同一个配置"。 */
+  const agentEnv = buildAgentEnv({ loaded, controllerName: ctrlName, resourceName: resName })
   if (agents.length) {
+    const injected = Object.keys(agentEnv)
     warns.push('项目声明了 ' + agents.length + ' 个 agent 子进程（' +
       agents.map((a) => [a.exec, ...a.args].join(' ')).join(' ; ') +
-      '），run 时自动 spawn 并桥接——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
+      '），run 时自动 spawn 并桥接' +
+      (injected.length ? '（注入 ' + injected.join(' / ') + '）' : '') +
+      '——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
   }
 
   const override: Record<string, unknown> = { ...chain.override }
@@ -328,6 +335,7 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
       /* agent 桥接：daemon spawn 子进程（identifier 追加为末参）并 bind/connect 到本次 Resource */
       agents: agents.map((a) => ({ exec: a.exec, args: a.args })),
       agentCwd: loaded.dir ?? undefined,
+      agentEnv,
     },
     entry: resolvedEntry,
     taskName: task?.name ?? null,

@@ -19,6 +19,7 @@ function writeProject() {
   fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
     interface_version: 2,
     name: 'run-prep',
+    version: '1.2.3',
     controller: [{ name: 'C1', type: 'Adb', option: ['ctlOpt'] }],
     resource: [{ name: 'R1', path: ['res'], option: ['resOpt'] }],
     task: [{ name: '启动', entry: 'StartUp', option: ['taskOpt'] }],
@@ -124,4 +125,21 @@ test('多个资源都适用：run 把"选了哪个、还有谁适用"升成 warn
     prep.warns.some((w) => w.includes('R1') && w.includes('R2') && w.includes('--resource')),
     'note 行只到 human 输出，机器消费面要的是 warnings：' + JSON.stringify(prep.warns),
   )
+})
+
+test('agent 子进程环境：PI_* 按当前选择生成，且不编 5.14.2 里没有的 PI_USER_DATA_DIR', (t) => {
+  const dir = writeProject()
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+  const prep = prepareProjectRun({ project: projectOf(dir), entry: '启动' })
+  assert.equal(prep.ok, true, JSON.stringify(prep))
+  if (!prep.ok) return
+  const env = prep.args.agentEnv
+  assert.equal(env.PI_CLIENT_NAME, 'maafw-live')
+  assert.equal(env.PI_INTERFACE_VERSION, 'v2.5.0', '兑现到哪一档就报哪一档，不谎报 v2.6/v2.7')
+  assert.equal(env.PI_VERSION, '1.2.3', '顶层 version 是项目版本，不是 interface_version=2')
+  assert.equal(JSON.parse(env.PI_CONTROLLER).name, 'C1', 'PI_CONTROLLER 是被选中那条的完整对象')
+  assert.equal(JSON.parse(env.PI_RESOURCE).name, 'R1')
+  assert.ok(!('PI_USER_DATA_DIR' in env), 'PI_USER_DATA_DIR 要 MaaFW 5.15.0+，本仓锁 5.14.2')
+  assert.match(env.PI_CLIENT_MAAFW_VERSION, /^5\./, 'PI_CLIENT_MAAFW_VERSION 报实际加载的 maa-node 版本')
+  assert.ok(!JSON.stringify(env).includes('\n'), 'PI_CONTROLLER / PI_RESOURCE 必须是单行紧凑 JSON')
 })

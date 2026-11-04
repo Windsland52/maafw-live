@@ -52,6 +52,8 @@ export interface InterfaceController {
   attachResourcePath: string[]
   /** v2.3.0：控制器级配置项名单（override 链第三级） */
   option?: string[]
+  /** 原始条目（未裁剪）：PI_CONTROLLER 要传"被选中那条的完整对象"，不能按本工具用到的字段重建 */
+  raw?: unknown
 }
 
 export interface InterfaceResource {
@@ -62,6 +64,8 @@ export interface InterfaceResource {
   controllers: string[]
   /** v2.3.0：资源级配置项名单（override 链第二级） */
   option?: string[]
+  /** 原始条目（未裁剪）：PI_RESOURCE 要传"被选中那条的完整对象" */
+  raw?: unknown
 }
 
 export interface InterfaceTask {
@@ -114,6 +118,8 @@ export interface LoadedInterface {
   /** 所在目录——resource.path 与 attach_resource_path 的相对基准 */
   dir: string | null
   version: number | null
+  /** 顶层 `version` 字符串（**项目**版本，与 interface_version 无关）：PI_VERSION 就是它 */
+  projectVersion: string | null
   name: string | null
   controllers: InterfaceController[]
   resources: InterfaceResource[]
@@ -166,6 +172,7 @@ export function loadInterface(dir: string): LoadedInterface {
     file,
     dir: file ? dirname(file) : null,
     version: null,
+    projectVersion: null,
     name: null,
     controllers: [],
     resources: [],
@@ -220,6 +227,7 @@ export function loadInterface(dir: string): LoadedInterface {
     controllers.push({
       name,
       type,
+      raw: c,
       display: Object.keys(display).length ? display : undefined,
       win32: w
         ? {
@@ -253,7 +261,7 @@ export function loadInterface(dir: string): LoadedInterface {
       problems.push({ message: 'resource 项缺少 name 或 path，已跳过' })
       continue
     }
-    resources.push({ name, paths, controllers: strList(r.controller), option: strList(r.option) })
+    resources.push({ name, paths, controllers: strList(r.controller), option: strList(r.option), raw: r })
   }
 
   const tasks: InterfaceTask[] = []
@@ -405,6 +413,7 @@ export function loadInterface(dir: string): LoadedInterface {
   return {
     ...base,
     version: version ?? null,
+    projectVersion: str(o.version) ?? null,
     name: str(o.name) ?? null,
     controllers,
     resources,

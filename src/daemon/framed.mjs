@@ -1154,7 +1154,10 @@ function ensureTasker() {
  * 模式照 maa-support-extension 的 setupAgent：new Client() 自动生成 identifier，
  * 把 identifier 追加为子进程最后一个参数（agent 侧 sys.argv[-1] → AgentServer.start_up），
  * bind_resource 后 connect（与子进程退出/超时竞速）。custom action/recognition 经此
- * 注册进绑定的 Resource——依赖 agent 的节点（M9A DisableNode 等）由此可用。 */
+ * 注册进绑定的 Resource——依赖 agent 的节点（M9A DisableNode 等）由此可用。
+ *
+ * 环境变量：调用方给的 `PI_*` 原样并入子进程 env。本层不解释取值也不补默认——
+ * 协议允许逐项缺省、由 agent 容错；这里编一个默认值只会把"没注入"伪装成"注入了"。 */
 async function cleanupAgents() {
   const bind = S.agentBind
   S.agentBind = null
@@ -1166,7 +1169,7 @@ async function cleanupAgents() {
   }
 }
 
-async function setupAgents(res, decls, cwd) {
+async function setupAgents(res, decls, cwd, piEnv) {
   const key = JSON.stringify(decls)
   if (S.agentBind && S.agentBind.res === res && S.agentBind.key === key) {
     const alive = S.agentBind.clients.every((c) => {
@@ -1182,7 +1185,16 @@ async function setupAgents(res, decls, cwd) {
     const ident = client.identifier
     let child = null
     try {
-      child = spawn(d.exec, [...d.args, ident], { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      const env = piEnv && typeof piEnv === 'object' ? Object.fromEntries(
+        Object.entries(piEnv).filter(([, v]) => typeof v === 'string' && v !== ''),
+      ) : {}
+      child = spawn(d.exec, [...d.args, ident], {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        /* 空对象时干脆不传 env（子进程照常继承），别用空 env 覆盖掉 PATH */
+        ...(Object.keys(env).length ? { env: { ...process.env, ...env } } : {}),
+      })
     } catch (e) {
       try { client.destroy() } catch (e2) { /* ignore */ }
       return { ok: false, error: 'agent 子进程启动失败：' + d.exec + '（' + String(e && e.message || e) + '）' }
@@ -1257,7 +1269,7 @@ async function cmdRun(args) {
    * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
   let agentInfo = null
   if (Array.isArray(args.agents) && args.agents.length) {
-    const ag = await setupAgents(res, args.agents, String(args.agentCwd || process.cwd()))
+    const ag = await setupAgents(res, args.agents, String(args.agentCwd || process.cwd()), args.agentEnv)
     agentInfo = ag.ok
       ? { ok: true, reused: !!ag.reused, actions: ag.actions ?? null, recognitions: ag.recos ?? null }
       : { ok: false, error: ag.error }
