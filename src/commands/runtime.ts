@@ -9,6 +9,7 @@ import { watchLogs } from '../runtime/log-watch.js'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { defaultRunDir } from '../client/daemon.js'
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
+import { parseOptionArgs } from '../option-args.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
@@ -424,7 +425,10 @@ export const waitCommand: Command = {
 export const runCommand: Command = {
   name: 'run',
   summary: '运行 pipeline：项目模式（推荐）或 resource 目录模式；节点事件按帧序对齐。退出码按任务级 record.ok',
-  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>] [--preset <name>] [--resource <名|路径>]\n' +
+  usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>] [--preset <name>] [--resource <名|路径>] [--option <键>=<值>|<键>.<字段>=<值>]…\n' +
+    '       --option 按次给选项取值（可多次）：<键>=<case 名>（select/switch；checkbox 用逗号分隔）、\n' +
+    '                <键>.<字段>=<值>（input 的输入字段）。优先级 CLI > preset > default_case；\n' +
+    '                input/hotkey 的 pipeline_override 模板靠它替换 {字段名}（hotkey 需虚拟键码表，未内置）\n' +
     '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
     '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖\n' +
     '       --watch <日志文件> = 跑的同时实时 tail 该文件（可多次给）——长任务执行中 daemon 帧流被框架占住，这是唯一能看到进展的通道',
@@ -435,6 +439,8 @@ export const runCommand: Command = {
     timeout: { type: 'string' },
     override: { type: 'string' },
     preset: { type: 'string' },
+    /* 按次取值（可多次给）：<键>=<case 名>（select/switch/checkbox）、<键>.<字段>=<值>（input） */
+    option: { type: 'string', multiple: true },
     /* 运行期日志跟随：跑的时候把项目 agent 写的日志实时打出来（可多次给） */
     watch: { type: 'string', multiple: true },
     'watch-interval': { type: 'string' },
@@ -465,6 +471,11 @@ export const runCommand: Command = {
       return fail('BAD_ARGUMENTS', '--timeout 必须是毫秒数', undefined, EXIT.USAGE)
     }
     const presetName = typeof ctx.values.preset === 'string' ? ctx.values.preset : null
+  const parsedOptions = parseOptionArgs(ctx.values.option)
+  if (parsedOptions.error) {
+    return fail('BAD_ARGUMENTS', parsedOptions.error, '例：--option taskOpt=b  --option 章节数.章节号=4', EXIT.USAGE)
+  }
+  const { cases: optionCases, fields: optionFields } = parsedOptions
 
     try {
       return await withDaemon(async (client) => {
@@ -481,6 +492,8 @@ export const runCommand: Command = {
             entry,
             presetName,
             override,
+            ...(Object.keys(optionCases).length ? { optionCases } : {}),
+            ...(Object.keys(optionFields).length ? { optionFields } : {}),
           })
           if (!prep.ok) return fail(prep.code, prep.error, prep.hint, EXIT.FINDINGS)
           args = prep.args
@@ -492,6 +505,9 @@ export const runCommand: Command = {
           /* bundle 模式不载入 interface，preset 没有可应用的四级链——静默丢参数会让调用方
            * 以为 P1 已生效；与 REPL 同一句警告。 */
           if (presetName) extraWarns.push('--resource-dir 是 bundle 模式：--preset ' + presetName + ' 不生效（不叠 interface 四级 override）')
+          if (Object.keys(optionCases).length || Object.keys(optionFields).length) {
+            extraWarns.push('--resource-dir 是 bundle 模式：--option 不生效（取值只作用于 interface 的 option 链与模板替换）')
+          }
         }
         /* 运行期日志跟随：run 会阻塞到任务结束，期间帧流/事件都不可用（框架占住控制器），
          * 唯一还在更新的只有项目 agent 自己写的日志。给了 --watch 就在这里边跑边推。 */

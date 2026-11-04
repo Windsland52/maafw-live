@@ -127,6 +127,15 @@ test('多个资源都适用：run 把"选了哪个、还有谁适用"升成 warn
   )
 })
 
+test('--option 按次取值进链：CLI 值压过 default_case', (t) => {
+  const dir = writeProject()
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+  const prep = prepareProjectRun({ project: projectOf(dir), entry: '启动', optionCases: { taskOpt: 'b' } })
+  assert.equal(prep.ok, true, JSON.stringify(prep))
+  if (!prep.ok) return
+  assert.equal(prep.args.override.Node.task, 'b', 'default_case 是 a，CLI 给 b 应生效')
+})
+
 test('agent 子进程环境：PI_* 按当前选择生成，且不编 5.14.2 里没有的 PI_USER_DATA_DIR', (t) => {
   const dir = writeProject()
   t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })

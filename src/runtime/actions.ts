@@ -225,6 +225,10 @@ export interface ProjectRunInput {
   entry: string
   /** preset 名：取值覆盖 default_case（PI v2.3.0） */
   presetName?: string | null
+  /** CLI 按次取值：option 键 → case 名（select/switch 单值；checkbox 数组） */
+  optionCases?: Record<string, string | string[]>
+  /** CLI 按次取值：option 键 → { 字段名: 原文 }（input / hotkey） */
+  optionFields?: Record<string, Record<string, string>>
   /** 用户 --override：最后覆盖合成结果 */
   override?: Record<string, unknown>
 }
@@ -302,6 +306,8 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
     resourceName: resName,
     taskName: task?.name ?? null,
     presetName: input.presetName ?? null,
+    ...(input.optionCases ? { optionCases: input.optionCases } : {}),
+    ...(input.optionFields ? { optionFields: input.optionFields } : {}),
   })
   warns.push(...chain.warns)
 

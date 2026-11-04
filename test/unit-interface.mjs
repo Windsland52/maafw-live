@@ -152,36 +152,111 @@ test('嵌套 option：父 case 生效后按声明序合并子项（晚于父级�
   assert.deepEqual(r.override, { P: { mode: 'child', extra: 1 } })
 })
 
-test('无取值：select 无 default/preset → 告警；input/hotkey 只在有模板时告警（没有取值通道，不能静默丢一层）', () => {
+test('无取值：select 无 default/preset → 告警；input 没有模板 → 不打扰', () => {
   const loaded = mkLoaded({
     options: {
       novalue: { name: 'novalue', type: 'select', cases: [{ name: 'x', pipelineOverride: { Q: 1 } }] },
-      inp: { name: 'inp', type: 'input', cases: [{ name: 'x', pipelineOverride: { Q: 2 } }] },
-      hotk: { name: 'hotk', type: 'hotkey', cases: [{ name: 'x', pipelineOverride: { Q: 3 } }] },
-      bare: { name: 'bare', type: 'input', cases: [{ name: 'x' }] },
+      bare: { name: 'bare', type: 'input', inputs: [{ name: 'n' }] },
     },
-    globalOption: ['novalue', 'inp', 'hotk', 'bare'],
+    globalOption: ['novalue', 'bare'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
   assert.equal(r.override.Q, undefined)
   assert.equal(r.warns.filter((w) => w.includes('novalue') && w.includes('无 preset')).length, 1)
-  assert.ok(r.warns.some((w) => w.includes('inp') && w.includes('没有按次取值通道')), 'input 带 override 模板：必须告警，不能静默跳过')
-  assert.ok(r.warns.some((w) => w.includes('hotk') && w.includes('{字段名}')), 'hotkey 带 override 模板：必须告警')
   assert.ok(!r.warns.some((w) => w.includes('bare')), '没有模板 = 没有东西会丢，不打扰')
 })
 
-test('input 的 preset 值是字段映射：不能 String() 成 "[object Object]" 再误报成"取值不是已声明的 case"', () => {
+test('input：option 级模板 + 字段取值 → 整串按 pipeline_type 转型，片段用文本', () => {
+  /* 模板在 option 级（`option.<键>.pipeline_override`），不在 cases 里——两处是不同字段 */
   const loaded = mkLoaded({
-    options: { count: { name: 'count', type: 'input', cases: [{ name: 'x', pipelineOverride: { Q: '{n}' } }] } },
-    globalOption: [],
-    presets: [{ name: 'P', task: [{ name: 'TK', option: { count: { n: '5' } } }] }],
-    tasks: [{ name: 'TK', entry: 'e', option: ['count'] }],
+    options: {
+      cnt: {
+        name: 'cnt', type: 'input', cases: [],
+        pipelineOverride: { Node: { timeout: '{超时时间}', next: 'MainChapter_{章节号}' } },
+        inputs: [
+          { name: '超时时间', pipelineType: 'int', default: '30' },
+          { name: '章节号', pipelineType: 'string', default: '4' },
+        ],
+      },
+    },
+    globalOption: ['cnt'],
   })
-  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK', presetName: 'P' })
-  assert.equal(r.override.Q, undefined)
-  assert.ok(!r.warns.some((w) => w.includes('[object Object]')), '字段映射不该走 case 查找')
-  assert.ok(!r.warns.some((w) => w.includes('不是已声明的 case')), '归因必须是"没有取值通道"，不是"配置写错了"')
-  assert.ok(r.warns.some((w) => w.includes('count') && w.includes('没有按次取值通道')))
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
+  assert.deepEqual(r.override.Node, { timeout: 30, next: 'MainChapter_4' }, '整串转型成数字，片段拼接成字符串')
+  assert.ok(r.applied.some((l) => l.includes('cnt') && l.includes('input')), JSON.stringify(r.applied))
+})
+
+test('input：占位没有取值 → 整条模板放弃（不写半套）并说明怎么给值', () => {
+  const loaded = mkLoaded({
+    options: {
+      cnt: {
+        name: 'cnt', type: 'input', cases: [],
+        pipelineOverride: { Node: { timeout: '{超时}' } },
+        inputs: [{ name: '超时', pipelineType: 'int' }],
+      },
+    },
+    globalOption: ['cnt'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
+  assert.equal(r.override.Node, undefined)
+  assert.ok(r.warns.some((w) => w.includes('超时') && w.includes('没有取值')), JSON.stringify(r.warns))
+})
+
+test('input：取值优先级 CLI --option > preset > 字段 default', () => {
+  const mk = () => mkLoaded({
+    options: {
+      cnt: {
+        name: 'cnt', type: 'input', cases: [],
+        pipelineOverride: { Node: { timeout: '{n}' } },
+        inputs: [{ name: 'n', pipelineType: 'int', default: '1' }],
+      },
+    },
+    globalOption: [],
+    presets: [{ name: 'P', task: [{ name: 'TK', option: { cnt: { n: '5' } } }] }],
+    tasks: [{ name: 'TK', entry: 'e', option: ['cnt'] }],
+  })
+  const base = { controllerName: null, resourceName: null, taskName: 'TK', presetName: 'P' }
+  assert.equal(computePipelineOverride({ loaded: mk(), ...base }).override.Node.timeout, 5, 'preset 压过字段 default')
+  assert.equal(
+    computePipelineOverride({ loaded: mk(), ...base, optionFields: { cnt: { n: '9' } } }).override.Node.timeout,
+    9,
+    'CLI 按次取值压过 preset（本地约定：协议未规定优先级）',
+  )
+})
+
+test('hotkey：没有虚拟键码映射表 → 跳过模板并说清楚（不猜一个整数写进 pipeline）', () => {
+  const loaded = mkLoaded({
+    options: {
+      hk: {
+        name: 'hk', type: 'hotkey', cases: [],
+        pipelineOverride: { KeyNode: { key: '{热键}' } },
+        hotkeys: [{ name: '热键', default: 'E' }],
+      },
+    },
+    globalOption: ['hk'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
+  assert.equal(r.override.KeyNode, undefined)
+  assert.ok(r.warns.some((w) => w.includes('hotkey') && w.includes('虚拟按键码')), JSON.stringify(r.warns))
+})
+
+test('task 级 pipeline_override 是基底，option 链在其上覆盖', () => {
+  const loaded = mkLoaded({
+    tasks: [{ name: 'TK', entry: 'e', option: ['taskOpt'], pipelineOverride: { N: { timeout: 1, keep: 'task' } } }],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK' })
+  assert.equal(r.override.N.timeout, 400, 'option 覆盖 task 级同字段')
+  assert.equal(r.override.N.keep, 'task', 'task 级独有的字段保留')
+  assert.ok(r.applied[0].includes('task.pipeline_override'), '基底要在生效记录里可见')
+})
+
+test('--option 的键没被任何级别引用 → 告警（不是静默丢弃）', () => {
+  const r = computePipelineOverride({
+    loaded: mkLoaded(),
+    controllerName: null, resourceName: null, taskName: null,
+    optionCases: { ghost: 'on' },
+  })
+  assert.ok(r.warns.some((w) => w.includes('ghost') && w.includes('没有被任何级别引用')), JSON.stringify(r.warns))
 })
 
 test('取值指向未声明 case → 告警跳过该 case', () => {

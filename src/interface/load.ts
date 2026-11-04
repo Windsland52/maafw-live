@@ -78,6 +78,25 @@ export interface InterfaceTask {
   resource?: string[]
   /** 配置项键名（按展示顺序）；对应 InterfaceOption 字典的键 */
   option?: string[]
+  /** task 级覆盖：键=节点名、值=字段覆盖（与 case 级同构，但**没有** `{字段名}` 替换语义） */
+  pipelineOverride?: Record<string, unknown>
+}
+
+/** input option 的输入字段：`{name}` 占位引用的就是这里的 `name`。 */
+export interface InputField {
+  name: string
+  /** 初始值。协议只把它定义成"默认值"，没说 Client 在无人输入时该不该拿它替换——本工具用。 */
+  default?: string
+  /** 替换时的转型类型；枚举只有 `string` / `int` / `bool`（**没有** float） */
+  pipelineType?: string
+  /** 正则校验（协议把它归给 Client 的输入校验职责） */
+  verify?: string
+}
+
+/** hotkey option 的快捷键字段（v2.8.0）：持久化值是人类可读字符串，如 `E` / `Ctrl+A`（末段为主键）。 */
+export interface HotkeyField {
+  name: string
+  default?: string
 }
 
 /** option 字典条目：switch/select/checkbox 的 case 携带 pipeline_override。 */
@@ -92,6 +111,17 @@ export interface InterfaceOption {
   name: string
   type: string
   cases: OptionCase[]
+  /**
+   * input / hotkey 专用的覆盖模板：**整个 option 一份**，值里含 `{字段名}` 占位。
+   *
+   * 与 `cases[].pipeline_override` 是协议里两处不同字段（select/switch/checkbox 走 case，
+   * input/hotkey 走这里）。只建模前者会永远读不到后者的模板。
+   */
+  pipelineOverride?: Record<string, unknown>
+  /** input 的输入字段（`inputs[]`） */
+  inputs?: InputField[]
+  /** hotkey 的快捷键字段（`hotkeys[]`，v2.8.0）——容器不是 inputs */
+  hotkeys?: HotkeyField[]
   /** 初始选中：switch/select 单 case 名；checkbox 为 case 名数组 */
   defaultCase?: string | string[]
   /** 适用性过滤（v2.3.1：不满足的 option 不得产生 pipeline_override） */
@@ -288,12 +318,14 @@ export function loadInterface(dir: string): LoadedInterface {
         problems.push({ message: 'task 项缺少 name，已跳过（' + src + '）' })
         continue
       }
+      const po = obj(t.pipeline_override)
       tasks.push({
         name,
         entry: str(t.entry),
         controller: strList(t.controller),
         resource: strList(t.resource),
         option: strList(t.option),
+        ...(po ? { pipelineOverride: po } : {}),
       })
     }
   }
@@ -321,10 +353,33 @@ export function loadInterface(dir: string): LoadedInterface {
           option: strList(c2.option),
         })
       }
+      const tpl = obj(v.pipeline_override)
+      const inputs: InputField[] = []
+      for (const it of Array.isArray(v.inputs) ? v.inputs : []) {
+        const f = obj(it)
+        const fname = f ? str(f.name) : undefined
+        if (!f || !fname) continue
+        inputs.push({
+          name: fname,
+          ...(str(f.default) !== undefined ? { default: str(f.default) } : {}),
+          ...(str(f.pipeline_type) !== undefined ? { pipelineType: str(f.pipeline_type) } : {}),
+          ...(str(f.verify) !== undefined ? { verify: str(f.verify) } : {}),
+        })
+      }
+      const hotkeys: HotkeyField[] = []
+      for (const it of Array.isArray(v.hotkeys) ? v.hotkeys : []) {
+        const f = obj(it)
+        const fname = f ? str(f.name) : undefined
+        if (!f || !fname) continue
+        hotkeys.push({ name: fname, ...(str(f.default) !== undefined ? { default: str(f.default) } : {}) })
+      }
       options[key] = {
         name: key,
         type: String(v.type),
         cases,
+        ...(tpl ? { pipelineOverride: tpl } : {}),
+        ...(inputs.length ? { inputs } : {}),
+        ...(hotkeys.length ? { hotkeys } : {}),
         ...(v.default_case !== undefined ? { defaultCase: v.default_case as string | string[] } : {}),
         controller: strList(v.controller),
         resource: strList(v.resource),
