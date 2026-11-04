@@ -152,19 +152,36 @@ test('嵌套 option：父 case 生效后按声明序合并子项（晚于父级�
   assert.deepEqual(r.override, { P: { mode: 'child', extra: 1 } })
 })
 
-test('无取值：select 无 default/preset → 告警跳过；input/hotkey 静默跳过', () => {
+test('无取值：select 无 default/preset → 告警；input/hotkey 只在有模板时告警（没有取值通道，不能静默丢一层）', () => {
   const loaded = mkLoaded({
     options: {
       novalue: { name: 'novalue', type: 'select', cases: [{ name: 'x', pipelineOverride: { Q: 1 } }] },
       inp: { name: 'inp', type: 'input', cases: [{ name: 'x', pipelineOverride: { Q: 2 } }] },
       hotk: { name: 'hotk', type: 'hotkey', cases: [{ name: 'x', pipelineOverride: { Q: 3 } }] },
+      bare: { name: 'bare', type: 'input', cases: [{ name: 'x' }] },
     },
-    globalOption: ['novalue', 'inp', 'hotk'],
+    globalOption: ['novalue', 'inp', 'hotk', 'bare'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
   assert.equal(r.override.Q, undefined)
   assert.equal(r.warns.filter((w) => w.includes('novalue') && w.includes('无 preset')).length, 1)
-  assert.ok(!r.warns.some((w) => w.includes('inp') || w.includes('hotk')), '输入类不算异常')
+  assert.ok(r.warns.some((w) => w.includes('inp') && w.includes('没有按次取值通道')), 'input 带 override 模板：必须告警，不能静默跳过')
+  assert.ok(r.warns.some((w) => w.includes('hotk') && w.includes('{字段名}')), 'hotkey 带 override 模板：必须告警')
+  assert.ok(!r.warns.some((w) => w.includes('bare')), '没有模板 = 没有东西会丢，不打扰')
+})
+
+test('input 的 preset 值是字段映射：不能 String() 成 "[object Object]" 再误报成"取值不是已声明的 case"', () => {
+  const loaded = mkLoaded({
+    options: { count: { name: 'count', type: 'input', cases: [{ name: 'x', pipelineOverride: { Q: '{n}' } }] } },
+    globalOption: [],
+    presets: [{ name: 'P', task: [{ name: 'TK', option: { count: { n: '5' } } }] }],
+    tasks: [{ name: 'TK', entry: 'e', option: ['count'] }],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK', presetName: 'P' })
+  assert.equal(r.override.Q, undefined)
+  assert.ok(!r.warns.some((w) => w.includes('[object Object]')), '字段映射不该走 case 查找')
+  assert.ok(!r.warns.some((w) => w.includes('不是已声明的 case')), '归因必须是"没有取值通道"，不是"配置写错了"')
+  assert.ok(r.warns.some((w) => w.includes('count') && w.includes('没有按次取值通道')))
 })
 
 test('取值指向未声明 case → 告警跳过该 case', () => {
@@ -284,6 +301,35 @@ test('resolveResourcePaths：--resource 指定条目或路径时，仍追加 con
 
     const noCtrl = resolveResourcePaths(l, undefined, 'R2')
     assert.deepEqual(noCtrl.paths, [path.join(dir, 'res2')], '没说控制器就没有附加路径')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('resolveResourcePaths：多个资源都适用 → 取第一个但给 note（静默取首是最坏的失败模式）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-multi-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      name: 'multi',
+      controller: [{ name: 'C1', type: 'Adb' }],
+      resource: [
+        { name: 'ZH', path: ['zh'] },
+        { name: 'EN', path: ['en'] },
+        { name: 'ONLY_C2', path: ['c2'], controller: ['C2'] },
+      ],
+      task: [{ name: 'T1', entry: 'StartUp' }],
+    }))
+    const l = loadInterface(dir)
+    const r = resolveResourcePaths(l, 'C1')
+    assert.equal(r.selected, 'ZH', '互斥单选：按声明序取第一个仍是语义')
+    assert.equal(r.notes?.length, 1, '但必须留下"还有别的可选"的痕迹')
+    assert.ok(r.notes[0].includes('ZH') && r.notes[0].includes('EN'))
+    assert.ok(!r.notes[0].includes('ONLY_C2'), '不适用的条目不进备选')
+
+    const byName = resolveResourcePaths(l, 'C1', 'EN')
+    assert.equal(byName.selected, 'EN')
+    assert.equal(byName.notes, undefined, '用户已经显式选了：没有歧义就别啰嗦')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

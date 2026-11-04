@@ -41,6 +41,8 @@ export interface ResourcePlan {
   names: string[]
   /** 本次实际选中的 resource 名（attach_resource_path 之外的来源条目） */
   selected: string | null
+  /** 需要人工注意的事项：多个条目都适用时说明选了哪一个（resource[] 是互斥单选，选了就只能用一个） */
+  notes?: string[]
 }
 
 const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', Linux: 'linux' }
@@ -202,6 +204,9 @@ export function planController(
  * 所选控制器的条目，条目自身多路径按声明顺序叠加（如"B 服"= base + bilibili）；
  * attach_resource_path 在选中控制器后追加。override（--resource）先按资源名匹配，
  * 匹配不上再按文件系统路径解释（原有行为）。
+ *
+ * 有多个条目都适用时，选中的那个与备选一起进 notes——"取第一个"是语义，但静默取第一个
+ * 会让用错资源包的人查不出原因。
  */
 export function resolveResourcePaths(
   loaded: LoadedInterface,
@@ -213,13 +218,13 @@ export function resolveResourcePaths(
    * 追加控制器声明的 attach_resource_path（v2.2.0："在 resource.path 加载完成后，额外加载"）。
    * 它是**控制器的属性**，所以 `--resource` 走哪条分支都要追加——曾经两条提前 return 把它丢了。
    */
-  const withAttach = (paths: string[], names: string[], selected: string | null): ResourcePlan => {
+  const withAttach = (paths: string[], names: string[], selected: string | null, notes: string[] = []): ResourcePlan => {
     const out = [...paths]
     if (dir && controllerName) {
       const c = loaded.controllers.find((x) => x.name === controllerName)
       for (const p of c?.attachResourcePath ?? []) out.push(resolve(dir, p))
     }
-    return { paths: [...new Set(out)], names, selected }
+    return { paths: [...new Set(out)], names, selected, ...(notes.length ? { notes } : {}) }
   }
 
   if (override) {
@@ -236,9 +241,19 @@ export function resolveResourcePaths(
   )
   const paths: string[] = []
   let selected: string | null = null
+  const notes: string[] = []
   if (applicable.length) {
     selected = applicable[0].name
     for (const p of applicable[0].paths) paths.push(resolve(dir, p))
+    /* resource[] 是互斥单选：多个条目都适用时没有"都对"的答案，按声明序取第一个就是 Client 语义。
+     * 但用户/agent 看不到"其实还有别的可选"——用错资源包（中/英资产、多语言模型）会静默跑错，
+     * 所以把这次的选择和备选摆到台面上。 */
+    if (applicable.length > 1) {
+      notes.push(
+        '当前控制器适用 ' + applicable.length + ' 个资源（' + applicable.map((r) => r.name).join(' / ') +
+          '），已选 ' + selected + '——要换用 --resource <名>',
+      )
+    }
   }
-  return withAttach(paths, selected ? [selected] : [], selected)
+  return withAttach(paths, selected ? [selected] : [], selected, notes)
 }

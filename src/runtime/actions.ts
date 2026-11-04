@@ -290,6 +290,10 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
     warns.push('任务 ' + task.name + ' 声明资源 ' + task.resource.join(' / ') + '，当前选中的是 ' + resName)
   }
 
+  /* 多个资源条目都适用时 resource[] 只能选一个：plan 侧记下"选了哪个、还有谁适用"，
+   * 在这里升成 warning——human 的 note 行机器消费面（--json）读不到。 */
+  for (const n of project.resource?.notes ?? []) warns.push(n)
+
   /* pipeline_override 四级合并链（preset > default_case 取值） + 用户 --override 最后覆盖 */
   const chain = computePipelineOverride({
     loaded,

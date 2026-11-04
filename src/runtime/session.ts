@@ -66,7 +66,9 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
     const conn = await connect(client, { ...planned.plan.connect })
     if (conn && conn.ok === false) throw new SessionError(conn.error ?? '连接失败', 'CONNECT_FAILED')
     return {
-      connected: true, plan: planned, session: conn.session ?? null, notes: planned.plan.notes,
+      connected: true, plan: planned, session: conn.session ?? null,
+      /* 资源侧提示（多个条目适用、已替用户选了哪一个）与控制器提示同一条 human 通道 */
+      notes: [...(planned.plan.notes ?? []), ...(planned.resource?.notes ?? [])],
       ...(conn.streamStopped === true ? { streamStopped: true } : {}),
     }
   }

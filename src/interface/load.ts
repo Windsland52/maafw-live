@@ -1,8 +1,13 @@
 /**
  * 载入项目 interface.json（ProjectInterface v2）。
  *
- * 只做本工具需要的窄解析：控制器声明（连接规划用）、资源声明（路径解析用）、任务入口
- * （run --project 用）。其余字段（task 参数、option、i18n 等）不属于 CLI 的职责，原样忽略。
+ * 解析面就是本工具真正消费的那部分：控制器（连接规划）、资源（路径解析）、任务入口
+ * （run --project）、option / preset / global_option（pipeline_override 四级链）、
+ * agent 与 pretask（子进程相关）、import（v2.2.0 合并规则）。
+ *
+ * 明确**不**解析、不消费的：task 级 pipeline_override（本工具只合成 option 链，任务级写死的
+ * 覆盖要由 Client 应用）、i18n（languages 与 `$` 键——当前不输出人类标签）、group / setting /
+ * telemetry、resource.hash（v2.6.0 的一致性校验，未实现）。
  * 全过程不抛异常：问题进 problems[]，由调用方决定怎么呈现。
  */
 import { existsSync, readFileSync } from 'node:fs'

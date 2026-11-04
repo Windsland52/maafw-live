@@ -110,3 +110,18 @@ test('preset 不存在：告警继续，用 default_case 取值', (t) => {
   assert.ok(prep.warns.some((w) => /preset NOPE 不存在/.test(w)), JSON.stringify(prep.warns))
   assert.equal(prep.args.override.Node.task, 'a', 'preset 缺失时回到 default_case')
 })
+
+test('多个资源都适用：run 把"选了哪个、还有谁适用"升成 warning（--json 侧也看得到）', (t) => {
+  const dir = writeProject()
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+  const loaded = loadInterface(dir)
+  loaded.resources.push({ name: 'R2', paths: ['res2'], controllers: [] })
+  const resource = resolveResourcePaths(loaded, 'C1')
+  const prep = prepareProjectRun({ project: { loaded, plan: null, controllerName: 'C1', resource }, entry: '启动' })
+  assert.equal(prep.ok, true, JSON.stringify(prep))
+  if (!prep.ok) return
+  assert.ok(
+    prep.warns.some((w) => w.includes('R1') && w.includes('R2') && w.includes('--resource')),
+    'note 行只到 human 输出，机器消费面要的是 warnings：' + JSON.stringify(prep.warns),
+  )
+})

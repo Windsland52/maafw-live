@@ -6,6 +6,11 @@
  *
  * 取值解析顺序：preset 显式值 > default_case。两级都没有 → 警告并跳过（不猜）。
  * 本 CLI 是无人值守消费面：不做交互选择，preset 是把 MaaPiCli 用户选择带进来的唯一通道。
+ *
+ * input / hotkey 是例外：它们的取值不是 case 名，而是用来替换 case 内 pipeline_override 模板里
+ * `{字段名}` 占位的字段映射（input 按 inputs[].pipeline_type 转型，hotkey 是该控制器的虚拟键码）。
+ * 本工具没有按次取值通道，这类模板只能整层跳过——但要报一声：静默少一层覆盖，跑出来的就不是
+ * 同一个东西了。
  */
 import type { InterfaceOption, LoadedInterface, OptionCase } from './load.js'
 
@@ -58,13 +63,8 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
   }
 
   /** 解析一个 option 的当前取值：preset > default_case；返回 case 名（单个或数组）。 */
-  const valueOf = (name: string): { cases: string[]; via: string } | null => {
-    const o = loaded.options[name]
-    if (!o) {
-      warns.push('option ' + name + ' 未在 interface 中定义，已跳过')
-      return null
-    }
-    const pv = presetTask?.option?.[name]
+  const valueOf = (o: InterfaceOption): { cases: string[]; via: string } | null => {
+    const pv = presetTask?.option?.[o.name]
     if (pv !== undefined) {
       return { cases: Array.isArray(pv) ? pv.map(String) : [String(pv)], via: 'preset' }
     }
@@ -72,6 +72,19 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
       return { cases: Array.isArray(o.defaultCase) ? o.defaultCase.map(String) : [String(o.defaultCase)], via: 'default' }
     }
     return null
+  }
+
+  /**
+   * input / hotkey 的取值是字段映射，不是 case 名（见文件头）。这里只判断"有没有东西会丢"：
+   * cases 里没写 pipeline_override 就什么都不缺，不打扰；有模板才警告。
+   */
+  const warnInputLike = (o: InterfaceOption, level: string): void => {
+    const templates = o.cases.filter((c) => c.pipelineOverride && Object.keys(c.pipelineOverride).length > 0)
+    if (!templates.length) return
+    warns.push(
+      'option ' + o.name + '（' + level + '）是 ' + o.type + ' 类型：其 pipeline_override 模板要按取值替换 {字段名} 占位，' +
+        '本工具没有按次取值通道，本次 run 不含这一层覆盖（要补请用 --override）',
+    )
   }
 
   const mergeOption = (name: string, level: string, chain: string[] = []): void => {
@@ -82,11 +95,19 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
       return
     }
     const o = loaded.options[name]
-    if (o && !applicable(o)) return
-    const v = valueOf(name)
-    if (!o) return
+    if (!o) {
+      warns.push('option ' + name + ' 未在 interface 中定义，已跳过')
+      return
+    }
+    if (!applicable(o)) return
+    /* 必须先于 case 查找：preset 里 input 的值是对象，走到下面会被 String() 成 "[object Object]"，
+     * 再报成"取值不是已声明的 case"——把"没有取值通道"误报成"配置写错了"。 */
+    if (o.type === 'input' || o.type === 'hotkey') {
+      warnInputLike(o, level)
+      return
+    }
+    const v = valueOf(o)
     if (!v) {
-      if (o.type === 'input' || o.type === 'hotkey') return // 输入类不产生 pipeline_override，不算异常
       warns.push('option ' + name + '（' + level + '）无 preset/default_case 取值，跳过其 pipeline_override')
       return
     }
