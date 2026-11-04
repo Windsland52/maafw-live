@@ -27,6 +27,8 @@ export const CONNECT_OPTIONS = {
   'short-side': { type: 'string' as const },
   'long-side': { type: 'string' as const },
   raw: { type: 'boolean' as const },
+  /* 跳过 interface.json 的 pretask（它会连 Controller 之前跑一次，非零即中止连接） */
+  'no-pretask': { type: 'boolean' as const },
 }
 
 export function sessionOptions(values: Record<string, unknown>): SessionOptions {
@@ -46,6 +48,7 @@ export function sessionOptions(values: Record<string, unknown>): SessionOptions 
     shortSide: num('short-side'),
     longSide: num('long-side'),
     rawSize: values.raw === true,
+    ...(values['no-pretask'] === true ? { pretask: false } : {}),
   }
 }
 
@@ -429,6 +432,7 @@ export const runCommand: Command = {
     '       --option 按次给选项取值（可多次）：<键>=<case 名>（select/switch；checkbox 用逗号分隔）、\n' +
     '                <键>.<字段>=<值>（input 的输入字段）。优先级 CLI > preset > default_case；\n' +
     '                input/hotkey 的 pipeline_override 模板靠它替换 {字段名}（hotkey 需虚拟键码表，未内置）\n' +
+    '       项目模式的 pretask 在连 Controller **之前**执行（非零退出即中止，--no-pretask 跳过）\n' +
     '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
     '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖\n' +
     '       --watch <日志文件> = 跑的同时实时 tail 该文件（可多次给）——长任务执行中 daemon 帧流被框架占住，这是唯一能看到进展的通道',
@@ -476,6 +480,10 @@ export const runCommand: Command = {
     return fail('BAD_ARGUMENTS', parsedOptions.error, '例：--option taskOpt=b  --option 章节数.章节号=4', EXIT.USAGE)
   }
   const { cases: optionCases, fields: optionFields } = parsedOptions
+  /* pretask 在连接之前就跑，所以按次取值必须在 ensureSession 之前挂进 SessionOptions——
+   * 否则同一次 run 里 pretask 的末位 JSON 与 pipeline_override 用的不是同一份取值。 */
+  if (Object.keys(optionCases).length) o.optionCases = optionCases
+  if (Object.keys(optionFields).length) o.optionFields = optionFields
 
     try {
       return await withDaemon(async (client) => {

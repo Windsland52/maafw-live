@@ -20,10 +20,10 @@ import { cliPackage, maaNodeVersion } from '../pkg.js'
 /**
  * 本工具**实际兑现**的 PI 能力版本。
  *
- * 不写"最新"：这个值给 agent 判特性用，谎报会让它以为 v2.6 的 `resource.hash` 校验、
- * v2.7 的 `pretask` 这些行为存在。当前兑现到 v2.5.0——option 四级链 / preset / import /
- * `attach_resource_path` / option 适用性过滤都在，hash 校验与 pretask 还没有。
- * 那两条落地时**必须**一起抬这个值，否则这个变量就变成新的静默谎报。
+ * 不写"最新"：这个值给 agent 判特性用，谎报会让它以为没实现的行为存在。
+ * 当前兑现到 v2.5.0：option 四级链 / preset / import / `attach_resource_path` /
+ * option 适用性过滤都在；pretask（v2.7）已实现，但 **v2.6 的 resource.hash 一致性校验
+ * 还没有**，按版本序不能跳过它去报 v2.7。hash 落地后**必须**一起抬这个值。
  */
 const PI_INTERFACE_VERSION = 'v2.5.0'
 

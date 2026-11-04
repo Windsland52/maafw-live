@@ -73,6 +73,63 @@ function convert(raw: string, type: string | undefined): unknown {
   return raw
 }
 
+export interface OptionValueCtx {
+  /** 命中的 preset 任务条目（`preset[].task[]`）：取值快照 */
+  presetTask?: { option?: Record<string, unknown> }
+  /** CLI 按次取值：case 名 */
+  optionCases?: Record<string, string | string[]>
+  /** CLI 按次取值：字段映射 */
+  optionFields?: Record<string, Record<string, string>>
+}
+
+export type ResolvedOptionValue =
+  | { kind: 'cases'; cases: string[]; via: string }
+  | { kind: 'fields'; fields: Record<string, string>; via: string }
+
+/**
+ * 解析一个 option 的当前取值（**唯一一份实现**）：pipeline_override 合成与 pretask 的末位 JSON
+ * 都走这里，两边各写一套迟早会在"preset 的 input 值是对象还是字符串"上分叉。
+ *
+ * 优先级（协议未规定，本地约定）：CLI > preset > 声明里的初始值（`default_case` / `inputs[].default`）。
+ */
+export function resolveOptionValue(o: InterfaceOption, ctx: OptionValueCtx): ResolvedOptionValue | null {
+  if (o.type === 'input' || o.type === 'hotkey') {
+    const fields: Record<string, string> = {}
+    let via = 'declared'
+    for (const f of [...(o.inputs ?? []), ...(o.hotkeys ?? [])]) {
+      if (f.default !== undefined) fields[f.name] = f.default
+    }
+    const pv = ctx.presetTask?.option?.[o.name]
+    if (pv && typeof pv === 'object' && !Array.isArray(pv)) {
+      for (const [k, v] of Object.entries(pv as Record<string, unknown>)) fields[k] = String(v)
+      if (Object.keys(pv).length) via = 'preset'
+    }
+    const cli = ctx.optionFields?.[o.name]
+    if (cli) {
+      for (const [k, v] of Object.entries(cli)) fields[k] = v
+      if (Object.keys(cli).length) via = 'cli'
+    }
+    return { kind: 'fields', fields, via }
+  }
+  const cli = ctx.optionCases?.[o.name]
+  if (cli !== undefined) {
+    return { kind: 'cases', cases: Array.isArray(cli) ? cli.map(String) : [String(cli)], via: 'cli' }
+  }
+  const pv = ctx.presetTask?.option?.[o.name]
+  /* preset 里 input 的值是对象——这里只处理 case 型，对象值留给出上面的分支 */
+  if (pv !== undefined && !(pv && typeof pv === 'object' && !Array.isArray(pv))) {
+    return { kind: 'cases', cases: Array.isArray(pv) ? pv.map(String) : [String(pv)], via: 'preset' }
+  }
+  if (o.defaultCase !== undefined) {
+    return {
+      kind: 'cases',
+      cases: Array.isArray(o.defaultCase) ? o.defaultCase.map(String) : [String(o.defaultCase)],
+      via: 'default',
+    }
+  }
+  return null
+}
+
 export function computePipelineOverride(input: OverrideInput): OverrideResult {
   const { loaded, controllerName, resourceName, taskName, presetName } = input
   const warns: string[] = []
@@ -90,34 +147,10 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
     return true
   }
 
-  /** case 名取值：CLI > preset > default_case。 */
-  const caseValues = (o: InterfaceOption): { cases: string[]; via: string } | null => {
-    const cli = input.optionCases?.[o.name]
-    if (cli !== undefined) {
-      return { cases: Array.isArray(cli) ? cli.map(String) : [String(cli)], via: 'cli' }
-    }
-    const pv = presetTask?.option?.[o.name]
-    if (pv !== undefined && !(pv && typeof pv === 'object' && !Array.isArray(pv))) {
-      return { cases: Array.isArray(pv) ? pv.map(String) : [String(pv)], via: 'preset' }
-    }
-    if (o.defaultCase !== undefined) {
-      return { cases: Array.isArray(o.defaultCase) ? o.defaultCase.map(String) : [String(o.defaultCase)], via: 'default' }
-    }
-    return null
-  }
-
-  /** input / hotkey 的字段取值：字段 default < preset 字段映射 < CLI 字段。 */
-  const fieldValues = (o: InterfaceOption): Record<string, string> => {
-    const out: Record<string, string> = {}
-    for (const f of [...(o.inputs ?? []), ...(o.hotkeys ?? [])]) {
-      if (f.default !== undefined) out[f.name] = f.default
-    }
-    const pv = presetTask?.option?.[o.name]
-    if (pv && typeof pv === 'object' && !Array.isArray(pv)) {
-      for (const [k, v] of Object.entries(pv as Record<string, unknown>)) out[k] = String(v)
-    }
-    for (const [k, v] of Object.entries(input.optionFields?.[o.name] ?? {})) out[k] = v
-    return out
+  const valueCtx: OptionValueCtx = {
+    ...(presetTask ? { presetTask } : {}),
+    ...(input.optionCases ? { optionCases: input.optionCases } : {}),
+    ...(input.optionFields ? { optionFields: input.optionFields } : {}),
   }
 
   /**
@@ -197,7 +230,8 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         )
         return
       }
-      const fields = fieldValues(o)
+      const resolved = resolveOptionValue(o, valueCtx)
+      const fields = resolved && resolved.kind === 'fields' ? resolved.fields : {}
       const r = substitute(o, fields)
       if (r.missing.length) {
         warns.push(
@@ -212,8 +246,8 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
       return
     }
 
-    const v = caseValues(o)
-    if (!v) {
+    const v = resolveOptionValue(o, valueCtx)
+    if (!v || v.kind !== 'cases') {
       warns.push('option ' + name + '（' + level + '）无 preset/default_case 取值，跳过其 pipeline_override')
       return
     }

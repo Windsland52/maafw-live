@@ -9,6 +9,7 @@
 import type { DaemonClient } from '../client/daemon.js'
 import { loadInterface, resolveResourcePaths } from '../interface/index.js'
 import { planProject, connect, type ProjectPlan } from './actions.js'
+import { runPretasks } from './pretask.js'
 
 export interface SessionOptions {
   /** Maa 项目目录：按 interface.json 的 controller[] 规划连接 */
@@ -25,6 +26,11 @@ export interface SessionOptions {
   shortSide?: number
   longSide?: number
   rawSize?: boolean
+  /** 默认执行 interface.json 的 pretask；传 false 跳过（`--no-pretask`） */
+  pretask?: boolean
+  /** run 的按次取值：pretask 的末位 JSON 也用这两份 */
+  optionCases?: Record<string, string | string[]>
+  optionFields?: Record<string, Record<string, string>>
 }
 
 export interface SessionState {
@@ -63,12 +69,26 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
         planned.plan.code || 'PLAN_FAILED',
       )
     }
+    /* pretask 的位置是契约的一部分：PI 要求它在**连接 Controller 之前**跑完，非零退出即中止启动。
+     * 放到 connect 之后就不再是同一件事（控制器已经建出来了）。 */
+    const preNotes: string[] = []
+    if (o.pretask !== false) {
+      const pre = await runPretasks({
+        loaded: planned.loaded,
+        controllerName: planned.controllerName,
+        resourceName: planned.resource?.selected ?? null,
+        ...(o.optionCases ? { optionCases: o.optionCases } : {}),
+        ...(o.optionFields ? { optionFields: o.optionFields } : {}),
+      })
+      preNotes.push(...pre.notes, ...pre.warns.map((w) => 'pretask 警告：' + w))
+      if (!pre.ok && pre.error) throw new SessionError(pre.error.message, pre.error.code)
+    }
     const conn = await connect(client, { ...planned.plan.connect })
     if (conn && conn.ok === false) throw new SessionError(conn.error ?? '连接失败', 'CONNECT_FAILED')
     return {
       connected: true, plan: planned, session: conn.session ?? null,
       /* 资源侧提示（多个条目适用、已替用户选了哪一个）与控制器提示同一条 human 通道 */
-      notes: [...(planned.plan.notes ?? []), ...(planned.resource?.notes ?? [])],
+      notes: [...(planned.plan.notes ?? []), ...(planned.resource?.notes ?? []), ...preNotes],
       ...(conn.streamStopped === true ? { streamStopped: true } : {}),
     }
   }

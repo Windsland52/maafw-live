@@ -142,6 +142,21 @@ export interface InterfaceAgent {
   args: string[]
 }
 
+/** PI `pretask` 声明（v2.7.0+）：连接 Controller **之前**跑一次的子进程。 */
+export interface InterfacePretask {
+  name?: string
+  /** 必填：可执行程序（字符串，不是数组） */
+  exec: string
+  /** 追加在 exec 之后的参数 */
+  args: string[]
+  /** 这些 option 的取值会被序列化成末位 JSON 参数（不参与 pipeline_override） */
+  option: string[]
+  /** v2.8.1 过滤：空/缺省 = 全部控制器适用 */
+  controller?: string[]
+  /** v2.8.1 过滤：空/缺省 = 全部资源适用 */
+  resource?: string[]
+}
+
 export interface LoadedInterface {
   /** interface.json 绝对路径；未找到为 null */
   file: string | null
@@ -159,8 +174,8 @@ export interface LoadedInterface {
   presets: InterfacePreset[]
   /** 全局配置项键名（override 链最低级） */
   globalOption: string[]
-  /** controller 启动前任务；CLI 不执行，仅用于警告 */
-  pretask: Array<{ name?: string; exec?: string }>
+  /** controller 启动前任务；连接前按声明序执行（非零退出即中止本次连接） */
+  pretask: InterfacePretask[]
   /** agent 子进程声明；CLI 未桥接（绑定无 AgentClient），仅用于警告与失败归因 */
   agents: InterfaceAgent[]
   problems: InterfaceProblem[]
@@ -298,7 +313,7 @@ export function loadInterface(dir: string): LoadedInterface {
   const options: Record<string, InterfaceOption> = {}
   const presets: InterfacePreset[] = []
   const globalOption: string[] = []
-  const pretask: Array<{ name?: string; exec?: string }> = []
+  const pretask: InterfacePretask[] = []
   const agents: InterfaceAgent[] = []
 
   const readAgents = (list: unknown): void => {
@@ -408,11 +423,27 @@ export function loadInterface(dir: string): LoadedInterface {
   readPresets(o.preset)
   readAgents(o.agent)
   for (const g of strList(o.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
-  const mainPretasks = Array.isArray(o.pretask) ? o.pretask : (o.pretask !== undefined ? [o.pretask] : [])
-  for (const pt of mainPretasks) {
-    const p2 = obj(pt)
-    if (p2) pretask.push({ name: str(p2.name), exec: str(p2.exec) })
+  /* pretask：`exec` 必填；`args` / `option` / 过滤列表缺省为空。单条也可写成对象而不是数组。 */
+  const readPretasks = (list: unknown, src: string): void => {
+    for (const pt of Array.isArray(list) ? list : (list !== undefined ? [list] : [])) {
+      const p2 = obj(pt)
+      const exec = p2 ? str(p2.exec) : undefined
+      if (!p2) continue
+      if (!exec) {
+        problems.push({ message: 'pretask 缺少 exec，已跳过（' + src + '）' })
+        continue
+      }
+      pretask.push({
+        ...(str(p2.name) !== undefined ? { name: str(p2.name) } : {}),
+        exec,
+        args: strList(p2.args),
+        option: strList(p2.option),
+        ...(strList(p2.controller).length ? { controller: strList(p2.controller) } : {}),
+        ...(strList(p2.resource).length ? { resource: strList(p2.resource) } : {}),
+      })
+    }
   }
+  readPretasks(o.pretask, '主文件')
 
   /* import 合并（v2.2.0）：只合 task/option/preset/global_option/pretask（及 group/setting，本工具不消费）。
    * controller/resource 不可导入——子文件声明了也忽略并记 problems。循环导入用 visited 集合挡住。
@@ -459,10 +490,7 @@ export function loadInterface(dir: string): LoadedInterface {
     readPresets(child.preset)
     readAgents(child.agent)
     for (const g of strList(child.global_option)) if (!globalOption.includes(g)) globalOption.push(g)
-    for (const pt of Array.isArray(child.pretask) ? child.pretask : []) {
-      const p2 = obj(pt)
-      if (p2) pretask.push({ name: str(p2.name), exec: str(p2.exec) })
-    }
+    readPretasks(child.pretask, rel)
   }
 
   return {

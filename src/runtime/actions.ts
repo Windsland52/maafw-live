@@ -244,7 +244,7 @@ export type ProjectRunPrep =
       taskName: string | null
       /** 生效记录：option=值（级别，via preset/default） */
       applied: string[]
-      /** 需要人工注意的事项（option 无取值、pretask 未执行等） */
+      /** 需要人工注意的事项（option 无取值、agent 缺位等） */
       warns: string[]
     }
   | {
@@ -311,11 +311,6 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
   })
   warns.push(...chain.warns)
 
-  if (loaded.pretask.length) {
-    warns.push('项目声明了 ' + loaded.pretask.length + ' 条 pretask（' +
-      loaded.pretask.map((p) => p.exec ?? p.name ?? '?').join(' , ') +
-      '），本工具不执行——需自行保证前置条件')
-  }
   const agents = loaded.agents
   /* agent 子进程要的环境：PI_* 按 interface.json 的**当前选择**生成（控制器 / 资源 / 项目版本）。
    * 不注入时 agent 不会报错，只会落到自带默认值——这是最安静的一种"跑的不是同一个配置"。 */
