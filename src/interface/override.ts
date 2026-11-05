@@ -16,6 +16,7 @@
  * input 字段还有第三档来源：`inputs[].default`（协议把它定义成默认值，本工具在无人输入时拿它替换）。
  */
 import type { InterfaceOption, LoadedInterface, OptionCase } from './load.js'
+import { hotkeyTableFor, resolveHotkeyTokens } from './hotkey.js'
 
 export interface OverrideInput {
   loaded: LoadedInterface
@@ -158,18 +159,14 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
    * 出现在片段里时用它的文本形态（如 `MainChapter_{章节号}`）。
    * 有任何一个占位取不到值就整条模板放弃——写一半的 override 比不写更难查。
    */
-  const substitute = (o: InterfaceOption, map: Record<string, string>): { value: Record<string, unknown>; missing: string[] } => {
+  const substitute = (tpl: Record<string, unknown>, tokens: Record<string, unknown>): { value: Record<string, unknown>; missing: string[] } => {
     const missing: string[] = []
-    const typeOf = (field: string): string | undefined => o.inputs?.find((f) => f.name === field)?.pipelineType
-    const one = (field: string): unknown => {
-      const raw = map[field]
-      if (raw === undefined) {
-        if (!missing.includes(field)) missing.push(field)
+    const one = (name: string): unknown => {
+      if (!(name in tokens)) {
+        if (!missing.includes(name)) missing.push(name)
         return undefined
       }
-      const v = convert(raw, typeOf(field))
-      if (v === undefined) missing.push(field + '=' + raw + '（按 pipeline_type=' + String(typeOf(field) ?? 'string') + ' 转不了）')
-      return v
+      return tokens[name]
     }
     const walk = (n: unknown): unknown => {
       if (typeof n === 'string') {
@@ -188,7 +185,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
       }
       return n
     }
-    return { value: walk(o.pipelineOverride) as Record<string, unknown>, missing }
+    return { value: walk(tpl) as Record<string, unknown>, missing }
   }
 
   const mergeOption = (name: string, level: string, chain: string[] = []): void => {
@@ -220,19 +217,45 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         }
         return
       }
-      if (o.type === 'hotkey') {
-        /* 占位符产出的是**当前控制器的虚拟按键码整数**（Win32 VK / Android KeyEvent / …）。
-         * 协议与 schema 都不给映射表，maa-node 只暴露裸 keycode：本工具没有这张表，
-         * 硬编一份不全的等于制造新的静默错——跳过并说清楚，让人用 --override 给整数。 */
-        warns.push(
-          'option ' + name + '（' + level + '）是 hotkey 类型：pipeline_override 要把它映射成控制器的虚拟按键码，' +
-            '协议不提供映射表、本工具未内置，这一层覆盖已跳过（要补请用 --override 直接写整数键码）',
-        )
-        return
-      }
       const resolved = resolveOptionValue(o, valueCtx)
       const fields = resolved && resolved.kind === 'fields' ? resolved.fields : {}
-      const r = substitute(o, fields)
+      const tokens: Record<string, unknown> = {}
+      if (o.type === 'hotkey') {
+        /* 占位符产出的是**当前控制器 type 的虚拟按键码整数**（Win32 VK / Android KeyEvent /
+         * Carbon kVK / evdev）。没有表的控制器类型直接跳过并说明——按 Win32 猜等于写错键。 */
+        const decl = controllerName ? loaded.controllers.find((x) => x.name === controllerName) : undefined
+        const table = hotkeyTableFor(decl?.type ?? null, decl?.linux?.useWin32VkCode === true)
+        if (!table) {
+          warns.push(
+            'option ' + name + '（' + level + '）是 hotkey：当前控制器' +
+              (decl ? '类型 ' + decl.type + ' 没有键码映射表' : '未确定（没选中控制器）') +
+              '，这一层覆盖已跳过',
+          )
+          return
+        }
+        for (const f of o.hotkeys ?? []) {
+          const raw = fields[f.name]
+          if (raw === undefined || raw === '') continue // 缺值交给下面的 missing 统一报
+          const hk = resolveHotkeyTokens(f.name, raw, table)
+          if (hk.error) {
+            warns.push('option ' + name + '（' + level + '）的 hotkey 字段 ' + f.name + ' 解析失败：' + hk.error + '——整条覆盖已跳过')
+            return
+          }
+          Object.assign(tokens, hk.tokens)
+        }
+      } else {
+        const bad: string[] = []
+        for (const [k, raw] of Object.entries(fields)) {
+          const t = convert(raw, o.inputs?.find((f) => f.name === k)?.pipelineType)
+          if (t === undefined) bad.push(k + '=' + raw)
+          else tokens[k] = t
+        }
+        if (bad.length) {
+          warns.push('option ' + name + '（' + level + '）的输入值按 pipeline_type 转不了型：' + bad.join(' / ') + '——整条覆盖已跳过')
+          return
+        }
+      }
+      const r = substitute(tpl, tokens)
       if (r.missing.length) {
         warns.push(
           'option ' + name + '（' + level + '）的 pipeline_override 模板里这些占位没有取值：' +
@@ -242,7 +265,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
       }
       mergeOverride(acc, r.value)
       const shown = Object.entries(fields).map(([k, v]) => k + '=' + v).join('，')
-      applied.push(name + '=（input' + (shown ? '：' + shown : '') + '，' + level + '）')
+      applied.push(name + '=（' + o.type + (shown ? '：' + shown : '') + '，' + level + '）')
       return
     }
 

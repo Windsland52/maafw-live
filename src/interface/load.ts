@@ -52,6 +52,8 @@ export interface InterfaceController {
   attachResourcePath: string[]
   /** v2.3.0：控制器级配置项名单（override 链第三级） */
   option?: string[]
+  /** Linux 控制器：`linux.use_win32_vk_code` 决定服务端按 Win32 VK 还是 evdev 解释键码（hotkey 用） */
+  linux?: { useWin32VkCode?: boolean }
   /** 原始条目（未裁剪）：PI_CONTROLLER 要传"被选中那条的完整对象"，不能按本工具用到的字段重建 */
   raw?: unknown
 }
@@ -269,6 +271,7 @@ export function loadInterface(dir: string): LoadedInterface {
     }
     const w = obj(c.win32)
     const g = obj(c.gamepad)
+    const linuxDecl = obj(c.linux)
     controllers.push({
       name,
       type,
@@ -293,6 +296,7 @@ export function loadInterface(dir: string): LoadedInterface {
         : undefined,
       attachResourcePath: strList(c.attach_resource_path),
       option: strList(c.option),
+      ...(linuxDecl && linuxDecl.use_win32_vk_code === true ? { linux: { useWin32VkCode: true } } : {}),
     })
   }
   if (!controllers.length) problems.push({ message: 'controller[] 为空：项目没有声明任何控制器' })

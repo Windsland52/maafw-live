@@ -224,7 +224,7 @@ test('input：取值优先级 CLI --option > preset > 字段 default', () => {
   )
 })
 
-test('hotkey：没有虚拟键码映射表 → 跳过模板并说清楚（不猜一个整数写进 pipeline）', () => {
+test('hotkey：没选中控制器 → 无法确定键码表，跳过并说清楚', () => {
   const loaded = mkLoaded({
     options: {
       hk: {
@@ -237,7 +237,42 @@ test('hotkey：没有虚拟键码映射表 → 跳过模板并说清楚（不猜
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
   assert.equal(r.override.KeyNode, undefined)
-  assert.ok(r.warns.some((w) => w.includes('hotkey') && w.includes('虚拟按键码')), JSON.stringify(r.warns))
+  assert.ok(r.warns.some((w) => w.includes('hotkey') && w.includes('未确定')), JSON.stringify(r.warns))
+})
+
+test('hotkey：按控制器 type 解析成整数键码，四个占位符都可用（Win32 Ctrl+A）', () => {
+  const loaded = mkLoaded({
+    controllers: [{ name: 'C1', type: 'Win32' }],
+    options: {
+      hk: {
+        name: 'hk', type: 'hotkey', cases: [],
+        pipelineOverride: {
+          Node: { key: '{热键.primary}', modifier: '{热键.modifier1}', both: '{热键}' },
+        },
+        hotkeys: [{ name: '热键', default: 'Ctrl+A' }],
+      },
+    },
+    globalOption: ['hk'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: 'C1', resourceName: null, taskName: null })
+  assert.deepEqual(r.override.Node, { key: 0x41, modifier: 0x11, both: 0x41 }, '"Ctrl+A"：末段主键，前段修饰键')
+})
+
+test('hotkey：控制器类型没有键码表（Gamepad）→ 跳过而不是按 Win32 猜', () => {
+  const loaded = mkLoaded({
+    controllers: [{ name: 'C1', type: 'Gamepad' }],
+    options: {
+      hk: {
+        name: 'hk', type: 'hotkey', cases: [],
+        pipelineOverride: { KeyNode: { key: '{热键}' } },
+        hotkeys: [{ name: '热键', default: 'A' }],
+      },
+    },
+    globalOption: ['hk'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: 'C1', resourceName: null, taskName: null })
+  assert.equal(r.override.KeyNode, undefined)
+  assert.ok(r.warns.some((w) => w.includes('Gamepad')), JSON.stringify(r.warns))
 })
 
 test('task 级 pipeline_override 是基底，option 链在其上覆盖', () => {

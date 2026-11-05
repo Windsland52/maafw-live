@@ -431,7 +431,7 @@ export const runCommand: Command = {
   usage: 'maafw-live run --entry <task> --project <dir> | --resource-dir <dir> [--timeout <ms|0>] [--override <json>] [--preset <name>] [--resource <名|路径>] [--option <键>=<值>|<键>.<字段>=<值>]…\n' +
     '       --option 按次给选项取值（可多次）：<键>=<case 名>（select/switch；checkbox 用逗号分隔）、\n' +
     '                <键>.<字段>=<值>（input 的输入字段）。优先级 CLI > preset > default_case；\n' +
-    '                input/hotkey 的 pipeline_override 模板靠它替换 {字段名}（hotkey 需虚拟键码表，未内置）\n' +
+    '                input/hotkey 的 pipeline_override 模板靠它替换 {字段名}（hotkey 按控制器 type 映射成键码）\n' +
     '       项目模式的 pretask 在连 Controller **之前**执行（非零退出即中止，--no-pretask 跳过）\n' +
     '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
     '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖\n' +
