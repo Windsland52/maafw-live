@@ -8,6 +8,7 @@
  * 死会话自愈：meta 在但 pid 已死时，用 meta.connectArgs 原样重起（连接参数在
  * 起会话时就存了），调用方不必记得这条会话当初怎么连的。
  */
+import { cliPackage } from '../pkg.js'
 import {
   pidAlive, readSessionMeta, sendToSessionExec, sessionServeLogTail,
   spawnSessionServer, stopSession, waitPipeReady,
@@ -67,6 +68,16 @@ export async function forwardToSession(name: string, argv: string[]): Promise<Co
       /* rep.lines = 待认领输出（异步收尾、连接横幅）+ 本命令 human。直接当 human 用：
        * 比只看 result.human 多了异步尾巴，与非转发形态观感一致。 */
       if (rep.lines.length) rep.result.human = rep.lines
+      /* 混版可见：meta 里记了起会话的 CLI 版本——npm test / npm install 升级后老会话仍跑
+       * 旧 lib，行为会漂；不硬断（旧会话仍能服务），只在 human 里留一行让人查得到。 */
+      const running = cliPackage().version
+      if (meta.cliVersion && meta.cliVersion !== running) {
+        rep.result.human = [
+          '⚠ 会话 ' + JSON.stringify(name) + ' 由 maafw-live ' + meta.cliVersion + ' 起，' +
+            '当前 CLI 是 ' + running + '——行为可能已漂移（--session-stop ' + name + ' 后重连可拿到新代码）',
+          ...(rep.result.human ?? []),
+        ]
+      }
       return rep.result
     }
     /* exec 回执却没有 result：常驻进程版本过旧（起会话用的还是旧包），让它明说怎么修 */

@@ -38,6 +38,7 @@ const EXEC_HEADS = new Set([
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 import { dispatchArgv } from './dispatch.js'
 import { parseOptionArgs } from '../option-args.js'
+import { cliPackage } from '../pkg.js'
 
 const HELP = [
   '命令：',
@@ -1142,6 +1143,10 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
         '  pid ' + existing.pid + '，起于 ' + existing.startedAt,
         '  管道 ' + existing.pipe,
         '  连接参数 ' + JSON.stringify(existing.connectArgs),
+        '  CLI 版本 ' + (existing.cliVersion ?? '(旧 meta，未记)') +
+          (existing.cliVersion && existing.cliVersion !== cliPackage().version
+            ? ' —— 当前 ' + cliPackage().version + '，混版'
+            : ''),
       ],
       data: { ...existing, alive },
     }

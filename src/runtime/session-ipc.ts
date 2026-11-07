@@ -29,6 +29,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { cliPackage } from '../pkg.js'
 import type { CommandResult } from '../protocol.js'
 
 /** 会话名白名单：字母数字与 `-` `_`，1..48 字符。要进管道名与文件路径，必须收紧。 */
@@ -64,6 +65,8 @@ export interface SessionMeta {
     startedAt: string
     /** 起会话时给的连接参数，便于诊断"为什么这条会话连的是别的设备" */
     connectArgs: Record<string, unknown>
+    /** 起会话的 CLI 版本（npm test / npm install 升级后老会话仍跑旧 lib，版本钉进 meta 让"混版"可见） */
+    cliVersion?: string
 }
 
 export function sessionMetaPath(name: string): string {
@@ -405,6 +408,7 @@ export function spawnSessionServer(name: string, cliEntry: string, connectArgs: 
         pipe,
         startedAt: new Date().toISOString(),
         connectArgs,
+        cliVersion: cliPackage().version,
     }
     writeFileSync(sessionMetaPath(name), JSON.stringify(meta, null, 2))
     return meta
