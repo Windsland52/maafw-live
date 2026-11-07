@@ -53,11 +53,20 @@ export function sessionOptions(values: Record<string, unknown>): SessionOptions 
   }
 }
 
-/** daemon 抛出的错误一律翻译成结构化失败，不让堆栈进模型上下文。 */
+/** daemon 抛出的错误翻译成结构化失败。退出码按错误的**性质**分：
+ * 前置缺失（脚本找不到 / 会话规划失败）退 4；运行时故障（调用超时、进程退出、发送失败）退 1——
+ * 同一个 code 在所有路径退同一个码，agent 才不会按"缺环境"去查"daemon 卡住"。 */
 export function daemonFail(e: unknown, hint?: string): CommandResult {
   if (e instanceof SessionError) return fail(e.code, e.message, hint, EXIT.ENV)
   const msg = e instanceof Error ? e.message : String(e)
-  return fail('DAEMON_ERROR', msg, hint ?? '用 maafw-live probe 检查运行时；连接类错误先 maafw-live device 看有没有设备', EXIT.ENV)
+  /* 超时与进程退出是运行时故障，不是前置缺失：退 1，让"重试 / 换参数"排在"装环境"之前 */
+  if (/^daemon 调用超时|^daemon 已退出|^daemon 请求发送失败/.test(msg)) {
+    return fail('DAEMON_ERROR', msg, hint ?? '重试或看 maafw-live probe；连续出现先 kill 会话重连', EXIT.FAIL)
+  }
+  if (/^找不到 daemon 脚本/.test(msg)) {
+    return fail('DAEMON_ERROR', msg, hint ?? 'daemon 脚本缺失：检查 npm 安装是否完整', EXIT.ENV)
+  }
+  return fail('DAEMON_ERROR', msg, hint ?? '用 maafw-live probe 检查运行时；连接类错误先 maafw-live device 看有没有设备', EXIT.FAIL)
 }
 
 export const probeCommand: Command = {
