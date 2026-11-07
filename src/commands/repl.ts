@@ -37,6 +37,7 @@ const EXEC_HEADS = new Set([
 ])
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
 import { dispatchArgv } from './dispatch.js'
+import { parseOptionArgs } from '../option-args.js'
 
 const HELP = [
   '命令：',
@@ -118,6 +119,16 @@ function tokenize(line: string): string[] {
 function readFlag(tokens: string[], name: string): string | undefined {
   const i = tokens.indexOf(name)
   return i >= 0 ? tokens[i + 1] : undefined
+}
+
+/** `--option` 这类**可多次出现**的旗标：readFlag 只返回第一次出现的值（后面几次静默丢）。
+ * REPL 里 run --option a=b --option c=d 丢一半配置是最坏的假信号，必须收全。 */
+function readFlagAll(tokens: string[], name: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === name && tokens[i + 1] !== undefined) out.push(tokens[i + 1])
+  }
+  return out
 }
 
 /**
@@ -402,10 +413,25 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               let s
               try {
                 if (tokens[1] === 'project') {
-                  /* 会话内手动重连也是一次"启动"：pretask 照跑（非零中止、超时 120s） */
-                  s = await ensureSession(client, { project: tokens[2], hwnd: tokens[3], address: tokens[3], pretask: true })
+                  /* 会话内手动重连也是一次"启动"：pretask 照跑（非零中止、超时 120s）。
+                   * --controller/--resource 补的是"连接 project 但挑哪套 controller/resource"——
+                   * 此前会话里选不了（P0-3 漂移点），一次性 CLI 早就有。 */
+                  s = await ensureSession(client, {
+                    project: tokens[2],
+                    ...(readFlag(tokens, '--controller') ? { controller: readFlag(tokens, '--controller') } : {}),
+                    ...(readFlag(tokens, '--resource') ? { resource: readFlag(tokens, '--resource') } : {}),
+                    hwnd: readFlag(tokens, '--hwnd') ?? tokens[3],
+                    address: readFlag(tokens, '--address') ?? tokens[3],
+                    pretask: !tokens.includes('--no-pretask'),
+                  })
                 } else {
-                  s = await ensureSession(client, { kind: tokens[1], target: tokens[2] })
+                  s = await ensureSession(client, {
+                    kind: tokens[1],
+                    target: tokens[2],
+                    ...(readFlag(tokens, '--short-side') ? { shortSide: Number(readFlag(tokens, '--short-side')) } : {}),
+                    ...(readFlag(tokens, '--long-side') ? { longSide: Number(readFlag(tokens, '--long-side')) } : {}),
+                    ...(tokens.includes('--raw') ? { rawSize: true } : {}),
+                  })
                 }
               } catch (e) {
                 /* daemon 层连接失败时旧控制器已被销毁：摘要退回未连接（提示符会显示），
@@ -643,7 +669,7 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
             }
             case 'run': {
               const entry = tokens[1]
-              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d] [--watch]'); break }
+              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d] [--option k=v 可多次] [--watch]'); break }
               const wantWatch = tokens.includes('--watch')
               const rawTimeout = readFlag(tokens, '--timeout')
               const timeout = rawTimeout === undefined ? 30000 : Number(rawTimeout)
@@ -656,6 +682,17 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               if (overrideRaw) {
                 try { override = JSON.parse(overrideRaw) as Record<string, unknown> }
                 catch { out('--override 不是合法 JSON'); break }
+              }
+              /* --option 按次取值（可多次）：<键>=<case>、<键>.<字段>=<值>。
+               * 与一次性 CLI 同一解析器（parseOptionArgs），判错口径一致。 */
+              const optList = readFlagAll(tokens, '--option')
+              let optCases: Record<string, string | string[]> | undefined
+              let optFields: Record<string, Record<string, string>> | undefined
+              if (optList.length) {
+                const parsed = parseOptionArgs(optList)
+                if (parsed.error) { out(parsed.error); break }
+                optCases = parsed.cases
+                optFields = parsed.fields
               }
               /* 资源与 override：--resource-dir 显式单包（bundle 模式）；否则走 connect project
                * 的项目规划，与一次性 CLI 共用 prepareProjectRun（入口解析 / task 适用性 /
@@ -682,6 +719,8 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                   entry,
                   presetName: presetRaw ?? null,
                   override,
+                  ...(optCases ? { optionCases: optCases } : {}),
+                  ...(optFields ? { optionFields: optFields } : {}),
                 })
                 if (!prep.ok) {
                   out('run 拒绝：' + prep.error + (prep.hint ? '\n  hint: ' + prep.hint : ''))
