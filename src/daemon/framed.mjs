@@ -15,6 +15,8 @@
  *                  { kind:'frame', meta, preview }         （每接受帧的元数据与预览帧路径）
  *                  { kind:'event', ev }                    （变化/稳定/节点事件）
  *                  { kind:'stream_error', error }
+ *                  { kind:'stream_stopped', reason }       （控制器被销毁→帧流主动停止；
+ *                                                            要看帧就重新 stream_start）
  */
 import { createRequire } from 'node:module'
 import { execFile, spawn, spawnSync } from 'node:child_process'
@@ -1812,6 +1814,12 @@ async function cmdRecoTest(args) {
   }
   if (candidates && !candidates.length) {
     return { ok: false, error: 'candidates 是空数组：至少给一个 [x,y,w,h] 候选' }
+  }
+  /* node / nodeName 与候选来源互斥：整条节点路径（dump + 节点自己的 recognition/param）
+   * 已经是一次完整的"跑这个节点"，cases 根本没有位置塞——同给会静默丢掉候选集合，
+   * 调用方还以为 roi-compare 的逐例换 roi 生效了（P1-#5 协议面）。 */
+  if ((node || nodeName) && (candidates || (sweep && typeof sweep.min === 'number'))) {
+    return { ok: false, error: 'node/nodeName 与 candidates/sweep 互斥：整条节点路径有自己完整的 param，没有逐例换值的位置' }
   }
   const cases = []
   if (candidates) {

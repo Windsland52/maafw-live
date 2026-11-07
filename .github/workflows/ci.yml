@@ -52,3 +52,6 @@ jobs:
       # 同上，覆盖 reco 的整条资源链（resource.path[] + attach）：overlay 同名节点谁覆盖谁、
       # attach 段在不在链里，只有在真 post_bundle 之后才成立
       - run: npm run accept:reco-node
+      # 唯一带 candidates 跑真识别的验收（离线）：父进程把 N 条候选折进同一个 cases、
+      # 识别子进程逐例换 roi 回来——这条通道桩 daemon 钉不住，只在真识别里成立
+      - run: npm run accept:roi-compare

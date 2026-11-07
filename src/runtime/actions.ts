@@ -15,10 +15,16 @@ import {
 import { spawnDaemon, type DaemonClient, type SpawnOptions } from '../client/daemon.js'
 import { buildAgentEnv } from './pi-env.js'
 
-/** 设备会话的连接参数（手动路径）。kind/target 之外全部来自 maafw 的控制器能力。 */
+/** 设备会话的连接参数（手动路径）。kind/target 之外全部来自 maafw 的控制器能力。
+ * playcover/macos 仅 macOS、linux 仅 Linux；device_list 只枚举 adb/win32，
+ * 其余三种没有自动发现，靠 connect 的 target/config 显式指定（doc: daemon-protocol.md:49）。 */
 export interface ManualConnect {
-  kind: 'adb' | 'win32' | 'gamepad'
+  kind: 'adb' | 'win32' | 'gamepad' | 'playcover' | 'macos' | 'linux'
   target?: string
+  /** playcover：uuid（也可写在 target 里） */
+  uuid?: string
+  /** linux：等价于 target 的 JSON */
+  config?: string
   /** 截图缩放覆盖（会改变 Tasker 识别图像的坐标系，模板/roi 随之变化） */
   shortSide?: number
   longSide?: number
@@ -128,6 +134,13 @@ export const tplCrop = (c: DaemonClient, args: {
   /** snap 收紧阈值的**测量用覆盖**（定标 A/B）；缺省即生产常数 */
   snapTol?: number
   snapFrac?: number
+  /** 边缘收紧那一路（默认 false）：true 时把"局部对比度"判据也放进候选池。
+   * 常数可再覆盖（定标用）：edgeZ 环上对比度 p90 倍数（默认 2）、edgeMin 绝对地板（默认 24）、
+   * edgeFrac 行/列命中比例门槛（默认 0.02）。 */
+  edge?: boolean
+  edgeZ?: number
+  edgeMin?: number
+  edgeFrac?: number
 }) => c.call<Record<string, unknown>>('tpl_crop', args, 240000)
 export const annotate = (c: DaemonClient, args: {
   seq?: number
