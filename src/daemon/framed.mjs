@@ -1221,7 +1221,9 @@ async function setupAgents(res, decls, cwd, piEnv, sinks, maaMod, spawnFn) {
     ['tasker', sinks && sinks.tasker, 'register_tasker_sink'],
   ]
   for (const d of decls) {
-    const client = new m.Client()
+    /* interface 声明固定 identifier 时原样交给 Client（schema：socket 同名，断线可重连）。
+     * 代价：残留旧 socket 时 connect 会等满超时才败——项目声明了就是它要的语义，照做。 */
+    const client = new m.Client(typeof d.identifier === 'string' && d.identifier ? d.identifier : undefined)
     const ident = client.identifier
     let child = null
     try {

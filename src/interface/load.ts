@@ -54,6 +54,8 @@ export interface InterfaceController {
   option?: string[]
   /** Linux 控制器：`linux.use_win32_vk_code` 决定服务端按 Win32 VK 还是 evdev 解释键码（hotkey 用） */
   linux?: { useWin32VkCode?: boolean }
+  /** `permission_required`（schema 字段）：控制器需要管理员/root 权限运行——连接失败时的排查提示 */
+  permissionRequired?: boolean
   /** 原始条目（未裁剪）：PI_CONTROLLER 要传"被选中那条的完整对象"，不能按本工具用到的字段重建 */
   raw?: unknown
 }
@@ -95,6 +97,8 @@ export interface InputField {
   pipelineType?: string
   /** 正则校验（协议把它归给 Client 的输入校验职责） */
   verify?: string
+  /** `password`（v2.10.0）：值为密码——不得把原文写进输出/日志，与 `default` 互斥（schema 已禁） */
+  password?: boolean
 }
 
 /** hotkey option 的快捷键字段（v2.8.0）：持久化值是人类可读字符串，如 `E` / `Ctrl+A`（末段为主键）。 */
@@ -131,6 +135,10 @@ export interface InterfaceOption {
   /** 适用性过滤（v2.3.1：不满足的 option 不得产生 pipeline_override） */
   controller?: string[]
   resource?: string[]
+  /** checkbox 最少选中数（v2.10.1，默认 0） */
+  minCount?: number
+  /** checkbox 最多选中数（v2.10.1，缺省 = 不限） */
+  maxCount?: number
 }
 
 /** preset：任务与 option 取值的快照（v2.3.0），应用时覆盖 default_case。 */
@@ -144,6 +152,12 @@ export interface InterfacePreset {
 export interface InterfaceAgent {
   exec: string
   args: string[]
+  /**
+   * `identifier`（schema 字段）：连接标识符——项目声明固定值时 daemon 把它原样交给
+   * `Client` 并追加为子进程末参（socket 同名）。注意语义是"上次断线可重连"，不是
+   * "本次独占"：固定 identifier 残留旧 socket 时 connect 会等满超时才败（上游已知坑）。
+   */
+  identifier?: string
 }
 
 /** PI `pretask` 声明（v2.7.0+）：连接 Controller **之前**跑一次的子进程。 */
@@ -300,6 +314,7 @@ export function loadInterface(dir: string): LoadedInterface {
       attachResourcePath: strList(c.attach_resource_path),
       option: strList(c.option),
       ...(linuxDecl && linuxDecl.use_win32_vk_code === true ? { linux: { useWin32VkCode: true } } : {}),
+      ...(c.permission_required === true ? { permissionRequired: true } : {}),
     })
   }
   if (!controllers.length) problems.push({ message: 'controller[] 为空：项目没有声明任何控制器' })
@@ -331,7 +346,7 @@ export function loadInterface(dir: string): LoadedInterface {
       const a = obj(item)
       const exec = a ? str(a.child_exec) : undefined
       if (!a || !exec) continue
-      agents.push({ exec, args: strList(a.child_args) })
+      agents.push({ exec, args: strList(a.child_args), ...(str(a.identifier) !== undefined ? { identifier: str(a.identifier) } : {}) })
     }
   }
 
@@ -387,12 +402,17 @@ export function loadInterface(dir: string): LoadedInterface {
         const f = obj(it)
         const fname = f ? str(f.name) : undefined
         if (!f || !fname) continue
+        const pwd = f.password === true
         inputs.push({
           name: fname,
-          ...(str(f.default) !== undefined ? { default: str(f.default) } : {}),
+          ...(str(f.default) !== undefined && !pwd ? { default: str(f.default) } : {}),
           ...(str(f.pipeline_type) !== undefined ? { pipelineType: str(f.pipeline_type) } : {}),
           ...(str(f.verify) !== undefined ? { verify: str(f.verify) } : {}),
+          ...(pwd ? { password: true } : {}),
         })
+        if (pwd && str(f.default) !== undefined) {
+          problems.push({ message: 'option ' + key + ' 的输入字段 ' + fname + '：password=true 时规范禁止同时设 default，default 已忽略' })
+        }
       }
       const hotkeys: HotkeyField[] = []
       for (const it of Array.isArray(v.hotkeys) ? v.hotkeys : []) {
@@ -400,6 +420,16 @@ export function loadInterface(dir: string): LoadedInterface {
         const fname = f ? str(f.name) : undefined
         if (!f || !fname) continue
         hotkeys.push({ name: fname, ...(str(f.default) !== undefined ? { default: str(f.default) } : {}) })
+      }
+      const minC = num(v.min_count)
+      const maxC = num(v.max_count)
+      if (type === 'checkbox') {
+        if (minC !== undefined && maxC !== undefined && minC > maxC) {
+          problems.push({ message: 'option ' + key + '：min_count=' + minC + ' > max_count=' + maxC + '，约束自相矛盾' })
+        }
+        if (minC !== undefined && cases.length && minC > cases.length) {
+          problems.push({ message: 'option ' + key + '：min_count=' + minC + ' 超过声明的 case 数 ' + cases.length + '，永远选不够' })
+        }
       }
       options[key] = {
         name: key,
@@ -411,6 +441,8 @@ export function loadInterface(dir: string): LoadedInterface {
         ...(v.default_case !== undefined ? { defaultCase: v.default_case as string | string[] } : {}),
         controller: strList(v.controller),
         resource: strList(v.resource),
+        ...(type === 'checkbox' && minC !== undefined ? { minCount: minC } : {}),
+        ...(type === 'checkbox' && maxC !== undefined ? { maxCount: maxC } : {}),
       }
     }
   }

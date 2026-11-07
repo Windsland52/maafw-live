@@ -270,7 +270,9 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         return
       }
       layers.push(r.value)
-      const shown = Object.entries(fields).map(([k, v]) => k + '=' + v).join('，')
+      /* password 字段（v2.10.0）回显掩码——值该进 tokens/pipeline_override，不进输出与日志。 */
+      const pwdNames = new Set((o.inputs ?? []).filter((f) => f.password).map((f) => f.name))
+      const shown = Object.entries(fields).map(([k, v]) => k + '=' + (pwdNames.has(k) ? '•••' : v)).join('，')
       applied.push(name + '=（' + o.type + (shown ? '：' + shown : '') + '，' + level + '）')
       return
     }
@@ -279,6 +281,17 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
     if (!v || v.kind !== 'cases') {
       warns.push('option ' + name + '（' + level + '）无 preset/default_case 取值，跳过其 pipeline_override')
       return
+    }
+    /* checkbox 的 min_count / max_count（v2.10.1）：取值数量违反约束只警告不阻断——
+     * 声明的问题修在 interface.json，跑坏比选对来得早。 */
+    if (o.type === 'checkbox') {
+      const n = v.cases.length
+      if (o.minCount !== undefined && n < o.minCount) {
+        warns.push('option ' + name + '（checkbox）：选中 ' + n + ' 项 < min_count=' + o.minCount)
+      }
+      if (o.maxCount !== undefined && n > o.maxCount) {
+        warns.push('option ' + name + '（checkbox）：选中 ' + n + ' 项 > max_count=' + o.maxCount)
+      }
     }
     for (const cname of v.cases) {
       const c = o.cases.find((x: OptionCase) => x.name === cname)

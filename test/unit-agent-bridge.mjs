@@ -18,7 +18,7 @@ const { setupAgents, S } = __test
 /** 假 maa 模块：Client 记录调用序列，connect 前把已注册 sink 存进 calls */
 function fakeMaa(calls) {
   class FakeClient {
-    constructor() { this._calls = calls; this._ident = 'stub-ident' }
+    constructor(identifier) { this._calls = calls; this._ident = identifier || 'stub-ident' }
     get identifier() { return this._ident }
     bind_resource(res) { this._calls.push(['bind_resource', res]) }
     register_resource_sink(o) { this._calls.push(['register_resource_sink', o]) }
@@ -114,4 +114,15 @@ test('agent 桥接：connect 后 connected/alive 为假按失败报（协议错�
     { Client: DeadClient }, fakeSpawnFactory(calls))
   assert.equal(r.ok, false)
   assert.match(r.error, /握手被拒|版本错配|连接失败/)
+})
+
+test('agent 桥接：interface 声明的固定 identifier 交给 Client 并追加为子进程末参', async () => {
+  await reset()
+  const calls = []
+  const r = await setupAgents({ tag: 'res' }, [{ exec: 'python', args: ['a.py'], identifier: 'fixed-ident-1' }], 'cwd', null,
+    { resource: { tag: 'res' }, controller: { tag: 'c' }, tasker: { tag: 't' } },
+    fakeMaa(calls), fakeSpawnFactory(calls))
+  assert.equal(r.ok, true)
+  const sp = calls.find((c) => c[0] === 'spawn')
+  assert.deepEqual(sp[2].slice(-1), ['fixed-ident-1'], 'schema：identifier 用来建 socket，声明了就用声明值')
 })

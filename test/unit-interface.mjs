@@ -256,6 +256,50 @@ test('input：取值优先级 CLI --option > preset > 字段 default', () => {
   )
 })
 
+test('input password 字段：值进 tokens，applied 回显掩码（v2.10.0：不得把原文写进输出/日志）', () => {
+  const loaded = mkLoaded({
+    options: {
+      auth: {
+        name: 'auth', type: 'input', cases: [],
+        pipelineOverride: { Node: { token: '{secret}' } },
+        inputs: [{ name: 'secret', pipelineType: 'string', password: true }],
+      },
+    },
+    globalOption: ['auth'],
+  })
+  const r = computePipelineOverride({
+    loaded, controllerName: null, resourceName: null, taskName: null,
+    optionFields: { auth: { secret: 's3cr3t-real' } },
+  })
+  assert.equal(flat(r.override).Node.token, 's3cr3t-real', '掩码只改回显，替换进 pipeline 的仍是原值')
+  assert.ok(r.applied.every((l) => !l.includes('s3cr3t-real')), 'applied 不得带密码原文：' + JSON.stringify(r.applied))
+  assert.ok(r.applied.some((l) => l.includes('secret=•••')), JSON.stringify(r.applied))
+})
+
+test('checkbox min_count / max_count：取值数量违反约束 → 告警（不阻断，声明的问题修在 interface.json）', () => {
+  const loaded = mkLoaded({
+    options: {
+      multi: {
+        name: 'multi', type: 'checkbox', minCount: 2, maxCount: 2,
+        cases: [
+          { name: 'a', pipelineOverride: { N: { a: 1 } } },
+          { name: 'b', pipelineOverride: { N: { b: 1 } } },
+          { name: 'c', pipelineOverride: { N: { c: 1 } } },
+        ],
+        defaultCase: ['a'],
+      },
+    },
+    globalOption: ['multi'],
+  })
+  const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
+  assert.ok(r.warns.some((w) => w.includes('multi') && w.includes('min_count')), '1 < min_count=2 要报：' + JSON.stringify(r.warns))
+  const r2 = computePipelineOverride({
+    loaded, controllerName: null, resourceName: null, taskName: null,
+    optionCases: { multi: ['a', 'b', 'c'] },
+  })
+  assert.ok(r2.warns.some((w) => w.includes('multi') && w.includes('max_count')), '3 > max_count=2 要报：' + JSON.stringify(r2.warns))
+})
+
 test('hotkey：没选中控制器 → 无法确定键码表，跳过并说清楚', () => {
   const loaded = mkLoaded({
     options: {
@@ -573,6 +617,41 @@ test('目录无 interface.json → file=null 且不抛异常', () => {
   try {
     const l = loadInterface(dir)
     assert.equal(l.file, null)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('loadInterface：v2.10 字段进模型——password 禁 default、checkbox min/max_count、agent.identifier、permission_required', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      controller: [{ name: 'C1', type: 'Win32', permission_required: true }],
+      resource: [{ name: 'R1', path: 'res' }],
+      task: [{ name: 'T1', entry: 'E' }],
+      option: {
+        auth: {
+          type: 'input',
+          pipeline_override: { N: { token: '{secret}' } },
+          inputs: [{ name: 'secret', password: true, default: 'oops', pipeline_type: 'string' }],
+        },
+        multi: { type: 'checkbox', min_count: 1, max_count: 2, cases: [{ name: 'a', pipeline_override: {} }] },
+        bad: { type: 'checkbox', min_count: 5, max_count: 2, cases: [{ name: 'a', pipeline_override: {} }] },
+      },
+      agent: [{ child_exec: 'python', child_args: ['main.py'], identifier: 'fixed-1' }],
+    }))
+    const l = loadInterface(dir)
+    const secret = l.options.auth.inputs.find((f) => f.name === 'secret')
+    assert.equal(secret.password, true)
+    assert.equal(secret.default, undefined, 'password=true 时 schema 禁 default，解析层就丢掉')
+    assert.ok(l.problems.some((p) => p.message.includes('password=true') && p.message.includes('default')), JSON.stringify(l.problems))
+    assert.equal(l.options.multi.minCount, 1)
+    assert.equal(l.options.multi.maxCount, 2)
+    assert.equal(l.options.bad.minCount, 5, '字段如实进模型……')
+    assert.ok(l.problems.some((p) => p.message.includes('min_count') && p.message.includes('max_count')), '……自相矛盾的约束记 problem：' + JSON.stringify(l.problems))
+    assert.equal(l.agents[0].identifier, 'fixed-1')
+    assert.equal(l.controllers[0].permissionRequired, true)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

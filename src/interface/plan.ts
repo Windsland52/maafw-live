@@ -124,6 +124,9 @@ export function planController(
   }
 
   const notes: string[] = ['控制器 ' + c.name + '（来自 interface.json）']
+  if (c.permissionRequired === true) {
+    notes.push('permission_required=true：该控制器需要管理员/root 权限运行，连接失败先查权限')
+  }
   const connect: Record<string, unknown> = { kind }
   if (c.display?.shortSide !== undefined) connect.shortSide = c.display.shortSide
   if (c.display?.longSide !== undefined) connect.longSide = c.display.longSide
