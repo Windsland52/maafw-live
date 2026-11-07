@@ -27,6 +27,18 @@
   升格失败要如实接受，改走 L1 参考帧并说明它不作证据本体。
 - adb 的 `destroy` 偶发阻塞：客户端超时后会硬杀 daemon 自愈，这属预期，不是崩溃。
 
+### 2.1 agent 侧（custom action / recognition 里）
+
+- **`context.tasker.controller` 不能缓存到变量里复用**。这是 MaaFramework 的语义：`controller` 属性
+  每次访问都新建一个远程句柄并把旧的顶替掉——缓存的句柄再调用会撞 access violation
+  （读 0xFFFFFFFFFFFFFFFF）。每次要用时**重新取**（`context.tasker.controller` 现取现用），
+  别在 action 开头存一份然后整个循环复用。
+- **`context.tasker.controller` / `context.tasker` 的 reverse request 依赖桥接侧注册 sink**。
+  `controller not found`（`controller_id` 为空）说明桥接没注册对应 sink，不是"回调里不能截图"——
+  maafw-live ≥0.3.1 的 `run` 会注册 resource/controller/tasker 三个 sink，回执 `agent.sinks` 可见；
+  自己写的桥接脚本必须同样注册（参照 M9A `agent_client` 的完整 PI-client 装配），否则 agent 内
+  一切 controller/tasker 反查都会静默失败。
+
 ## 3. 坐标与图像空间
 
 - **历史帧 roi 必须按该帧捕获时尺寸换算**（每帧带 `fw/fh`）。按当前全局尺寸换算会在重连/改分辨率后静默错剪。

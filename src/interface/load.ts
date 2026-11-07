@@ -138,7 +138,7 @@ export interface InterfacePreset {
 }
 
 /** PI `agent` 声明：宿主侧子进程（如 uv run python agent/main.py），经 agent 协议注册 custom
- * action / recognition。maa-node 绑定未暴露 AgentClient 桥接——本工具只能诊断，不能 spawn。 */
+ * action / recognition。daemon 的 run 会 spawn 并桥接（bind_resource + sink 注册 + connect）。 */
 export interface InterfaceAgent {
   exec: string
   args: string[]
@@ -178,7 +178,8 @@ export interface LoadedInterface {
   globalOption: string[]
   /** controller 启动前任务；连接前按声明序执行（非零退出即中止本次连接） */
   pretask: InterfacePretask[]
-  /** agent 子进程声明；CLI 未桥接（绑定无 AgentClient），仅用于警告与失败归因 */
+  /** agent 子进程声明；run 时由 daemon 桥接（spawn 子进程 + bind_resource + sink 注册 + connect，
+   * 见 framed.mjs setupAgents）。此处只负责读出 exec/args。 */
   agents: InterfaceAgent[]
   problems: InterfaceProblem[]
 }

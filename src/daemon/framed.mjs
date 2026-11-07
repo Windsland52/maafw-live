@@ -1158,28 +1158,64 @@ function ensureTasker() {
  *
  * 环境变量：调用方给的 `PI_*` 原样并入子进程 env。本层不解释取值也不补默认——
  * 协议允许逐项缺省、由 agent 容错；这里编一个默认值只会把"没注入"伪装成"注入了"。 */
+/* 收掉整棵 agent 进程树。真身在子孙层（uv run → venv-python → uv-python agent/main.py），
+ * child.kill() 只到直接子进程（uv.exe）。taskkill /T /F 在树还活着时按父链整棵收
+ * （实测含孙级、含 uv 重 exec 的孙孙级）。顺序是硬约束：必须先 taskkill 再
+ * disconnect——disconnect 会让 uv.exe 自己优雅退出，它的 python 子孙瞬间脱离父链，
+ * taskkill /T 再够不到（实测 disconnect 在先必留两个 python 孤儿）。
+ * POSIX 用 detached 进程组（spawn 时 detached:true），负 pid 杀整组。 */
+function killTree(child) {
+  if (!child || !child.pid) return Promise.resolve()
+  if (process.platform === 'win32') {
+    return new Promise((resolve) => {
+      try {
+        execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { timeout: 10000 }, () => resolve())
+      } catch (e) {
+        try { child.kill() } catch (e2) { /* ignore */ }
+        resolve()
+      }
+    })
+  }
+  try { process.kill(-child.pid, 'SIGKILL') } catch (e) {
+    try { child.kill('SIGKILL') } catch (e2) { /* ignore */ }
+  }
+  return Promise.resolve()
+}
+
 async function cleanupAgents() {
   const bind = S.agentBind
   S.agentBind = null
   if (!bind) return
   for (const c of bind.clients) {
+    /* 先树杀、后 disconnect：顺序反过来 disconnect 会抢先让 uv.exe 退掉，子孙脱离
+     * 父链后 taskkill /T 够不到（实测留两个 python 孤儿）。 */
+    await killTree(c.child)
     try { c.client.disconnect() } catch (e) { /* ignore */ }
     try { c.client.destroy() } catch (e) { /* ignore */ }
-    try { c.child.kill() } catch (e) { /* ignore */ }
   }
 }
 
-async function setupAgents(res, decls, cwd, piEnv) {
+async function setupAgents(res, decls, cwd, piEnv, sinks, maaMod, spawnFn) {
   const key = JSON.stringify(decls)
   if (S.agentBind && S.agentBind.res === res && S.agentBind.key === key) {
     const alive = S.agentBind.clients.every((c) => {
       try { return c.client.connected && c.client.alive } catch (e) { return false }
     })
-    if (alive) return { ok: true, reused: true, clients: S.agentBind }
+    if (alive) return { ok: true, reused: true, clients: S.agentBind, sinks: S.agentBind.sinks }
   }
   await cleanupAgents()
-  const m = loadMaa()
+  const m = maaMod ?? loadMaa()
+  const doSpawn = spawnFn ?? spawn
   const clients = []
+  /* sink 注册是桥接的另一半：只 bind_resource 时 agent 侧 context.tasker.controller /
+   * context.tasker 发出的 reverse request 会带空 controller_id / 找不到 tasker，
+   * 框架日志报 controller not found 后 custom action 挂起（实测：patrol 的 post_click
+   * 静默失败，角色原地等死）。三个 sink 必须在 connect() 之前注册。 */
+  const sinkDefs = [
+    ['resource', sinks && sinks.resource, 'register_resource_sink'],
+    ['controller', sinks && sinks.controller, 'register_controller_sink'],
+    ['tasker', sinks && sinks.tasker, 'register_tasker_sink'],
+  ]
   for (const d of decls) {
     const client = new m.Client()
     const ident = client.identifier
@@ -1188,10 +1224,12 @@ async function setupAgents(res, decls, cwd, piEnv) {
       const env = piEnv && typeof piEnv === 'object' ? Object.fromEntries(
         Object.entries(piEnv).filter(([, v]) => typeof v === 'string' && v !== ''),
       ) : {}
-      child = spawn(d.exec, [...d.args, ident], {
+      child = doSpawn(d.exec, [...d.args, ident], {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        /* POSIX 下脱离父进程组：killTree 靠负 pid 杀整组；Windows 无进程组概念，taskkill /T 兜底 */
+        ...(process.platform !== 'win32' ? { detached: true } : {}),
         /* 空对象时干脆不传 env（子进程照常继承），别用空 env 覆盖掉 PATH */
         ...(Object.keys(env).length ? { env: { ...process.env, ...env } } : {}),
       })
@@ -1209,12 +1247,27 @@ async function setupAgents(res, decls, cwd, piEnv) {
       try { client.destroy() } catch (e2) { /* ignore */ }
       return { ok: false, error: 'agent 绑定资源失败：' + String(e && e.message || e) }
     }
+    const sinksRegistered = []
+    const sinkErrs = []
+    for (const [name, obj, method] of sinkDefs) {
+      if (!obj) continue
+      try { client[method](obj); sinksRegistered.push(name) } catch (e) {
+        sinkErrs.push(name + '：' + String(e && e.message || e))
+      }
+    }
+    client.__sinks = { registered: sinksRegistered, ...(sinkErrs.length ? { errors: sinkErrs } : {}) }
+    /* sink 注册失败不阻断：custom action 不碰 context.controller/tasker 的项目照跑，
+     * 但回执必须点名哪一项没注上——半残不报就是"controller not found"那种排障半天。 */
     const exited = new Promise((r) => child.on('exit', () => r('exit')))
+    let timer = null
     const ok = await Promise.race([
       client.connect().then(() => 'ok', () => 'err'),
       exited,
-      sleep(60000).then(() => 'timeout'),
+      new Promise((r) => { timer = setTimeout(() => r('timeout'), 60000) }),
     ])
+    /* connect 或子进程退出先赢时把超时就地收掉：不然这个 setTimeout 挂着 60s
+     * 才让进程退（headless 调用方——比如单测——会被它拖住）。 */
+    if (timer) clearTimeout(timer)
     /* connect() resolve 不代表可用：协议版本错配（maa-node 与 agent 侧 maa 版本不一致）时
      * 通道建立但握手被拒——必须复核 connected && alive（maa-support 同款检查）。 */
     let usable = ok === 'ok'
@@ -1228,14 +1281,19 @@ async function setupAgents(res, decls, cwd, piEnv) {
       try { child.kill() } catch (e) { /* ignore */ }
       return { ok: false, error: 'agent ' + why + '：' + [d.exec, ...d.args].join(' ') + '；输出尾部：' + out.slice(-300) }
     }
-    clients.push({ client, child, name: [d.exec, ...d.args].join(' '), out })
+    clients.push({ client, child, ident, name: [d.exec, ...d.args].join(' '), out })
   }
-  S.agentBind = { res, key, clients }
+  /* 汇总所有 client 的 sink 结果：registered 取并集，errors 逐条带上是哪个 agent */
+  const sinkReport = {
+    registered: [...new Set(clients.flatMap((c) => c.client.__sinks?.registered ?? []))],
+    errors: clients.flatMap((c) => (c.client.__sinks?.errors ?? []).map((e) => c.name + '：' + e)),
+  }
+  S.agentBind = { res, key, clients, sinks: sinkReport }
   let actions = null
   let recos = null
   try { actions = clients[0].client.custom_action_list } catch (e) { /* ignore */ }
   try { recos = clients[0].client.custom_recognition_list } catch (e) { /* ignore */ }
-  return { ok: true, clients: S.agentBind, actions, recos }
+  return { ok: true, clients: S.agentBind, actions, recos, sinks: sinkReport }
 }
 
 const sab = new Int32Array(new SharedArrayBuffer(4))
@@ -1265,16 +1323,21 @@ async function cmdRun(args) {
   /* 上一轮 agent 子进程先断掉：这一轮会新建 Resource，绑定不可能复用。 */
   await cleanupAgents()
   const res = await buildResource(resDirs)
+  /* tasker 要在 setupAgents 之前就绪：agent 侧 context.tasker / context.tasker.controller
+   * 经 sink 反查的就是这个 tasker 与 S.ctrl——先注册、后 connect，缺一个 sink 就是
+   * "controller not found"（见 setupAgents 注释）。 */
+  const tasker = ensureTasker()
   /* agent 桥接：项目声明了 agent（PI interface 的 child_exec/child_args）就先连上——
    * custom action 注册进本次运行的 Resource；失败不阻断（非 agent 节点照跑），结果如实报告 */
   let agentInfo = null
   if (Array.isArray(args.agents) && args.agents.length) {
-    const ag = await setupAgents(res, args.agents, String(args.agentCwd || process.cwd()), args.agentEnv)
+    const ag = await setupAgents(res, args.agents, String(args.agentCwd || process.cwd()), args.agentEnv,
+      { resource: res, controller: S.ctrl, tasker })
     agentInfo = ag.ok
-      ? { ok: true, reused: !!ag.reused, actions: ag.actions ?? null, recognitions: ag.recos ?? null }
+      ? { ok: true, reused: !!ag.reused, actions: ag.actions ?? null, recognitions: ag.recos ?? null,
+          ...(ag.sinks ? { sinks: ag.sinks } : {}) }
       : { ok: false, error: ag.error }
   }
-  const tasker = ensureTasker()
   tasker.resource = res
   tasker.controller = S.ctrl
   /* 顺序是硬约束：先让 tasker 指向新对象，再销毁上一份。反过来（或加载失败前就销毁）会让还握着
@@ -3068,7 +3131,46 @@ const handlers = {
 
 /* 子进程模式：stdin JSON 行协议（每行一条消息）。非 --child（headless 单测 import）不挂监听。 */
 if (CHILD) {
+  /* 兜底回收 agent 子进程：cleanupAgents 正常走 shutdown / run 重入，但 daemon 被 kill、
+   * 崩溃或宿主超时硬杀时没人收——实测会留下成批孤儿 agent 子进程占着设备连接。
+   * 只能同步处理：exit 事件里不许 await。仅在 --child 模式挂，单测 import 不污染宿主进程。 */
+  const killAgentChildrenSync = () => {
+    const bind = S.agentBind
+    if (!bind) return
+    for (const c of bind.clients) {
+      /* exit 里同步路径：async WMI/taskkill 都用不了，只能信号杀直接子进程兜底；
+       * POSIX 的负 pid 杀组是同步的、有效。正常退出走的是 cleanupAgents 的完整树杀，
+       * 这里只是"进程突然死"的防泄漏。 */
+      if (process.platform === 'win32') {
+        try { c.child.kill() } catch (e) { /* ignore */ }
+      } else {
+        try { process.kill(-c.child.pid, 'SIGKILL') } catch (e) { try { c.child.kill('SIGKILL') } catch (e2) { /* ignore */ } }
+      }
+    }
+  }
+  process.on('exit', killAgentChildrenSync)
+  process.on('uncaughtException', (e) => {
+    killAgentChildrenSync()
+    /* 不吞掉异常：打印后让进程照常死，exit 里再收一次（幂等） */
+    console.error('daemon 未捕获异常：' + String(e && e.stack || e))
+    process.exit(2)
+  })
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
+  /* 宿主已死 = stdin 管道断开：daemon 不自杀就成孤儿（实测 --session-stop 杀的是会话服务
+   * 进程，daemon 还活着、它桥接的 agent 树也活着）。收到 close 就按 shutdown 同等规格
+   * 收摊：停流 → 树杀 agent → 退。兜底 10s：cleanup 卡住也不许吊着。 */
+  let hostGone = false
+  const onHostGone = () => {
+    if (hostGone) return
+    hostGone = true
+    Promise.resolve()
+      .then(() => cmdStreamStop())
+      .then(() => cleanupAgents())
+      .catch(() => { /* ignore */ })
+      .then(() => process.exit(0))
+    setTimeout(() => process.exit(0), 10000).unref()
+  }
+  rl.on('close', onHostGone)
   rl.on('line', (line) => {
     let m = null
     try { m = JSON.parse(line) } catch (e) {
@@ -3093,4 +3195,5 @@ export const __test = {
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
+  setupAgents,
 }
