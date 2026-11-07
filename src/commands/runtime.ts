@@ -559,6 +559,7 @@ export const runCommand: Command = {
           endSeq?: number
           framesCaptured?: number
           agent?: { ok?: boolean; reused?: boolean; actions?: string[] | null; recognitions?: string[] | null; error?: string }
+          hashCheck?: { resourceName?: string; expected?: string; actual?: string; match?: boolean }
         }
         const taskOk = rec.ok === true
         const nodes = rec.nodes ?? []
@@ -578,6 +579,12 @@ export const runCommand: Command = {
               ? '被停止（任务自己结束，但未成功）'
               : '失败'
         const agentLines: string[] = []
+        if (rec.hashCheck?.expected !== undefined) {
+          agentLines.push(rec.hashCheck.match === true
+            ? '  资源完整性：' + String(rec.hashCheck.resourceName) + ' hash 校验通过'
+            : '  资源完整性：' + String(rec.hashCheck.resourceName) + ' hash 不匹配（期望 ' +
+              String(rec.hashCheck.expected) + ' / 实际 ' + String(rec.hashCheck.actual || '?') + '），按 v2.6 语义不阻断')
+        }
         if (rec.agent) {
           agentLines.push(rec.agent.ok
             ? '  agent 已连接' + (rec.agent.reused ? '（复用）' : '') + '：custom action ' +

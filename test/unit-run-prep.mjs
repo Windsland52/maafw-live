@@ -144,7 +144,7 @@ test('agent 子进程环境：PI_* 按当前选择生成，且不编 5.14.2 里�
   if (!prep.ok) return
   const env = prep.args.agentEnv
   assert.equal(env.PI_CLIENT_NAME, 'maafw-live')
-  assert.equal(env.PI_INTERFACE_VERSION, 'v2.5.0', '兑现到哪一档就报哪一档，不谎报 v2.6/v2.7')
+  assert.equal(env.PI_INTERFACE_VERSION, 'v2.7.0', '兑现到哪一档就报哪一档：v2.6 hash 校验 + v2.7 pretask 均已落地')
   assert.equal(env.PI_VERSION, '1.2.3', '顶层 version 是项目版本，不是 interface_version=2')
   assert.equal(JSON.parse(env.PI_CONTROLLER).name, 'C1', 'PI_CONTROLLER 是被选中那条的完整对象')
   assert.equal(JSON.parse(env.PI_RESOURCE).name, 'R1')

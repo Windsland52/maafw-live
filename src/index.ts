@@ -101,6 +101,24 @@ export async function main(argv: string[]): Promise<number> {
 
   const flags = readGlobalFlags(parsed.values, cwd)
 
+  /* 预留旗标没有消费者：传了就退 2 而不是静默吞掉——"以为在试跑其实已经落盘"
+   * 是 agent 最坏的失败模式。`--limit` 例外：events 自己声明并消费同名列，
+   * 命令有消费时才放行。 */
+  const unimpl: string[] = []
+  if (flags.dryRun) unimpl.push('--dry-run')
+  if (flags.verbose) unimpl.push('--verbose')
+  if (parsed.values.limit !== undefined && !(cmd.options && 'limit' in cmd.options)) unimpl.push('--limit')
+  if (unimpl.length > 0) {
+    const result = fail(
+      'FLAG_NOT_IMPLEMENTED',
+      `未实现的旗标：${unimpl.join(' ')}（接受但不生效是最坏的失败模式，所以直接报错）`,
+      '要"只校验不落盘"用 validate；要截断输出用命令自己的分页参数',
+      EXIT.USAGE,
+    )
+    emit(cmd.name, result, { json: flags.json, color: flags.color })
+    return EXIT.USAGE
+  }
+
   if (flags.help) {
     print(commandUsage(cmd))
     return EXIT.OK

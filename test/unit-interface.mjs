@@ -445,6 +445,60 @@ test('resolveResourcePaths：多个资源都适用 → 取第一个但给 note�
   }
 })
 
+test('resource.hash：hashCheck 只圈 path[]，attach_resource_path 不计入被校验对象', () => {
+  /* PI v2.6：校验时机是"加载完 path 后、加载 attach 之前"——把 attach 算进被校验
+   * 对象会让 hash 与上游算的不一致（误报）。这里钉住两段的分界。 */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-hash-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      name: 'hash',
+      controller: [{ name: 'C1', type: 'Adb', attach_resource_path: ['attachA'] }],
+      resource: [
+        { name: 'R1', path: ['res1a', 'res1b'], hash: 'sha-expected-1' },
+        { name: 'R2', path: ['res2'] /* 无 hash：不校验 */ },
+      ],
+      task: [{ name: 'T1', entry: 'StartUp' }],
+    }))
+    const l = loadInterface(dir)
+    const res1a = path.join(dir, 'res1a'), res1b = path.join(dir, 'res1b'), attach = path.join(dir, 'attachA')
+
+    const plan = resolveResourcePaths(l, 'C1')
+    assert.equal(plan.hashCheck?.expected, 'sha-expected-1')
+    assert.equal(plan.hashCheck?.resourceName, 'R1')
+    assert.deepEqual(plan.hashCheck?.pathDirs, [res1a, res1b], '被校验的只有 path[]')
+    assert.deepEqual(plan.hashCheck?.attachDirs, [attach], 'attach 单独一段，不算进被校验对象')
+    assert.deepEqual(plan.paths, [res1a, res1b, attach], '加载全链仍是 path + attach')
+
+    const noHash = resolveResourcePaths(l, 'C1', 'R2')
+    assert.equal(noHash.hashCheck, undefined, '没声明 hash 就不校验')
+    assert.deepEqual(noHash.paths, [path.join(dir, 'res2'), attach], 'attach 照常加载')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('resource.hash：--resource 按名选中时校验跟着选中项走', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-hash-sel-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      name: 'hash-sel',
+      controller: [{ name: 'C1', type: 'Adb' }],
+      resource: [
+        { name: 'R1', path: ['res1'], hash: 'h1' },
+        { name: 'R2', path: ['res2'], hash: 'h2' },
+      ],
+      task: [{ name: 'T1', entry: 'StartUp' }],
+    }))
+    const l = loadInterface(dir)
+    assert.equal(resolveResourcePaths(l, 'C1', 'R2').hashCheck?.expected, 'h2')
+    assert.equal(resolveResourcePaths(l, 'C1').hashCheck?.expected, 'h1')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('import 不可嵌套：被导入文件里的 import 记 problem 并忽略', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-nest-'))
   try {

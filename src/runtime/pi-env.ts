@@ -21,11 +21,10 @@ import { cliPackage, maaNodeVersion } from '../pkg.js'
  * 本工具**实际兑现**的 PI 能力版本。
  *
  * 不写"最新"：这个值给 agent 判特性用，谎报会让它以为没实现的行为存在。
- * 当前兑现到 v2.5.0：option 四级链 / preset / import / `attach_resource_path` /
- * option 适用性过滤都在；pretask（v2.7）已实现，但 **v2.6 的 resource.hash 一致性校验
- * 还没有**，按版本序不能跳过它去报 v2.7。hash 落地后**必须**一起抬这个值。
+ * 当前兑现到 v2.7.0：option 四级链 / preset / import / `attach_resource_path` /
+ * option 适用性过滤 / `resource.hash` 完整性校验（v2.6，warn-only）/ pretask（v2.7）。
  */
-const PI_INTERFACE_VERSION = 'v2.5.0'
+const PI_INTERFACE_VERSION = 'v2.7.0'
 
 /** 本 CLI 的人类输出固定中文、没有 UI 语言切换——按协议示例的 `zh_cn` 形态如实报。 */
 const PI_CLIENT_LANGUAGE = 'zh_cn'

@@ -66,6 +66,8 @@ export interface InterfaceResource {
   controllers: string[]
   /** v2.3.0：资源级配置项名单（override 链第二级） */
   option?: string[]
+  /** v2.6.0：资源完整性校验值（仅加载 path 后的 MaaResourceGetHash；不匹配只警告不阻断） */
+  hash?: string
   /** 原始条目（未裁剪）：PI_RESOURCE 要传"被选中那条的完整对象" */
   raw?: unknown
 }
@@ -311,7 +313,10 @@ export function loadInterface(dir: string): LoadedInterface {
       problems.push({ message: 'resource 项缺少 name 或 path，已跳过' })
       continue
     }
-    resources.push({ name, paths, controllers: strList(r.controller), option: strList(r.option), raw: r })
+    resources.push({
+      name, paths, controllers: strList(r.controller), option: strList(r.option),
+      ...(r.hash !== undefined ? { hash: str(r.hash) } : {}), raw: r,
+    })
   }
 
   const tasks: InterfaceTask[] = []

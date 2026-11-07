@@ -7,8 +7,9 @@
  *  - `--no-color`：ANSI 转义会混进 JSON；
  *  - `--json`：稳定信封，供技能与 CI 解析。
  *
- * `--dry-run` / `--limit` / `--verbose` 同样只有解析位：当前没有任何命令消费它们，
- * 帮助文本与 README 都按"预留未实现"标注——不要把它们当成行为保证。
+ * `--dry-run` / `--verbose` / 全局 `--limit` 没有消费者：`index.ts` 在解析后直接退 2
+ * （`FLAG_NOT_IMPLEMENTED`）——静默接受比报错更坏（"以为在试跑其实已经落盘"）。
+ * 例外：命令自己声明并消费 `limit` 时（`events`）放行。要恢复预留语义再放开。
  */
 import type { ParseArgsOptionsConfig } from 'node:util'
 

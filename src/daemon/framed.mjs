@@ -1078,11 +1078,21 @@ function cmdFrameDiff(args) {
  * （上次加载了皮肤包这次没选，残留会让 override 关系错乱）；单包若复用会话资源，长活会话里
  * `run --resource-dir B` 还会带着上一轮 A 的节点/模板跑。会话不该有一份"当前资源"的共享态。
  */
-async function buildResource(dirs) {
+async function buildResource(dirs, hashCheck) {
   const m = loadMaa()
   const res = new m.Resource()
+  /* hashCheck：PI v2.6 的 resource.hash 校验，时机是"只加载完 path[]"（attach_resource_path
+   * 不能算进被校验对象）。两段在 plan 侧已分好：pathDirs 是资源自己的声明路径，
+   * attachDirs 是控制器追加段；dirs 兜底=全链（无校验声明时调用方不传 hashCheck）。
+   * 读出的实际值写回 hashCheck.actual——校验结果（匹配/不匹配）由调用方决定怎么报。 */
+  const pathDirs = hashCheck ? hashCheck.pathDirs : dirs
+  /* plan 侧 paths 做了整体去重（attach 若与 path 相同会消失），这里保持同一份：
+   * attach 去重掉已在 pathDirs 里的项，保证加载序列与 paths 一一对应 */
+  const attachDirs = hashCheck ? hashCheck.attachDirs.filter((d) => !pathDirs.includes(d)) : []
   try {
-    for (const d of dirs) await res.post_bundle(d).wait()
+    for (const d of pathDirs) await res.post_bundle(d).wait()
+    if (hashCheck) hashCheck.actual = res.hash || ''
+    for (const d of attachDirs) await res.post_bundle(d).wait()
   } catch (e) {
     /* 加载中途失败也要把句柄收掉：否则每次失败的 run 都在 native 侧留一份 */
     try { res.destroy() } catch (e2) { /* ignore */ }
@@ -1348,7 +1358,18 @@ async function cmdRun(args) {
    * 这一轮也不存在可复用的资源对象。放在参数校验之后——调用参数错了不该把上一份资源也丢掉。 */
   /* 上一轮 agent 子进程先断掉：这一轮会新建 Resource，绑定不可能复用。 */
   await cleanupAgents()
-  const res = await buildResource(resDirs)
+  const hashCheck = args.resourceHashCheck && typeof args.resourceHashCheck === 'object' ? args.resourceHashCheck : null
+  const res = await buildResource(resDirs, hashCheck)
+  /* v2.6 一致性校验：不匹配只警告不阻断（协议原文"不应阻止继续使用"），结果如实进回执与 warns */
+  const runWarns = []
+  if (hashCheck && hashCheck.expected !== undefined) {
+    hashCheck.match = hashCheck.actual === hashCheck.expected
+    if (!hashCheck.match) {
+      runWarns.push('资源完整性校验失败：' + String(hashCheck.resourceName) +
+        ' 期望 hash=' + String(hashCheck.expected) + ' 实际=' + String(hashCheck.actual || '(读不到)') +
+        '——建议重新下载资源包；按 PI v2.6 语义不阻断本次运行')
+    }
+  }
   /* tasker 要在 setupAgents 之前就绪：agent 侧 context.tasker / context.tasker.controller
    * 经 sink 反查的就是这个 tasker 与 S.ctrl——先注册、后 connect，缺一个 sink 就是
    * "controller not found"（见 setupAgents 注释）。 */
@@ -1501,6 +1522,7 @@ async function cmdRun(args) {
     framesCaptured: S.seq,
     retention,
     ...(agentInfo ? { agent: agentInfo } : {}),
+    ...(hashCheck ? { hashCheck } : {}),
     ...(nextCandidateCount ? { nextCandidates, nextCandidateCount } : {}),
     nodes: order.map((n) => ({
       id: n.id, name: n.name, nameSource: n.nameSource, status: n.status,
@@ -1508,7 +1530,7 @@ async function cmdRun(args) {
     })),
     dump: dump ? { taskCount: dump.tasks ? dump.tasks.length : 0, nodes: Object.keys(dump.nodes || {}).length } : null,
   }
-  return { ok: true, record: rec }
+  return { ok: true, record: rec, ...(runWarns.length ? { warns: runWarns } : {}) }
 }
 
 async function cmdRunStop() {

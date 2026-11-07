@@ -43,6 +43,12 @@ export interface ResourcePlan {
   selected: string | null
   /** 需要人工注意的事项：多个条目都适用时说明选了哪一个（resource[] 是互斥单选，选了就只能用一个） */
   notes?: string[]
+  /**
+   * v2.6.0 资源完整性校验：声明了 resource.hash 时给出。`pathDirs` 是**只有** `path[]`
+   * 的那段（不含 attach），`attachDirs` 是控制器 `attach_resource_path`——校验时机是
+   * 加载完 path 后、加载 attach 之前，两段必须分开才能只在边界处读 `res.hash`。
+   */
+  hashCheck?: { resourceName: string; expected: string; pathDirs: string[]; attachDirs: string[] }
 }
 
 const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', Linux: 'linux' }
@@ -218,19 +224,24 @@ export function resolveResourcePaths(
    * 追加控制器声明的 attach_resource_path（v2.2.0："在 resource.path 加载完成后，额外加载"）。
    * 它是**控制器的属性**，所以 `--resource` 走哪条分支都要追加——曾经两条提前 return 把它丢了。
    */
-  const withAttach = (paths: string[], names: string[], selected: string | null, notes: string[] = []): ResourcePlan => {
+  const withAttach = (paths: string[], names: string[], selected: string | null, notes: string[] = [], expected?: string): ResourcePlan => {
     const out = [...paths]
+    const attachDirs: string[] = []
     if (dir && controllerName) {
       const c = loaded.controllers.find((x) => x.name === controllerName)
-      for (const p of c?.attachResourcePath ?? []) out.push(resolve(dir, p))
+      for (const p of c?.attachResourcePath ?? []) attachDirs.push(resolve(dir, p))
     }
-    return { paths: [...new Set(out)], names, selected, ...(notes.length ? { notes } : {}) }
+    out.push(...attachDirs)
+    const hashCheck = expected && selected
+      ? { resourceName: selected, expected, pathDirs: [...paths], attachDirs }
+      : undefined
+    return { paths: [...new Set(out)], names, selected, ...(notes.length ? { notes } : {}), ...(hashCheck ? { hashCheck } : {}) }
   }
 
   if (override) {
     const byName = loaded.resources.find((r) => r.name === override)
     if (byName && dir) {
-      return withAttach(byName.paths.map((p) => resolve(dir, p)), [byName.name], byName.name)
+      return withAttach(byName.paths.map((p) => resolve(dir, p)), [byName.name], byName.name, [], byName.hash)
     }
     return withAttach([resolve(override)], ['(--resource)'], null)
   }
@@ -255,5 +266,5 @@ export function resolveResourcePaths(
       )
     }
   }
-  return withAttach(paths, selected ? [selected] : [], selected, notes)
+  return withAttach(paths, selected ? [selected] : [], selected, notes, applicable[0]?.hash)
 }

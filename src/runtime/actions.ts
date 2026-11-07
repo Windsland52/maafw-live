@@ -331,6 +331,9 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
     ok: true,
     args: {
       resourceDirs: paths,
+      /* v2.6 资源完整性：只在加载完 path[] 后读 hash（attach 不能算进去），
+       * 两段在 resolveResourcePaths 已经分好 */
+      ...(project.resource?.hashCheck ? { resourceHashCheck: project.resource.hashCheck } : {}),
       entry: resolvedEntry,
       override,
       /* agent 桥接：daemon spawn 子进程（identifier 追加为末参）并 bind/connect 到本次 Resource */

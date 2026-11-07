@@ -190,8 +190,8 @@ JSON 信封的 `data.record.ok`，不是外层 `ok`——外层只代表调用�
 场景的硬要求：ANSI 转义会混进 JSON（非 TTY 下自动无色）。`--no-interactive` 与 `--yes` 当前无门控——
 本工具没有交互式提问与确认步骤，照传即可，防后续版本引入交互提问挂住自动化调用。
 
-`--dry-run` / `--limit <n>` / `--verbose` 是**预留位、当前未实现**：传了不报错，但不改变任何命令的行为
-（`--dry-run` 照样落盘）——别把它们写进脚本当保证。
+`--dry-run` / `--verbose` / 全局 `--limit <n>` 未实现：传了直接退 2（`FLAG_NOT_IMPLEMENTED`）——
+"接受但不生效"会让 agent 以为在试跑、其实已经落盘。`events` 有自己的 `--limit`（命令私有，生效）。
 
 ## 代码结构
 
@@ -254,6 +254,13 @@ interface.json 的解析与控制器规划内建在 `src/interface/`（无外部
 变化检测双阈值（分块亮度差 + 事件携带变化区域 bbox、阈值校准命令）、输入原语补齐、探色、
 节点级单测（reco `--act`）、模板裁剪（crop，位置优先判据 + 跨帧验证）、轻量 SoM（annotate）与
 timing 反推（节点时长 + 动作后稳定时间 → delay/timeout 建议，`--runs n` 取分布：P95 × 余量，失败 run 不计入建议）。
+
+**在设计中（未实现）：示范轨迹（demo-trace）**——把一次示范（人做的 / 旧脚本跑的 / 框架跑的）变成
+「操作前帧 + 手势 + 落点帧 + 屏判别式 + 派生识别条件」的有序轨迹，供 agent 翻译成计划与脚本，
+不再靠猜坐标。契约 [`docs/demo-trace-contract-v0.md`](docs/demo-trace-contract-v0.md)（含**反定位**：
+五条同时成立才有意义），离线夹具 [`test/unit-demo-trace.mjs`](test/unit-demo-trace.mjs)。采集三路按
+**C（框架自报动作：旧脚本迁移 / 回归基线）→ A（自绘点击面，需截图支持后台）→ B（前台限制下的
+外部观测：`adb getevent` 优先，win32 需原生）**推进——前台限制的代价是 UI 从"实时"降级为"事后"。
 
 不在本包范围（各有归属）：
 
