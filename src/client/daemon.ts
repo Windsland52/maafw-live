@@ -156,6 +156,7 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
       }
       const kind = String(m.kind ?? '')
       if (kind === 'reply') {
+        lastReplyAt = Date.now()
         const id = Number(m.id)
         const p = pending.get(id)
         if (!p) return
@@ -242,6 +243,33 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
     try { child.kill() } catch { /* ignore */ }
   }
 
+  /* 任意回执到达的时间戳：超时判活用。回复来了=事件循环在转=daemon 没死，
+   * 哪怕这条回复不是超时那条调用的。 */
+  let lastReplyAt = 0
+
+  /**
+   * 超时后的活性探针（设计审查 P0-1）：以前超时即 kill()，REPL / 命名会话里设备连接、
+   * 事件环、L0 热缓存（还没升格的不可复现状态）一起陪葬。现在先问 ping——应答说明
+   * daemon 活着只是这条调用慢，只失败该次调用；不应答才按"卡死"硬杀重生。
+   * 3s 窗：本地管道应答应在毫秒级，3s 已经足够区分"活着但慢"和"事件循环死了"。
+   */
+  const probeAlive = (): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const c = child
+      if (!c || exited) { resolve(false); return }
+      const mark = lastReplyAt
+      const id = ++reqId
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        /* 超时窗内任何回执都算活着（ping 排在大消息后面时，先到的回执同样是证据） */
+        resolve(lastReplyAt > mark)
+      }, 3000)
+      pending.set(id, { resolve: () => { clearTimeout(timer); resolve(true) }, reject: () => { clearTimeout(timer); resolve(lastReplyAt > mark) }, timer })
+      try {
+        c.stdin!.write(JSON.stringify({ id, cmd: 'ping' }) + '\n')
+      } catch { resolve(false) }
+    })
+
   const call = <T = unknown>(cmd: string, args: Record<string, unknown> = {}, timeoutMs = defaultTimeout): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       let c: ChildProcess
@@ -255,9 +283,19 @@ export function spawnDaemon(options: SpawnOptions = {}): DaemonClient {
       calls += 1
       const timer = setTimeout(() => {
         pending.delete(id)
-        /* 卡死自愈：maa-node 的 wait() 可能同步阻塞 daemon，超时即硬杀，下次调用自动重生 */
-        kill()
-        reject(new Error('daemon 调用超时：' + cmd + '（' + timeoutMs + 'ms 无应答，已重启 daemon，会话需重新 connect）'))
+        /* 先探活再定生死：ping 有应答 = daemon 活着只是这条调用超了，只失败该次调用
+         * （调用方侧的超时，比如 reco 例数多算得慢）；ping 也没应答才按卡死硬杀。 */
+        void probeAlive().then((alive) => {
+          if (alive) {
+            reject(new Error('daemon 调用超时：' + cmd + '（' + timeoutMs +
+              'ms 无应答，daemon 仍可应答、进程保留——只是这条调用超了；在跑的任务未受影响，会话无需重连）'))
+          } else {
+            /* 卡死自愈：事件循环死了（maa-node 的 wait() 可能同步阻塞），硬杀，下次调用自动重生 */
+            kill()
+            reject(new Error('daemon 调用超时：' + cmd + '（' + timeoutMs +
+              'ms 无应答，且 ping 探活失败，已重启 daemon，会话需重新 connect）'))
+          }
+        })
       }, timeoutMs)
       pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
       try {

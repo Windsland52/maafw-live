@@ -171,7 +171,24 @@ async function main() {
     ? cfg.resourceDirs.map(String)
     : [String(cfg.resourceDir)]
   const res = new maa.Resource()
-  for (const d of dirs) await res.post_bundle(d).wait()
+  /* 逐段点名失败：整链一起报只说"加载失败"，看不出是哪一层读不进（原先是父进程
+   * probeResourceChain 先加载一遍做先验——探针挪进这里后只加载一次，失败定位不变）。 */
+  for (let i = 0; i < dirs.length; i++) {
+    const where = '第 ' + (i + 1) + '/' + dirs.length + ' 段（' + dirs[i] + '）'
+    let job = null
+    try {
+      job = res.post_bundle(dirs[i])
+      await job.wait()
+    } catch (e) {
+      writeOut({ ok: false, code: 'RESOURCE_LOAD', error: '资源链加载失败：' + where + '：' + String(e && e.message || e) })
+      return
+    }
+    const st = Number(job && job.status)
+    if (Number.isFinite(st) && st !== 3000) {
+      writeOut({ ok: false, code: 'RESOURCE_LOAD', error: '资源链加载失败：' + where + '返回 status=' + st + '（成功应为 3000）' })
+      return
+    }
+  }
   /* 面板裁出来的模板走 override_image：不必把它塞进任何资源目录，也不写用户项目。 */
   if (cfg.templateImage) res.override_image("@reco_template", toArrayBuffer(fs.readFileSync(cfg.templateImage)))
 

@@ -1118,40 +1118,6 @@ function adoptRunResource(res) {
   try { prev.destroy() } catch (e) { /* ignore */ }
 }
 
-/**
- * 资源链可加载性先验：识别本身在子进程里重跑，这里只需要一段**可丢弃**的探针。
- *
- * 探针只回答"这段链读不读得进"，所以用完即销毁：`post_bundle` 是叠加语义，任何一处留下
- * 半截 bundle，后面的命令就会带着它跑（`buildResource` 注释里写的正是这个残留）。
- *
- * 逐段加载并点名失败的那一段：整链一起报只会说"加载失败"，看不出是哪一层读不进。
- */
-async function probeResourceChain(dirs) {
-  const m = loadMaa()
-  const res = new m.Resource()
-  try {
-    for (let i = 0; i < dirs.length; i++) {
-      const where = '第 ' + (i + 1) + '/' + dirs.length + ' 段（' + dirs[i] + '）'
-      let job = null
-      try {
-        job = res.post_bundle(dirs[i])
-        await job.wait()
-      } catch (e) {
-        return { ok: false, error: '资源链加载失败：' + where + '：' + String(e && e.message || e) }
-      }
-      /* wait() 的返回值跨绑定不一致（这里回的是 Job 本身），状态从 job.status 读；
-       * 读不到就不断言——宁可放过，也不要伪造"加载失败" */
-      const st = Number(job && job.status)
-      if (Number.isFinite(st) && st !== STATUS.succeeded) {
-        return { ok: false, error: '资源链加载失败：' + where + '返回 status=' + st + '（成功应为 ' + STATUS.succeeded + '）' }
-      }
-    }
-    return null
-  } finally {
-    try { res.destroy() } catch (e) { /* ignore */ }
-  }
-}
-
 function ensureTasker() {
   if (!S.tasker) {
     const m = loadMaa()
@@ -1797,8 +1763,9 @@ async function cmdRecoTest(args) {
     if (!S.ctrl) return { ok: false, error: '--act 要在真机上执行动作：需要已连接设备（REPL 或 --project/--kind）' }
     return await recoActTest(args, actNode, dirs)
   }
-  const loadFail = await probeResourceChain(dirs)   // 子进程会重新加载（崩溃隔离的那份不能复用）
-  if (loadFail) return loadFail
+  /* 资源链可加载性先验已挪进 reco_child（同一次加载里逐段点名失败段）：原先这里
+   * probeResourceChain 先加载一遍、子进程再加载一遍，识别一慢就是双倍预算，
+   * 且永远是客户端先到点杀进程（设计审查 P0-1）。 */
   /* 图像来源三条：库内留存帧（kfSource：控制器分辨率原图、**可无设备**）/ 显式文件 / 会话缓冲帧。
    * daemon 自己写的那份临时 PNG **用完即删**——不删就是每跑一次漏一个（CLI 侧的截帧泄漏是同一类，
    * 现场实测攒过 42 张；这条 `--seq` 路径同理，只是本机还没被触发过）。 */
@@ -3169,6 +3136,10 @@ async function cmdCalibrate(args) {
 
 /* ────────────────────────── 消息分发 ────────────────────────── */
 const handlers = {
+  /* 活性探针：客户端调用超时后先问这个——能应答说明 daemon 事件循环没死，只是这条
+   * 调用超了；只失败该次调用，不杀进程（会话里的连接 / L0 / 事件环都保得住）。
+   * 必须是无状态纯应答：probe 是设备扫描、run_stop 有副作用，都不能借来探活。 */
+  ping: () => ({ ok: true, t: Date.now() }),
   init: (a) => {
     if (a.runDir) {
       S.runDir = String(a.runDir)
