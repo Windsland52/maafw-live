@@ -1477,6 +1477,10 @@ async function cmdRun(args) {
   const s2 = tasker.add_context_sink((_, m) => onMsg(m))
   S.runActive = true
   let status = null
+  /* stopped 要覆盖两条停止路径：超时保护自停（timeoutMs 分支）与 run_stop 他停。
+   * 后者靠 S.runStopped 旗标——cmdRunStop 先置旗再 post_stop，job.wait 解除后
+   * 这条旗标已经立下；没有它，"run_stop 停的"在回执里会读成"失败"。 */
+  S.runStopped = false
   let stopped = false
   try {
     const job = tasker.post_task(String(args.entry), args.override || {})
@@ -1496,6 +1500,8 @@ async function cmdRun(args) {
     } else {
       await job.wait()
     }
+    /* run_stop 走并发命令置的旗标：wait 正常解除但其实是"被要求停的" */
+    stopped = stopped || S.runStopped === true
     status = job.status
   } catch (e) {
     status = -1
@@ -1534,6 +1540,9 @@ async function cmdRun(args) {
 }
 
 async function cmdRunStop() {
+  /* 先立旗标再 post_stop：cmdRun 的 job.wait 解除后靠它把 record.stopped 补上，
+   * 否则"run_stop 停的"会混进"任务失败"。 */
+  S.runStopped = true
   if (S.tasker) {
     try { S.tasker.post_stop() } catch (e) { /* ignore */ }
   }

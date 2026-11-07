@@ -14,6 +14,7 @@ import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
 import { writeRunReceipt } from '../runtime/receipts.js'
+import { installRunSignalGuard } from '../runtime/signal-guard.js'
 
 /** 连接类选项：凡是要设备的命令都接受同一组，保证"怎么连"只有一套说法。 */
 export const CONNECT_OPTIONS = {
@@ -535,7 +536,18 @@ export const runCommand: Command = {
               },
             )
           : null
-        const r = await act.run(client, args, timeoutMs)
+        /* 信号处理（审计 #6）：Ctrl-C / kill 时不许让 daemon 里的任务裸跑——向 daemon 发
+         * run_stop（post_stop），run 回执照常落盘，退出码区分「我停的」与「它坏的」：
+         * SIGINT=130 / SIGTERM=143（128+signo），任务自身失败仍是 1。
+         * 第二次按信号直接 bail——第一次没杀掉说明 daemon 已不应答，再等没有现场可留。 */
+        /* 信号处理（审计 #6）：Ctrl-C / kill 时不许让 daemon 里的任务裸跑——向 daemon 发
+         * run_stop，run 回执照常落盘，退出码区分「我停的」与「它坏的」（128+signo）。 */
+        /* 信号处理（审计 #6）：Ctrl-C / kill 时不许让 daemon 里的任务裸跑——向 daemon 发
+         * run_stop，run 回执照常落盘，退出码区分「我停的」与「它坏的」（128+signo）。 */
+        const sigGuard = installRunSignalGuard(() => act.runStop(client).then(() => undefined))
+        /* finally 摘钩：act.run 抛错（daemon 死了）也不留监听残留 */
+        const r = await act.run(client, args, timeoutMs).finally(() => sigGuard.restore())
+        const interrupted = sigGuard.code
         const watchStats = watcher ? watcher.stop() : null
         if (r.ok === false || !r.record) {
           /* 调用级失败：任务根本没跑起来（未连接 / 资源缺失 / 已有任务在跑）→ FINDINGS */
@@ -571,13 +583,15 @@ export const runCommand: Command = {
         const budget = typeof rec.timeoutMs === 'number' ? rec.timeoutMs : null
         const ranFull = rec.stopped === true && budget !== null && budget > 0
           && typeof rec.durationMs === 'number' && rec.durationMs >= budget
-        const verdict = taskOk
-          ? '完成'
-          : ranFull
-            ? '超时截断（非成功，也非失败：任务没跑完就被 post_stop 了）'
-            : rec.stopped === true
-              ? '被停止（任务自己结束，但未成功）'
-              : '失败'
+        const verdict = interrupted
+          ? (interrupted === EXIT.SIGINT ? '被 Ctrl-C 中断（SIGINT）' : '被终止信号中断（SIGTERM）')
+          : taskOk
+            ? '完成'
+            : ranFull
+              ? '超时截断（非成功，也非失败：任务没跑完就被 post_stop 了）'
+              : rec.stopped === true
+                ? '被停止（run_stop / 任务自身请求 post_stop，未成功）'
+                : '失败'
         const agentLines: string[] = []
         if (rec.hashCheck?.expected !== undefined) {
           agentLines.push(rec.hashCheck.match === true
@@ -633,7 +647,9 @@ export const runCommand: Command = {
           human.push('  完整回执（含全部节点与 msgs）：' + receipt.path)
         }
         return {
-          exitCode: taskOk ? EXIT.OK : EXIT.FAIL,
+          /* 中断优先于任务结论：退出码讲"我怎么走的"，不讲"任务结果如何"（回执里有）。
+           * 130=SIGINT / 143=SIGTERM，都是 128+signo 惯例。 */
+          exitCode: interrupted || (taskOk ? EXIT.OK : EXIT.FAIL),
           human,
           data: watchStats ? { ...(r as object), watch: watchStats } : r,
           warnings: [...extraWarns, ...((r.warns as string[] | undefined) ?? [])],

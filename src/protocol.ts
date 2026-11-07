@@ -32,6 +32,10 @@ export const EXIT = {
   FINDINGS: 3,
   /** 前置环境缺失（缺 maa-node / 缺 checkout / 缺设备） */
   ENV: 4,
+  /** 被 SIGINT（Ctrl-C）中断：128+2 */
+  SIGINT: 130,
+  /** 被 SIGTERM 中断：128+15 */
+  SIGTERM: 143,
 } as const
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT]
