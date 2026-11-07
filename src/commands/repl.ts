@@ -321,7 +321,7 @@ export const replCommand: Command = {
       state.plan = s.plan ?? null
     }
 
-    const o: SessionOptions = sessionOptions(ctx.values)
+    const o: SessionOptions = sessionOptions(ctx)
     if (o.project || o.kind) {
       /* 起连 = 启动工作：pretask 要跑（--no-pretask 关）。项目 pretask 先于设备扫描，
        * "启动模拟器"类脚本冷启动也到得了（P0-2）。 */
@@ -1337,7 +1337,7 @@ async function runSessionServer(name: string, ctx: CommandContext): Promise<Comm
    * 那条命令会跑在一个还没连接的会话上（表现为"第一条命令报未连接，第二条才好"）。
    * 而调用侧有 `waitPipeReady` 轮询，所以推迟 listen 不会让它空等——
    * 它只是在管道就绪前一直重试，拿到的一定是连接完成的会话。 */
-  const o: SessionOptions = sessionOptions(ctx.values)
+  const o: SessionOptions = sessionOptions(ctx)
   const startup: string[] = []
   if (o.project || o.kind) {
     /* 命名会话的起连同样算"启动"（--no-pretask 已可经 connectArgs 透传进来） */

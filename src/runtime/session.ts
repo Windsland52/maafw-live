@@ -36,6 +36,8 @@ export interface SessionOptions {
   /** run 的按次取值：pretask 的末位 JSON 也用这两份 */
   optionCases?: Record<string, string | string[]>
   optionFields?: Record<string, Record<string, string>>
+  /** CLI 的 --cwd：`--resource` 给相对路径时按它解析（不是 interface.json 目录、不是 process.cwd()） */
+  cwd?: string
 }
 
 export interface SessionState {
@@ -82,6 +84,7 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
       address: o.address,
       resource: o.resource,
       manualTarget: o.target ?? undefined,
+      ...(o.cwd ? { cwd: o.cwd } : {}),
     })
     if (!planned.plan) throw new SessionError(planned.error ?? '控制器规划失败', 'PLAN_FAILED')
     if (!planned.plan.ok) {
@@ -137,6 +140,8 @@ export function offlineResource(
   project: string,
   controller?: string,
   resource?: string,
+  /** `--resource` 相对路径的解析基准（CLI 的 --cwd） */
+  cwd?: string,
 ): { paths: string[]; names: string[]; selected: string | null; controllerName: string | null; error?: string } {
   const loaded = loadInterface(project)
   if (!loaded.file) {
@@ -146,7 +151,7 @@ export function offlineResource(
     }
   }
   const controllerName = controller ?? loaded.controllers[0]?.name ?? null
-  const plan = resolveResourcePaths(loaded, controllerName ?? undefined, resource)
+  const plan = resolveResourcePaths(loaded, controllerName ?? undefined, resource, cwd)
   /* --resource 名字没匹配上且不是目录：离线路径同样拒绝（自匹配拿错资源集，
    * 裁出来的模板整个不对）。 */
   if (plan.error) return { paths: [], names: [], selected: null, controllerName, error: plan.error }

@@ -622,6 +622,37 @@ test('目录无 interface.json → file=null 且不抛异常', () => {
   }
 })
 
+test('--cwd 生效：--resource 给相对目录按 ctx.cwd 解析，不按 process.cwd() 也不按项目目录', () => {
+  /* 回归的是 --cwd 全局旗标只被 env/run --watch 认、--resource/--project 仍按
+   * process.cwd() 解析的窟窿：agent 从别的目录发 --cwd 会拿到错资源目录甚至"不是目录"。 */
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-cwd-proj-'))
+  const caller = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-cwd-caller-'))
+  try {
+    fs.mkdirSync(path.join(caller, 'extra-res'), { recursive: true })
+    fs.writeFileSync(path.join(proj, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      controller: [{ name: 'C1', type: 'Adb' }],
+      resource: [{ name: 'R1', path: 'res' }],
+      task: [{ name: 'T1', entry: 'E' }],
+    }))
+    const l = loadInterface(proj)
+    /* --resource 名字优先：命中声明名仍是名字解析（按项目目录） */
+    const byName = resolveResourcePaths(l, 'C1', 'R1', caller)
+    assert.deepEqual(byName.paths, [path.join(proj, 'res')], '名字匹配仍走 resource.path（项目目录基准）')
+    /* --resource 是相对目录：按调用方 cwd 解析，不是 process.cwd()、也不是 proj */
+    const byDir = resolveResourcePaths(l, 'C1', 'extra-res', caller)
+    assert.equal(byDir.error, undefined, JSON.stringify(byDir.error))
+    assert.deepEqual(byDir.paths, [path.join(caller, 'extra-res')], '相对路径按 --cwd 解析')
+    /* 不给 cwd 时退回 process.cwd()（process.cwd()/extra-res 不存在 → 不是目录错误） */
+    const noCwd = resolveResourcePaths(l, 'C1', 'extra-res')
+    assert.ok(noCwd.error !== undefined && noCwd.error.includes('不是资源名也不是存在的目录'),
+      'cwd 缺省退 process.cwd()：' + JSON.stringify(noCwd.error))
+  } finally {
+    fs.rmSync(proj, { recursive: true, force: true })
+    fs.rmSync(caller, { recursive: true, force: true })
+  }
+})
+
 test('loadInterface：v2.10 字段进模型——password 禁 default、checkbox min/max_count、agent.identifier、permission_required', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-'))
   try {

@@ -80,7 +80,7 @@
     "accept": "node scripts/accept-emulator.mjs"
   },
   "dependencies": {
-    "@maaxyz/maa-node": "^5.14.2"
+    "@maaxyz/maa-node": "5.14.2"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

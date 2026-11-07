@@ -218,7 +218,7 @@ export interface ProjectPlan {
 export async function planProject(
   c: DaemonClient,
   dir: string,
-  overrides: { controller?: string; hwnd?: string; gamepadHwnd?: string; address?: string; resource?: string; manualTarget?: string } = {},
+  overrides: { controller?: string; hwnd?: string; gamepadHwnd?: string; address?: string; resource?: string; manualTarget?: string; cwd?: string } = {},
 ): Promise<ProjectPlan> {
   const loaded = loadInterface(dir)
   if (!loaded.file) {
@@ -242,7 +242,7 @@ export async function planProject(
     adb: { address: overrides.address ?? null },
     manualTarget: overrides.manualTarget ?? null,
   }, devices)
-  const resource = resolveResourcePaths(loaded, controllerName ?? undefined, overrides.resource)
+  const resource = resolveResourcePaths(loaded, controllerName ?? undefined, overrides.resource, overrides.cwd)
   return { loaded, plan, controllerName, resource }
 }
 

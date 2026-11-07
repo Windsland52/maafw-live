@@ -51,7 +51,7 @@ export const clickCommand: Command = {
   options: { ...CONNECT_OPTIONS, contact: { type: 'string' }, pressure: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
@@ -79,7 +79,7 @@ export const swipeCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const [x1, y1, x2, y2] = ctx.positionals.slice(0, 4).map((v) => Number(v))
@@ -119,7 +119,7 @@ export const keyCommand: Command = {
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const code = Number(ctx.positionals[0])
@@ -135,7 +135,7 @@ export const keysCommand: Command = {
   options: { ...CONNECT_OPTIONS, hold: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const raw = String(ctx.positionals[0] ?? '')
@@ -159,7 +159,7 @@ export const pressCommand: Command = {
   options: { ...CONNECT_OPTIONS, duration: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
@@ -183,7 +183,7 @@ export const dbclickCommand: Command = {
   options: { ...CONNECT_OPTIONS, gap: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
@@ -202,7 +202,7 @@ export const scrollCommand: Command = {
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const dx = Number(ctx.positionals[0])
@@ -221,7 +221,7 @@ export const moveCommand: Command = {
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const dx = Number(ctx.positionals[0])
@@ -240,7 +240,7 @@ export const textCommand: Command = {
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const miss = needSession(o)
     if (miss) return miss
     const text = ctx.positionals.join(' ')

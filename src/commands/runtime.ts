@@ -32,14 +32,27 @@ export const CONNECT_OPTIONS = {
   'no-pretask': { type: 'boolean' as const },
 }
 
-export function sessionOptions(values: Record<string, unknown>): SessionOptions {
+/**
+ * 路径参数的解析基准：调用方给的目录就是 `ctx.cwd`（CLI 的 --cwd），不是 process.cwd()。
+ * 只处理**纯路径参数**（--project / --resource-dir / --out / --image / --frames-dir 等）——
+ * `--resource` 同时是"资源名"，能不能按路径解析要留给 resolveResourcePaths（名字优先），
+ * 所以它在 SessionOptions.cwd 里透传，不在这里 resolve。
+ */
+export function argPath(ctx: { cwd: string }, v: string | undefined): string | undefined {
+  if (v === undefined) return undefined
+  return isAbsolute(v) ? v : resolve(ctx.cwd, v)
+}
+
+export function sessionOptions(ctx: { values: Record<string, unknown>; cwd: string }): SessionOptions {
+  const values = ctx.values
   const num = (k: string): number | undefined => {
     const v = values[k]
     return typeof v === 'string' && v !== '' ? Number(v) : undefined
   }
   const str = (k: string): string | undefined => (typeof values[k] === 'string' ? (values[k] as string) : undefined)
   return {
-    project: str('project'),
+    project: argPath(ctx, str('project')),
+    cwd: ctx.cwd,
     controller: str('controller'),
     resource: str('resource'),
     hwnd: str('hwnd'),
@@ -136,7 +149,7 @@ export const connectCommand: Command = {
   options: { ...CONNECT_OPTIONS },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     if (!o.project && !o.kind) {
       return fail('BAD_ARGUMENTS', '要么给 --project <dir>（按 interface.json 规划），要么给 --kind',
         '推荐 --project：控制器类型/窗口正则/输入方法/识别缩放全跟项目走', EXIT.USAGE)
@@ -175,7 +188,7 @@ export const disconnectCommand: Command = {
   requiresSession: true,
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     if (!o.project && !o.kind) {
       return fail('BAD_ARGUMENTS', '需要 --project 或 --kind 才能建立会话再断开', undefined, EXIT.USAGE)
     }
@@ -198,10 +211,9 @@ export const screencapCommand: Command = {
   options: { ...CONNECT_OPTIONS, out: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
-    const out = typeof ctx.values.out === 'string'
-      ? ctx.values.out
-      : join(defaultRunDir(), 'png', 'shot_' + Date.now() + '.png')
+    const o = sessionOptions(ctx)
+    const out = argPath(ctx, typeof ctx.values.out === 'string' ? ctx.values.out : undefined)
+      ?? join(defaultRunDir(), 'png', 'shot_' + Date.now() + '.png')
     try {
       mkdirSync(dirname(out), { recursive: true })
     } catch { /* 落盘失败交给 daemon 报错 */ }
@@ -234,7 +246,7 @@ export const eventsCommand: Command = {
   options: { ...CONNECT_OPTIONS, limit: { type: 'string' }, since: { type: 'string' }, watch: { type: 'string' }, fps: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const rawLimit = ctx.values.limit
     const limit = typeof rawLimit === 'string' ? Number(rawLimit) : 20
     if (!Number.isFinite(limit) || limit <= 0) {
@@ -308,7 +320,7 @@ export const frameCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const sub = ctx.positionals[0] ?? 'status'
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     if (sub === 'status') {
       try {
         return await withDaemon(ctx, async (client) => {
@@ -335,7 +347,7 @@ export const frameCommand: Command = {
     if (roi && (roi.length !== 4 || roi.some((n) => !Number.isFinite(n)))) {
       return fail('BAD_ARGUMENTS', '--roi 需要 4 个数字：x,y,w,h（控制器分辨率坐标，与 pipeline 的 roi 同空间）', undefined, EXIT.USAGE)
     }
-    const out = typeof ctx.values.out === 'string' ? ctx.values.out : undefined
+    const out = argPath(ctx, typeof ctx.values.out === 'string' ? ctx.values.out : undefined)
     const srcRaw = typeof ctx.values.src === 'string' ? ctx.values.src.toLowerCase() : 'auto'
     if (!['auto', 'full', 'ring'].includes(srcRaw)) {
       return fail('BAD_ARGUMENTS', '--src 只支持 auto | full | ring', undefined, EXIT.USAGE)
@@ -394,7 +406,7 @@ export const waitCommand: Command = {
         EXIT.USAGE)
     }
     const mode = modeRaw
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const timeout = ctx.values.timeout !== undefined ? Number(ctx.values.timeout) : undefined
     if (timeout !== undefined && !Number.isFinite(timeout)) {
       return fail('BAD_ARGUMENTS', '--timeout 必须是毫秒数', undefined, EXIT.USAGE)
@@ -468,9 +480,9 @@ export const runCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const entry = (typeof ctx.values.entry === 'string' ? ctx.values.entry : ctx.positionals[0]) ?? undefined
-    const resourceDir = typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined
+    const resourceDir = argPath(ctx, typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
     if (!entry) {
       return fail('BAD_ARGUMENTS', '缺少入口任务名：--entry <task>',
         '项目模式=interface.json 的 task 名；bundle 模式=pipeline 首节点名', EXIT.USAGE)

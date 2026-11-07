@@ -17,7 +17,7 @@ import { ocrModelStatus } from '../runtime/ocr-model.js'
 import { roiOutOfBounds } from '../runtime/reco-args.js'
 import { describeMisses, type RecoResultLike } from '../runtime/reco-verdict.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
-import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
+import { CONNECT_OPTIONS, daemonFail, argPath, sessionOptions } from './runtime.js'
 
 function parseJson<T>(raw: unknown, what: string): { value?: T; error?: string } {
   if (raw === undefined) return {}
@@ -127,7 +127,7 @@ export const recoCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const str = (k: string): string | undefined =>
       typeof ctx.values[k] === 'string' && ctx.values[k] !== '' ? (ctx.values[k] as string) : undefined
     const type = str('type') ?? 'TemplateMatch'
@@ -135,14 +135,14 @@ export const recoCommand: Command = {
     /* `--image kf:…:0011` 是 SKILL / roadmap 里记过的写法：以 kf: 开头就按**库帧 ID**解释，
      * 而不是文件路径（否则一路走到 ENOENT，实测踩过）。规范入口仍是 --from-kf。 */
     const kfFromImage = imageRaw?.startsWith('kf:') === true ? imageRaw : undefined
-    const image = kfFromImage ? undefined : imageRaw
+    const image = kfFromImage ? undefined : argPath(ctx, imageRaw)
     const seqRaw = str('seq')
     const seq = seqRaw !== undefined ? Number(seqRaw) : undefined
     const act = ctx.values.act === true
 
     /* ── 节点来源：三者互斥（测的是同一个位置，同时给只能有一个生效，那就不该"看起来都生效"） ── */
     const nodeJson = str('node')
-    const nodeFile = str('node-file')
+    const nodeFile = str('node-file') === '-' ? '-' : argPath(ctx, str('node-file'))
     const nodeName = str('node-name')
     const nodeFlags = [
       nodeJson !== undefined ? '--node' : '',
@@ -170,7 +170,7 @@ export const recoCommand: Command = {
 
     /* ── 参数来源：--param / --param-file 互斥；它们与 --sweep 都只作用于 --type 路径 ── */
     const paramSpec = str('param')
-    const paramFile = str('param-file')
+    const paramFile = str('param-file') === '-' ? '-' : argPath(ctx, str('param-file'))
     if (paramSpec !== undefined && paramFile !== undefined) {
       return fail('BAD_ARGUMENTS', '--param 与 --param-file 互斥：一个给字面 JSON，一个给文件', undefined, EXIT.USAGE)
     }
@@ -203,7 +203,7 @@ export const recoCommand: Command = {
     }
     let kfSource: CropKfSource | undefined
     if (fromKf !== undefined) {
-      const dir = str('frames-dir') ?? defaultFramesDir()
+      const dir = argPath(ctx, str('frames-dir')) ?? defaultFramesDir()
       const rf = resolveFrame(dir, fromKf)
       if (rf.status !== 'available' || !rf.path || !rf.record) {
         const code = rf.status === 'corrupt' ? 'KF_CORRUPT' : (rf.status === 'unsupported' ? 'KF_UNSUPPORTED' : 'KF_MISSING')
@@ -243,7 +243,7 @@ export const recoCommand: Command = {
         /* 资源链：--resource-dir 是显式单包；否则按项目声明解析**整条链**（resource.path[] 叠加
          * 控制器 attach_resource_path）。必须走 resolveResourcePaths —— 只写 resource.path 会让
          * attach 进来的一段凭空消失，测出来的节点就不是 run 里那个。 */
-        const dirFlag = str('resource-dir')
+        const dirFlag = argPath(ctx, str('resource-dir'))
         let chain: ResourceChain
         if (dirFlag !== undefined) {
           chain = { paths: [dirFlag], name: '(--resource-dir)', source: 'resource-dir' }
@@ -251,7 +251,7 @@ export const recoCommand: Command = {
           chain = { paths: s.plan.resource.paths, name: s.plan.resource.selected, source: 'project' }
         } else if (o.project) {
           /* 离线：项目只作资源来源（模板与 OCR 模型），不扫设备不连接 */
-          const off = offlineResource(o.project, o.controller, o.resource)
+          const off = offlineResource(o.project, o.controller, o.resource, ctx.cwd)
           if (off.error) {
             return fail('PLAN_FAILED', '解析项目资源失败：' + off.error, '也可以直接给 --resource-dir <dir>', EXIT.FINDINGS)
           }

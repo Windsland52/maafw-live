@@ -26,7 +26,7 @@ import {
   aggregate, DEFAULT_GAP, fromOffsets, sampleOf,
   type CandidateSet, type CompareItem, type FrameSize, type Offset,
 } from '../runtime/roi-compare.js'
-import { daemonFail } from './runtime.js'
+import { daemonFail, argPath } from './runtime.js'
 
 const fmt = (n: number | null): string => (n === null ? '（无得分）' : String(Math.round(n * 1000) / 1000))
 
@@ -51,17 +51,19 @@ export const roiCheckCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const image = typeof ctx.values.image === 'string' ? ctx.values.image : undefined
+    /* kf: 前缀必须在 argPath 之前判——先 resolve 会变成 C:\...\kf:x 绕过本校验 */
+    const imageRaw = typeof ctx.values.image === 'string' ? ctx.values.image : undefined
     const target = typeof ctx.values.target === 'string' ? ctx.values.target : undefined
-    const resourceDir = typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined
-    if (!image || !target) {
+    const resourceDir = argPath(ctx, typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
+    if (!imageRaw || !target) {
       return fail('BAD_ARGUMENTS', '缺 --image <png> 或 --target <模板>',
         '外来目标是本命令的灵魂：用"假说自己"当模板，两套假设各自 1.000，什么都证明不了', EXIT.USAGE)
     }
-    if (image.startsWith('kf:')) {
+    if (imageRaw.startsWith('kf:')) {
       return fail('BAD_ARGUMENTS', '--image 要文件路径；kf: 开头的库帧 ID 请走 reco --from-kf（本命令暂不支持库帧）',
         undefined, EXIT.USAGE)
     }
+    const image = argPath(ctx, imageRaw)! /* imageRaw 上面已判非空 */
     if (!existsSync(image)) {
       return fail('BAD_ARGUMENTS', '图像不存在：' + image, undefined, EXIT.USAGE)
     }

@@ -85,7 +85,7 @@ export const kfCommand: Command = {
     }
 
     if (sub === 'promote') {
-      const o = sessionOptions(ctx.values)
+      const o = sessionOptions(ctx)
       /* 批量：kf promote 3909 3910 | kf promote 10..15 | kf promote 10,11,12。
        * 逐条升格、成功/淘汰分开报告；淘汰的附 frame_get <seq> 降级命令（L1 参考帧）。 */
       const seqToks = ctx.positionals.slice(1).flatMap((t) => t.split(',')).filter((t) => t !== '')

@@ -17,7 +17,7 @@ export const colorCommand: Command = {
   options: { ...CONNECT_OPTIONS, roi: { type: 'string' }, seq: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     if (!o.project && !o.kind) {
       return fail('BAD_ARGUMENTS', '要设备才能探色：给 --project <dir>（推荐）或 --kind win32|adb|gamepad',
         '多步操作用 maafw-live repl（连接一次后连续观测）', EXIT.USAGE)

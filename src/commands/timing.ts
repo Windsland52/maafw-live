@@ -15,7 +15,7 @@ import { parseOptionArgs } from '../option-args.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession } from '../runtime/session.js'
-import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
+import { CONNECT_OPTIONS, daemonFail, argPath, sessionOptions } from './runtime.js'
 
 interface TimedNode {
   name: string
@@ -135,9 +135,9 @@ export const timingCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const entry = (typeof ctx.values.entry === 'string' ? ctx.values.entry : ctx.positionals[0]) ?? undefined
-    const resourceDir = typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined
+    const resourceDir = argPath(ctx, typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
     if (!entry) return fail('BAD_ARGUMENTS', '缺少入口任务名：--entry <task>', undefined, EXIT.USAGE)
     if (!o.project && !resourceDir) {
       return fail('BAD_ARGUMENTS', '要么给 --project <dir>，要么给 --resource-dir <dir>', undefined, EXIT.USAGE)

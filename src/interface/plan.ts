@@ -235,6 +235,8 @@ export function resolveResourcePaths(
   loaded: LoadedInterface,
   controllerName?: string,
   override?: string,
+  /** `--resource` 当目录路径时的解析基准（CLI 的 ctx.cwd；缺省 = process.cwd()） */
+  cwd?: string,
 ): ResourcePlan {
   const dir = loaded.dir
   /**
@@ -262,15 +264,16 @@ export function resolveResourcePaths(
     }
     /* 名字没匹配上时允许当目录路径（老行为），但必须真的存在——打错一个字的资源名
      * 会被静默接受成路径，selected=null 让所有资源级过滤（option 适用性、pretask、
-     * hash 校验）跳过，比拒绝启动更难查。 */
-    if (!isDirectory(resolve(override))) {
+     * hash 校验）跳过，比拒绝启动更难查。基准是调用方的 cwd（CLI 的 --cwd），
+     * 不是 interface.json 所在目录。 */
+    if (!isDirectory(resolve(cwd ?? '', override))) {
       return {
         paths: [], names: [], selected: null,
         error: '--resource ' + JSON.stringify(override) + ' 不是资源名也不是存在的目录' +
           (loaded.resources.length ? '（可用：' + loaded.resources.map((r) => r.name).join(' / ') + '）' : ''),
       }
     }
-    return withAttach([resolve(override)], ['(--resource)'], null)
+    return withAttach([resolve(cwd ?? '', override)], ['(--resource)'], null)
   }
   if (!dir) return { paths: [], names: [], selected: null }
 

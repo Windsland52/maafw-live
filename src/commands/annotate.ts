@@ -13,7 +13,7 @@ import { defaultFramesDir, resolveFrame, type KfRecord } from '../runtime/keyfra
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import { annotate, seedObservation, withDaemon, type CropKfSource } from '../runtime/actions.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
-import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
+import { CONNECT_OPTIONS, daemonFail, argPath, sessionOptions } from './runtime.js'
 
 export const annotateCommand: Command = {
   name: 'annotate',
@@ -38,12 +38,12 @@ export const annotateCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     const seq = typeof ctx.values.seq === 'string' ? Number(ctx.values.seq) : undefined
     if (ctx.values.seq !== undefined && !Number.isFinite(seq)) {
       return fail('BAD_ARGUMENTS', '--seq 必须是数字', undefined, EXIT.USAGE)
     }
-    const out = typeof ctx.values.out === 'string' ? ctx.values.out : undefined
+    const out = argPath(ctx, typeof ctx.values.out === 'string' ? ctx.values.out : undefined)
     const roi = typeof ctx.values.roi === 'string'
       ? ctx.values.roi.split(',').map((x) => Number(String(x).trim()))
       : undefined
@@ -73,7 +73,7 @@ export const annotateCommand: Command = {
     /* 库帧来源：先走离线读侧解析（契约 §4.1），daemon 只接身份与路径 */
     let kfSource: CropKfSource | undefined
     if (fromKf !== undefined) {
-      const dir = typeof ctx.values['frames-dir'] === 'string' ? ctx.values['frames-dir'] : defaultFramesDir()
+      const dir = argPath(ctx, typeof ctx.values['frames-dir'] === 'string' ? ctx.values['frames-dir'] : undefined) ?? defaultFramesDir()
       const r = resolveFrame(dir, fromKf)
       if (r.status !== 'available' || !r.path || !r.record) {
         const code = r.status === 'corrupt' ? 'KF_CORRUPT' : (r.status === 'unsupported' ? 'KF_UNSUPPORTED' : 'KF_MISSING')
@@ -91,11 +91,11 @@ export const annotateCommand: Command = {
     try {
       return await withDaemon(ctx, async (client) => {
         const s: SessionState = offline ? { connected: false } : await ensureSession(client, o)
-        let resourceDir = (typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
+        let resourceDir = argPath(ctx, typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
           ?? s.plan?.resource?.paths[0]
         if (!resourceDir && offline && o.project) {
           /* 离线：项目只作资源的来源（OCR 模型），不扫设备不连接 */
-          const off = offlineResource(o.project, o.controller, o.resource)
+          const off = offlineResource(o.project, o.controller, o.resource, ctx.cwd)
           if (off.error) {
             return fail('PLAN_FAILED', '离线解析项目资源失败：' + off.error, '也可以直接给 --resource-dir <dir>', EXIT.FINDINGS)
           }

@@ -18,7 +18,7 @@ import { defaultFramesDir, resolveFrame, type KfRecord } from '../runtime/keyfra
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import { seedObservation, tplCrop, withDaemon, type CropKfSource } from '../runtime/actions.js'
 import { describeSession, ensureSession, offlineResource, type SessionState } from '../runtime/session.js'
-import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
+import { CONNECT_OPTIONS, daemonFail, argPath, sessionOptions } from './runtime.js'
 
 function nums(raw: string | undefined, count: number, what: string): number[] | undefined {
   if (raw === undefined) return undefined
@@ -73,7 +73,7 @@ export const cropCommand: Command = {
   },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     let roi: number[] | undefined
     let point: number[] | undefined
     try {
@@ -93,7 +93,7 @@ export const cropCommand: Command = {
     if (pad !== undefined && !Number.isFinite(pad)) {
       return fail('BAD_ARGUMENTS', '--pad 必须是数字（点→ROI 外扩半径，默认 24）', undefined, EXIT.USAGE)
     }
-    const out = typeof ctx.values.out === 'string' ? ctx.values.out : undefined
+    const out = argPath(ctx, typeof ctx.values.out === 'string' ? ctx.values.out : undefined)
 
     const fromKf = typeof ctx.values['from-kf'] === 'string' ? ctx.values['from-kf'] : undefined
     if (fromKf !== undefined && seq !== undefined) {
@@ -108,7 +108,7 @@ export const cropCommand: Command = {
      * 解析失败就在这一层如实报，不把不可复核的帧送进裁剪。 */
     let kfSource: CropKfSource | undefined
     if (fromKf !== undefined) {
-      const dir = typeof ctx.values['frames-dir'] === 'string' ? ctx.values['frames-dir'] : defaultFramesDir()
+      const dir = argPath(ctx, typeof ctx.values['frames-dir'] === 'string' ? ctx.values['frames-dir'] : undefined) ?? defaultFramesDir()
       const r = resolveFrame(dir, fromKf)
       if (r.status !== 'available' || !r.path || !r.record) {
         const code = r.status === 'corrupt' ? 'KF_CORRUPT' : (r.status === 'unsupported' ? 'KF_UNSUPPORTED' : 'KF_MISSING')
@@ -129,11 +129,11 @@ export const cropCommand: Command = {
       return await withDaemon(ctx, async (client) => {
         const s: SessionState = offline ? { connected: false } : await ensureSession(client, o)
         /* 自匹配要加载资源（模板走 override_image，不写项目目录）；项目模式用规划出的资源 */
-        let resourceDir = (typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
+        let resourceDir = argPath(ctx, typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
           ?? s.plan?.resource?.paths[0]
         if (!resourceDir && offline && o.project) {
           /* 离线：项目只是资源的来源，不是连接的对象——只读 interface.json，不扫设备 */
-          const off = offlineResource(o.project, o.controller, o.resource)
+          const off = offlineResource(o.project, o.controller, o.resource, ctx.cwd)
           if (off.error) {
             return fail('PLAN_FAILED', '离线解析项目资源失败：' + off.error,
               '也可以直接给 --resource-dir <dir>', EXIT.FINDINGS)

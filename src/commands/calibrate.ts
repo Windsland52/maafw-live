@@ -15,7 +15,7 @@ export const calibrateCommand: Command = {
   options: { ...CONNECT_OPTIONS, frames: { type: 'string' }, interval: { type: 'string' } },
 
   async run(ctx): Promise<CommandResult> {
-    const o = sessionOptions(ctx.values)
+    const o = sessionOptions(ctx)
     if (!o.project && !o.kind) {
       return fail('BAD_ARGUMENTS', '校准要设备：给 --project <dir>（推荐）或 --kind win32|adb|gamepad', undefined, EXIT.USAGE)
     }
