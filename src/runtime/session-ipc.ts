@@ -25,7 +25,7 @@
  * 不能让 `..` 或路径分隔符穿过去）。
  */
 import { createServer, connect, type Server, type Socket } from 'node:net'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -374,14 +374,34 @@ export async function waitPipeReady(pipe: string, timeoutMs: number): Promise<bo
     }
 }
 
-/** 收掉一条会话（清 meta 与目录，管道随进程退出消失）。 */
+/** 收掉一条会话（清 meta 与目录，管道随进程退出消失）。
+ * 进程树：server → daemon → agent（uv → venv-python → uv-python）。process.kill 只打
+ * 第一层——daemon 来不及收摊就死，agent 树整体孤儿化（实测两层 python 残留）。
+ * taskkill /T 按父链整棵收；uv 重 exec 出的中层会脱离父链漏掉，再补一刀：命令行带
+ * agent/main.py 且父进程已死的全是孤儿（活会话的 agent 父链必健在，不会误伤）。 */
 export function stopSession(name: string): void {
     const meta = readSessionMeta(name)
     if (meta && pidAlive(meta.pid)) {
-        try {
-            process.kill(meta.pid)
-        } catch {
-            /* ignore */
+        if (process.platform === 'win32') {
+            try {
+                spawnSync('taskkill', ['/pid', String(meta.pid), '/T', '/F'], { timeout: 10000 })
+            } catch {
+                try { process.kill(meta.pid) } catch { /* ignore */ }
+            }
+            try {
+                const ps = 'Get-CimInstance Win32_Process|Where-Object{$_.CommandLine -match \'agent/main\\.py\'}|' +
+                    'Where-Object{-not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue)}|' +
+                    'ForEach-Object{try{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}catch{}}'
+                spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 15000 })
+            } catch {
+                /* ignore */
+            }
+        } else {
+            try {
+                process.kill(meta.pid)
+            } catch {
+                /* ignore */
+            }
         }
     }
     try {

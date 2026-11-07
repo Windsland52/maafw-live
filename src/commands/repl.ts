@@ -44,7 +44,7 @@ const HELP = [
   '  annotate [--out f.png] [--som-limit n] [--som-max-area-ratio r] [--from-kf kf:...]   SoM 候选与编号回画（回画优先全分辨率；库帧路径离线、diff 不可用）',
   '  events [n]                     最近 n 条帧流事件（默认 10）',
   '  logs [n]                       daemon 原生 stderr 尾部（默认 20）',
-  '  run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d]   （异步执行，不阻塞提示符；项目模式叠四级 override）',
+  '  run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d] [--watch]   （异步执行，不阻塞提示符；--watch 持续打节点转移；项目模式叠四级 override）',
   '  stop                           停止运行中的任务',
   '  click <x> <y> | swipe <x1> <y1> <x2> <y2> [--duration ms] [--via "x,y;x,y"] | key <code> | text <string>',
   '       swipe --via 走 touch_down→逐点 touch_move→touch_up：**一条笔画画折线**（中途不抬手）',
@@ -627,7 +627,8 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
             }
             case 'run': {
               const entry = tokens[1]
-              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d]'); break }
+              if (!entry) { out('用法：run <entry> [--timeout ms|0] [--preset name] [--override json] [--resource-dir d] [--watch]'); break }
+              const wantWatch = tokens.includes('--watch')
               const rawTimeout = readFlag(tokens, '--timeout')
               const timeout = rawTimeout === undefined ? 30000 : Number(rawTimeout)
               if (!Number.isFinite(timeout)) {
@@ -684,8 +685,29 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               }
               /* 异步执行不阻塞提示符：--timeout 0 的长任务靠 stop 中断（同一条客户端连接） */
               out('已提交 ' + resolvedEntry + (taskName && taskName !== resolvedEntry ? '（任务 ' + taskName + '）' : '') + '（timeout=' + timeout + '，结果异步打印；stop 可中断）')
+              /* --watch：把这次 run 的节点转移事件持续打出来（一次性 CLI 的 --watch 在
+               * REPL 里的等价物——没有它就只能手写轮询 events N，8 分钟轮询真机撞出来的账）。
+               * 事件源是 daemon 推进来的 client.events.events 数组，只能轮询尾巴；
+               * 数组有 2000 上限会从头滚，发现指针越过当前长度就重置。run 结束即停。 */
+              let watchTimer: ReturnType<typeof setInterval> | null = null
+              if (wantWatch) {
+                let cursor = client.events.events.length
+                watchTimer = setInterval(() => {
+                  const evs = client.events.events
+                  if (cursor > evs.length) cursor = 0   /* 滚出上限重置 */
+                  for (; cursor < evs.length; cursor++) {
+                    const e = evs[cursor] as { node?: string | null; msg?: string; id?: number | null; seq?: number }
+                    if (e && e.msg) {
+                      out('  [watch] ' + String(e.node ?? '-') + '  ' + String(e.msg) +
+                        (e.id != null ? '  #' + String(e.id) : '') + '  seq=' + String(e.seq ?? '?'))
+                    }
+                  }
+                }, 500)
+                watchTimer.unref()
+              }
               act.run(client, args, timeout)
                 .then((r) => {
+                  if (watchTimer) { clearInterval(watchTimer); watchTimer = null }
                   /* 回执不再 short() 截断（0.3.x 实测：截断让 record.nodes[] 在会话里永远不可见，
                    * "跑失败"变成"看不懂为什么失败"）。三件套替代：结论行（保住「run 完成：任务级 X」
                    * 首词口径）→ 非 ok 节点点名 → 全量回执落盘给路径。落盘失败不吞结论，退化为完整 JSON。 */
@@ -723,7 +745,7 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
                     ? '完整回执（含全部节点与 msgs）：' + receipt.path
                     : '回执落盘失败，完整内容：' + JSON.stringify(r))
                 })
-                .catch((e) => out('run 失败：' + (e instanceof Error ? e.message : String(e))))
+                .catch((e) => { if (watchTimer) { clearInterval(watchTimer); watchTimer = null } out('run 失败：' + (e instanceof Error ? e.message : String(e))) })
               break
             }
             case 'stop':

@@ -17,7 +17,7 @@
  *                  { kind:'stream_error', error }
  */
 import { createRequire } from 'node:module'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
 import readline from 'node:readline'
@@ -1159,22 +1159,47 @@ function ensureTasker() {
  * 环境变量：调用方给的 `PI_*` 原样并入子进程 env。本层不解释取值也不补默认——
  * 协议允许逐项缺省、由 agent 容错；这里编一个默认值只会把"没注入"伪装成"注入了"。 */
 /* 收掉整棵 agent 进程树。真身在子孙层（uv run → venv-python → uv-python agent/main.py），
- * child.kill() 只到直接子进程（uv.exe）。taskkill /T /F 在树还活着时按父链整棵收
- * （实测含孙级、含 uv 重 exec 的孙孙级）。顺序是硬约束：必须先 taskkill 再
- * disconnect——disconnect 会让 uv.exe 自己优雅退出，它的 python 子孙瞬间脱离父链，
- * taskkill /T 再够不到（实测 disconnect 在先必留两个 python 孤儿）。
- * POSIX 用 detached 进程组（spawn 时 detached:true），负 pid 杀整组。 */
-function killTree(child) {
+ * child.kill() 只到直接子进程（uv.exe）。顺序是硬约束：必须先杀再 disconnect——
+ * disconnect 会让 uv.exe 自己优雅退出，它的 python 子孙瞬间脱离父链，taskkill /T
+ * 再够不到（实测 disconnect 在先必留两个 python 孤儿）。
+ *
+ * 两刀：① taskkill /T /F 按父链整棵收（够用，但 uv 在 kill 途中重 exec 出的孙级
+ * 会漏）；② 用 identifier 扫命令行兜底——agent 树每层 argv 都带同一个
+ * identifier（sys.argv[-1]），一次 -like 点名全树，与父子链无关。
+ * 第②刀的 $PID 排除自身：否则 -like 会命中这个 powershell 自己的 CommandLine
+ * （字面量里带着 ident），自杀在中途把 python 留成孤儿（实测）。POSIX 用
+ * detached 进程组（spawn 时 detached:true），负 pid 杀整组。 */
+function killTree(child, ident) {
   if (!child || !child.pid) return Promise.resolve()
   if (process.platform === 'win32') {
-    return new Promise((resolve) => {
+    const root = child.pid
+    /* taskkill /T 收父链 + identifier 兜底：agent 树每层 argv 都带同一个 identifier
+     * （sys.argv[-1]），一次 -like 点名全树，与父子链无关——taskkill 杀 uv.exe 时它
+     * 重 exec 出的孙级会漏，这层兜住。$PID 排除自身：-like 会命中这个 powershell 自己
+     * 的 CommandLine（字面量里带着 ident），自杀在中途把 python 留成孤儿（实测）。 */
+    /* 一刀 taskkill 按父链收 + 一刀 ident sweep 点名全树（agent 每层 argv 带同一个
+     * identifier，与父子链无关——taskkill 杀 uv.exe 时它重 exec 出的中层 venv-python
+     * 会漏，这层兜住）。$PID 排除自身：-like 会命中这个 powershell 自己的 CommandLine
+     * （字面量里带着 ident），自杀在中途把 python 留成孤儿（实测）。两刀都 await：
+     * fire-and-forget 会让 daemon 在 sweep 还没跑完就 exit，python 照样孤儿。 */
+    const sweep = () => new Promise((resolve) => {
+      const like = '%' + String(ident || '').replace(/'/g, '') + '%'
+      const ps =
+        '$self=' + '$PID;' +
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -like '${like}' } |` +
+        'ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} };' +
+        'try { Stop-Process -Id ' + root + ' -Force -ErrorAction SilentlyContinue } catch {}'
+      try { execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 30000 }, () => resolve()) } catch (e) { resolve() }
+    })
+    const kill = () => new Promise((resolve) => {
       try {
-        execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { timeout: 10000 }, () => resolve())
+        execFile('taskkill', ['/pid', String(root), '/T', '/F'], { timeout: 10000 }, () => resolve())
       } catch (e) {
         try { child.kill() } catch (e2) { /* ignore */ }
         resolve()
       }
     })
+    return kill().then(() => sweep())
   }
   try { process.kill(-child.pid, 'SIGKILL') } catch (e) {
     try { child.kill('SIGKILL') } catch (e2) { /* ignore */ }
@@ -1189,7 +1214,8 @@ async function cleanupAgents() {
   for (const c of bind.clients) {
     /* 先树杀、后 disconnect：顺序反过来 disconnect 会抢先让 uv.exe 退掉，子孙脱离
      * 父链后 taskkill /T 够不到（实测留两个 python 孤儿）。 */
-    await killTree(c.child)
+    try { process.stderr.write('[cleanupAgents] kill ' + (c.child && c.child.pid) + ' ident=' + c.ident + '\n') } catch (e) { /* ignore */ }
+    await killTree(c.child, c.ident)
     try { c.client.disconnect() } catch (e) { /* ignore */ }
     try { c.client.destroy() } catch (e) { /* ignore */ }
   }
@@ -3133,16 +3159,21 @@ const handlers = {
 if (CHILD) {
   /* 兜底回收 agent 子进程：cleanupAgents 正常走 shutdown / run 重入，但 daemon 被 kill、
    * 崩溃或宿主超时硬杀时没人收——实测会留下成批孤儿 agent 子进程占着设备连接。
-   * 只能同步处理：exit 事件里不许 await。仅在 --child 模式挂，单测 import 不污染宿主进程。 */
+   * exit 里同步走 spawnSync taskkill /T + ident sweep——正常路径走 cleanupAgents
+   * 的完整版，这里是"进程突然死"的防泄漏，不能因为宿主死了就把 agent 树留给系统。 */
   const killAgentChildrenSync = () => {
     const bind = S.agentBind
     if (!bind) return
     for (const c of bind.clients) {
-      /* exit 里同步路径：async WMI/taskkill 都用不了，只能信号杀直接子进程兜底；
-       * POSIX 的负 pid 杀组是同步的、有效。正常退出走的是 cleanupAgents 的完整树杀，
-       * 这里只是"进程突然死"的防泄漏。 */
       if (process.platform === 'win32') {
-        try { c.child.kill() } catch (e) { /* ignore */ }
+        const root = c.child && c.child.pid
+        if (!root) continue
+        try { spawnSync('taskkill', ['/pid', String(root), '/T', '/F'], { timeout: 8000 }) } catch (e) { /* ignore */ }
+        if (c.ident) {
+          const like = '%' + String(c.ident).replace(/'/g, '') + '%'
+          const ps = '$self=$PID;Get-CimInstance Win32_Process|Where-Object{$_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -like \'' + like + '\'}|ForEach-Object{try{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}catch{}}'
+          try { spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 15000 }) } catch (e) { /* ignore */ }
+        }
       } else {
         try { process.kill(-c.child.pid, 'SIGKILL') } catch (e) { try { c.child.kill('SIGKILL') } catch (e2) { /* ignore */ } }
       }
@@ -3171,6 +3202,27 @@ if (CHILD) {
     setTimeout(() => process.exit(0), 10000).unref()
   }
   rl.on('close', onHostGone)
+  /* 宿主已死 ≠ rl close / stdin end：实测两条都不触发（Node readline 在管道另一侧
+   * 被 kill 时不给 end）。管道破开走 stdin 的 error/close；再补一条兜底轮询：
+   * stdin 不再可读（readableEnded 或 destroyed）就按宿主死了走。 */
+  process.stdin.on('end', onHostGone)
+  process.stdin.on('error', onHostGone)
+  process.stdin.on('close', onHostGone)
+  /* 兜底轮询两条路：
+   * ① stdin 状态：宿主正常退出（不是被 kill）时管道还给 end/close；
+   * ② 宿主进程死了：Windows 下 process.kill(pid) = TerminateProcess，管道
+   *    一侧直接没，任何 stdin 事件都不来（实测 end/close/error 全不触发）。
+   *    ppid 存活探测是唯一可靠信号——宿主死了 1s 内 daemon 自杀收摊。 */
+  const hostPid = process.ppid
+  const stdinProbe = setInterval(() => {
+    try {
+      if (process.stdin.destroyed || process.stdin.readableEnded) { onHostGone(); return }
+      if (hostPid) {
+        try { process.kill(hostPid, 0) } catch (e) { onHostGone() }
+      }
+    } catch (e) { /* ignore */ }
+  }, 500)
+  stdinProbe.unref()
   rl.on('line', (line) => {
     let m = null
     try { m = JSON.parse(line) } catch (e) {
