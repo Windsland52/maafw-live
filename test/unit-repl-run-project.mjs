@@ -90,8 +90,14 @@ test('repl run --project：线上覆盖链与 CLI run --project 同源', async (
   assert.ok(runReq, '必须真的发出 run 请求：' + JSON.stringify(requests.map((r) => r.cmd)))
   assert.equal(runReq.entry, 'StartUp', 'task 名要解析成 pipeline 入口')
   assert.deepEqual(runReq.resourceDirs, [join(dir, 'res')], '项目模式要发整链资源')
-  assert.deepEqual(runReq.override, { Node: { g: 1, res: 2, ctl: 3, task: 'b', user: 9 } },
-    '四级链 + preset + 用户 --override；只发裸 --override 就是旧分叉：' + JSON.stringify(runReq.override))
+  assert.deepEqual(runReq.override, [
+    { Node: { g: 1 } },
+    { Node: { res: 2 } },
+    { Node: { ctl: 3 } },
+    { Node: { task: 'b' } },
+    { Node: { user: 9 } },
+  ],
+    '四级分层 + preset + 用户 --override 在尾；只发裸 --override 或摊平成一层都是旧分叉：' + JSON.stringify(runReq.override))
   assert.equal(runReq.timeoutMs, 1000, '--timeout 要原样送达：' + JSON.stringify(runReq))
   assert.deepEqual(runReq.agents, [{ exec: 'python', args: ['agent/main.py'] }], 'PI agent 声明要桥接到 daemon')
   assert.equal(resolve(runReq.agentCwd), resolve(dir), 'agentCwd 指向 interface.json 所在目录')
@@ -143,7 +149,14 @@ test('cli run --project：同一份装配链（REPL 对齐的参照系）', asyn
     : []
   const runReq = requests.find((r) => r.cmd === 'run')
   assert.ok(runReq, 'CLI 也必须发出 run 请求：' + JSON.stringify(requests.map((r) => r.cmd)))
-  assert.deepEqual(runReq.override, { Node: { g: 1, res: 2, ctl: 3, task: 'b', user: 9 } })
+  /* 分层数组（上游语义）：各级 option 各占一层 + 用户 --override 在尾 */
+  assert.deepEqual(runReq.override, [
+    { Node: { g: 1 } },
+    { Node: { res: 2 } },
+    { Node: { ctl: 3 } },
+    { Node: { task: 'b' } },
+    { Node: { user: 9 } },
+  ])
   assert.equal(runReq.timeoutMs, 1000, '--timeout 要原样送达：' + JSON.stringify(runReq))
   assert.deepEqual(runReq.agents, [{ exec: 'python', args: ['agent/main.py'] }])
   assert.equal(resolve(runReq.agentCwd), resolve(dir))

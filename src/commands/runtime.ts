@@ -479,10 +479,12 @@ export const runCommand: Command = {
       return fail('BAD_ARGUMENTS', '要么给 --project <dir>，要么给 --resource-dir <dir>', undefined, EXIT.USAGE)
     }
 
-    let override: Record<string, unknown> = {}
+    /* --override 收对象（=一层）或数组（=逐层）：框架按数组逐层继承，对象会被摊成
+     * [obj] 等价一层。字段缺失继承前值——与 GUI 客户端同一语义（@8061d5b 已核）。 */
+    let override: Record<string, unknown> | Record<string, unknown>[] = {}
     if (typeof ctx.values.override === 'string') {
       try {
-        override = JSON.parse(ctx.values.override) as Record<string, unknown>
+        override = JSON.parse(ctx.values.override) as Record<string, unknown> | Record<string, unknown>[]
       } catch (e) {
         return fail('BAD_ARGUMENTS', '--override 不是合法 JSON：' + String((e as Error).message), undefined, EXIT.USAGE)
       }

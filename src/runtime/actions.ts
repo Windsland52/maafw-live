@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import {
-  computePipelineOverride, loadInterface, mergeOverride, planController, resolveResourcePaths,
+  computePipelineOverride, loadInterface, appendOverride, planController, resolveResourcePaths,
   type ControllerPlan, type DeviceLike, type LoadedInterface,
 } from '../interface/index.js'
 import { spawnDaemon, type DaemonClient, type SpawnOptions } from '../client/daemon.js'
@@ -187,10 +187,17 @@ export const recoTest = (c: DaemonClient, args: Record<string, unknown>, timeout
 
 /* ─────────────────────── 项目（interface.json）驱动 ─────────────────────── */
 
-/** 控制器类型 → 需要扫描的设备类型。控制器没声明时按第一个控制器推断。 */
-export function deviceKindFor(loaded: LoadedInterface, controllerName: string | null): 'adb' | 'win32' {
+/**
+ * 控制器类型 → 需要扫描的设备类型；**无设备可枚举的类型返回 null**（调用方跳过扫描）。
+ * daemon 的 device_list 只枚举 adb/win32——PlayCover/MacOS/Linux 给 'win32' 会白白发起
+ * 一次必然失败的扫描（曾经就是这样，把无关窗口列表塞进计划错误里）。
+ */
+export function deviceKindFor(loaded: LoadedInterface, controllerName: string | null): 'adb' | 'win32' | null {
   const c = controllerName ? loaded.controllers.find((x) => x.name === controllerName) : loaded.controllers[0]
-  return String(c?.type) === 'Adb' ? 'adb' : 'win32'
+  const t = String(c?.type)
+  if (t === 'Adb') return 'adb'
+  if (t === 'Win32' || t === 'Gamepad') return 'win32'
+  return null
 }
 
 export interface ProjectPlan {
@@ -220,11 +227,14 @@ export async function planProject(
   const controllerName = overrides.controller ?? loaded.controllers[0]?.name ?? null
   const kind = deviceKindFor(loaded, controllerName)
   let devices: DeviceLike[] = []
-  try {
-    devices = await deviceList(c, kind)
-  } catch (e) {
-    return { loaded, plan: null, controllerName, resource: null, error: '扫描设备失败：' + String((e as Error).message || e) }
+  if (kind) {
+    try {
+      devices = await deviceList(c, kind)
+    } catch (e) {
+      return { loaded, plan: null, controllerName, resource: null, error: '扫描设备失败：' + String((e as Error).message || e) }
+    }
   }
+  /* kind=null（playcover/macos/linux）：没有可枚举设备，planController 走 --target 分支 */
   const plan = planController(loaded, {
     controller: controllerName ?? undefined,
     win32: { hwnd: overrides.hwnd ?? null },
@@ -248,8 +258,8 @@ export interface ProjectRunInput {
   optionCases?: Record<string, string | string[]>
   /** CLI 按次取值：option 键 → { 字段名: 原文 }（input / hotkey） */
   optionFields?: Record<string, Record<string, string>>
-  /** 用户 --override：最后覆盖合成结果 */
-  override?: Record<string, unknown>
+  /** 用户 --override：对象=追加一层 / 数组=逐层追加（最高优先级），框架逐层继承 */
+  override?: Record<string, unknown> | Record<string, unknown>[]
 }
 
 /** 装配结果：要么可直接交给 `act.run`，要么是一份可行动的错误（不抛异常）。 */
@@ -343,8 +353,11 @@ export function prepareProjectRun(input: ProjectRunInput): ProjectRunPrep {
       '——注意 maa-node 与 agent 侧 maa 库须同版本（协议握手要求）')
   }
 
-  const override: Record<string, unknown> = { ...chain.override }
-  if (input.override) mergeOverride(override, input.override)
+  /* 分层 override：四级链已按层序排好（task 基底 + 各 option 层），用户 --override
+   * 追加到尾部=最高优先级。别在这里摊平——框架的层间字段继承（recognition/param 同
+   * type 按键继承）只有数组形态能保住层边界（上游 @8061d5b 已核）。 */
+  const override = [...chain.override]
+  if (input.override) appendOverride(override, input.override)
 
   return {
     ok: true,

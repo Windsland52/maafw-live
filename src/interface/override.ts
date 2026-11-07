@@ -1,15 +1,22 @@
 /**
  * pipeline_override 合成（PI v2）。
  *
- * 三部分合进同一份 override：
- * 1. **task 级 `pipeline_override`**（键=节点名、值=字段覆盖）。协议只说它"执行任务时覆盖已加载的
- *    资源"，**没有把它写进 option 覆盖顺序**——本工具把它当基底（先应用），option 链在其上叠加。
- *    这是本地选择，不是协议结论。
+ * **输出是分层数组，不是预合并对象**（上游语义，MaaFramework @8061d5b 已核）：
+ * `RuntimeParam::Task.pipeline_override` 是 `json::array`，Configurator 把 task 基底放
+ * `[0]`、每个 option case / input 模板各占一层；`Context::override_pipeline` 逐层
+ * `parse_node(node, layer, default=上一层结果)`——缺失字段继承前值，`recognition`/`action`
+ * 的 `param` 在同 type 时按键继承。**边界在层间**：上一层把 recognition.type 换成别种，
+ * param 就不能继承上一层的字段。若我们客户端先摊平成一个对象，跨层"换 type"后的
+ * param 会被错认为"同 type 继承"——只有分层数组能保边界。
+ *
+ * 层序（与上游 Configurator 一致，后者覆盖先者）：
+ * 1. **task 级 `pipeline_override`** 作 `[0]`（上游同样放数组首位）。
  * 2. **option 四级链**：global_option → resource.option → controller.option → task.option，
- *    后合并覆盖先合并；进链前先按 option 自带的 controller/resource 条件过滤（v2.3.0 / v2.3.1）。
- *    checkbox 多选按 cases 声明序合并；嵌套 option 在其父 case 之后合并。
- * 3. **input / hotkey 的模板替换**：`option.<键>.pipeline_override` 是**整个 option 一份**的模板，
- *    里面有 `{字段名}` 占位——注意它与 `cases[].pipeline_override` 是协议里两处不同字段。
+ *    每个生效 case / input 模板各占一层；进链前先按 option 的 controller/resource
+ *    条件过滤（v2.3.0 / v2.3.1）。checkbox 多选按 cases 声明序各成一层；
+ *    嵌套 option 紧跟其父 case 之后。
+ * 3. **input / hotkey 的模板替换**：`option.<键>.pipeline_override` 是**整个 option 一份**
+ *    的模板，里面有 `{字段名}` 占位——注意它与 `cases[].pipeline_override` 是协议里两处不同字段。
  *
  * 取值优先级（**协议未规定**，本工具自定）：CLI `--option` > preset > `default_case`。
  * preset 是把 GUI 用户选择搬进来的通道；CLI 表示"这一跑就按这个"，所以压过 preset。
@@ -31,7 +38,8 @@ export interface OverrideInput {
 }
 
 export interface OverrideResult {
-  override: Record<string, unknown>
+  /** 分层 override：逐元素交给框架 `override_pipeline`，层间字段继承（数组尾=最高优先级） */
+  override: Record<string, unknown>[]
   /** 需要人工注意的事项（选项无取值、preset 未找到等） */
   warns: string[]
   /** 人类可读的生效记录：option=值（级别） */
@@ -39,20 +47,18 @@ export interface OverrideResult {
 }
 
 /**
- * 把一份 pipeline_override 并入累计结果：同节点字段替换（与协议"不深度合并"一致）。
- *
- * **唯一一份实现**：四级链、`run --override`、`timing --override` 都走这里。这三处曾经各写一份，
- * 代价是同一个参数在不同命令里表现不同。非对象值必须**原样替换、不能展开**：字符串会被摊成
- * `{0:'a',1:'b'}`，`null` / 数字会静默变成空对象——等于把用户写的节点悄悄丢掉。
+ * 把调用方的覆盖（`--override`）追加到分层数组尾部 = 最高优先级。
+ * 对象 = 一层；数组 = 逐层（框架本来就接受数组，逐层继承，别在这里预合并）。
+ * 四级链、`run --override`、`timing --override` 共用这一个追加口——三处曾经各写一份，
+ * 代价是同一个参数在不同命令里表现不同。
  */
-export function mergeOverride(acc: Record<string, unknown>, po: Record<string, unknown>): void {
-  for (const [node, fields] of Object.entries(po)) {
-    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-      acc[node] = { ...((acc[node] as Record<string, unknown>) ?? {}), ...(fields as Record<string, unknown>) }
-    } else {
-      acc[node] = fields
-    }
-  }
+export function appendOverride(
+  layers: Record<string, unknown>[],
+  ov: Record<string, unknown> | Record<string, unknown>[] | undefined,
+): void {
+  if (!ov) return
+  const list = Array.isArray(ov) ? ov : [ov]
+  for (const layer of list) if (layer && typeof layer === 'object' && Object.keys(layer).length) layers.push(layer)
 }
 
 const PLACEHOLDER = /\{([^{}]+)\}/g
@@ -137,7 +143,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
   const applied: string[] = []
   /** 进过链的 option 键：用来抓"--option 给了值但没有任何级别引用它"这种静默失联 */
   const reached = new Set<string>()
-  const acc: Record<string, unknown> = {}
+  const layers: Record<string, unknown>[] = []
   const preset = presetName ? loaded.presets.find((p) => p.name === presetName) : undefined
   if (presetName && !preset) warns.push('preset ' + presetName + ' 不存在（可用：' + loaded.presets.map((p) => p.name).join(' / ') + '或无）')
   const presetTask = preset && taskName ? preset.task.find((t) => t.name === taskName) : undefined
@@ -263,7 +269,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         )
         return
       }
-      mergeOverride(acc, r.value)
+      layers.push(r.value)
       const shown = Object.entries(fields).map(([k, v]) => k + '=' + v).join('，')
       applied.push(name + '=（' + o.type + (shown ? '：' + shown : '') + '，' + level + '）')
       return
@@ -281,7 +287,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
         continue
       }
       if (c.pipelineOverride && Object.keys(c.pipelineOverride).length) {
-        mergeOverride(acc, c.pipelineOverride)
+        layers.push(c.pipelineOverride)
         applied.push(name + '=' + cname + '（' + level + '，via ' + v.via + '）')
       }
       /* 嵌套子 option：父 case 生效后按声明顺序合并（更具体，晚于父级） */
@@ -292,7 +298,7 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
   /* task 级覆盖是基底：协议只规定 option 四级顺序，没说它插在哪一级——这里按"先应用"处理。 */
   const taskDecl = taskName ? loaded.tasks.find((x) => x.name === taskName) : undefined
   if (taskDecl?.pipelineOverride && Object.keys(taskDecl.pipelineOverride).length) {
-    mergeOverride(acc, taskDecl.pipelineOverride)
+    layers.push(taskDecl.pipelineOverride)
     applied.push('task.pipeline_override（task 级基底）')
   }
 
@@ -317,5 +323,5 @@ export function computePipelineOverride(input: OverrideInput): OverrideResult {
     }
   }
 
-  return { override: acc, warns, applied }
+  return { override: layers, warns, applied }
 }

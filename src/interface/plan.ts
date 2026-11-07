@@ -29,7 +29,7 @@ export interface PlanOverrides {
   win32?: { hwnd?: string | null }
   gamepad?: { hwnd?: string | null }
   adb?: { address?: string | null }
-  /** 手动 target（--target）：playcover=<address>/<uuid>；linux=<config JSON> */
+  /** 手动 target（--target）：playcover=<address>/<uuid>；macos=<窗口 id 或标题子串>；linux=<config JSON> */
   manualTarget?: string | null
 }
 
@@ -63,7 +63,14 @@ export interface ResourcePlan {
   error?: string
 }
 
-const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', Linux: 'linux' }
+const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', MacOS: 'macos', Linux: 'linux' }
+
+/** 没有可枚举设备发现的控制器：必须显式给 --target，工具不猜会话形态。 */
+const TARGET_REQUIRED: Record<string, string> = {
+  playcover: 'PlayCover 需要 --target <address>/<uuid>（PlayCover 设置里可见）',
+  macos: 'MacOS 需要 --target <窗口 id 或标题子串>（不指定时 daemon 会用枚举到的第一个窗口，这里不猜）',
+  linux: 'Linux 需要 --target <config JSON>（含 screencap_method / input_method 等必填字段）',
+}
 
 function safeRegExp(pattern: string): RegExp | null {
   try {
@@ -112,7 +119,7 @@ export function planController(
       controllerName: c.name,
       connect: {},
       candidates: [],
-      error: '控制器 ' + c.name + ' 的类型 ' + c.type + ' 暂不受支持（本 CLI 支持 Adb / Win32 / Gamepad / PlayCover / Linux；MacOS 走手动 --kind macos）',
+      error: '控制器 ' + c.name + ' 的类型 ' + c.type + ' 暂不受支持（本 CLI 支持 Adb / Win32 / Gamepad / PlayCover / MacOS / Linux）',
     }
   }
 
@@ -123,17 +130,12 @@ export function planController(
   if (c.display?.raw) connect.rawSize = true
   if (c.display?.expand) notes.push('display_expand 暂不生效（daemon 未接入），已忽略')
 
-  if (kind === 'playcover' || kind === 'linux') {
-    /* 两类控制器没有可枚举的设备发现：必须显式给 target（playcover=<address>/<uuid>，
-       linux=<config JSON>），工具不猜会话形态。 */
+  const targetHint = TARGET_REQUIRED[kind]
+  if (targetHint) {
+    /* PlayCover / MacOS / Linux 没有可枚举的设备发现（MacOS 窗口能枚举，但 macOS
+       不在本工具的设备扫描通道里）：必须显式给 target，工具不猜会话形态。 */
     const t = overrides.manualTarget ?? null
-    if (!t) {
-      return fail(c, 'TARGET_REQUIRED',
-        kind === 'playcover'
-          ? 'PlayCover 需要 --target <address>/<uuid>（PlayCover 设置里可见）'
-          : 'Linux 需要 --target <config JSON>（含 screencap_method / input_method 等必填字段）',
-        [], connect, notes)
-    }
+    if (!t) return fail(c, 'TARGET_REQUIRED', targetHint, [], connect, notes)
     connect.target = t
     return { ok: true, controllerName: c.name, connect, notes }
   }

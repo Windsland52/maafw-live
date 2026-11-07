@@ -1,9 +1,11 @@
 /**
  * interface 四级 override 链 + import 合并单测。
  *
- * computePipelineOverride 是 run --project 的取值解析地基：四级顺序（global → resource
- * → controller → task，后者覆盖先者）、适用性过滤、checkbox 多选序、嵌套 option、
- * preset 覆盖 default_case——错一级就是管线静默跑错参数。import 合并（loadInterface）
+ * computePipelineOverride 是 run --project 的取值解析地基：分层数组（task 基底 +
+ * global → resource → controller → task 逐层，数组尾=最高优先级）、适用性过滤、
+ * checkbox 多选序、嵌套 option、preset 覆盖 default_case——错一层就是管线静默跑错参数。
+ * 层数组直接交给框架 override_pipeline：字段缺失继承前值、recognition/action 的 param
+ * 同 type 按键继承（上游 @8061d5b 已核，别在客户端预合并）。import 合并（loadInterface）
  * 决定 option 字典最终长什么样：后导入覆盖同名。
  *
  * 注意：TS 模块经 lib/ 构建产物导入（node 不直接跑 .ts）——先 npm run build。
@@ -13,9 +15,25 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { computePipelineOverride, mergeOverride } from '../lib/interface/override.js'
+import { computePipelineOverride, appendOverride } from '../lib/interface/override.js'
 import { loadInterface } from '../lib/interface/load.js'
 import { resolveResourcePaths } from '../lib/interface/plan.js'
+
+/**
+ * 把分层 override 摊平成"测试视角"的合并结果：**只作断言用**。
+ * 模仿框架逐层继承的节点字段级合并（缺字段保留前值、字段整体替换）；
+ * 真正的 param 深合并发生在框架 parse_node 里（同 type 按键继承），这里不模拟。
+ */
+const flat = (layers) => {
+  const acc = {}
+  for (const layer of layers) {
+    for (const [node, fields] of Object.entries(layer)) {
+      if (fields && typeof fields === 'object' && !Array.isArray(fields)) acc[node] = { ...(acc[node] ?? {}), ...fields }
+      else acc[node] = fields
+    }
+  }
+  return acc
+}
 
 /** 最小 LoadedInterface 字面量；over 覆盖需要变化的段 */
 const mkLoaded = (over = {}) => ({
@@ -37,28 +55,34 @@ const mkLoaded = (over = {}) => ({
 
 test('四级链：task > controller > resource > global，逐级覆盖同字段', () => {
   const r = computePipelineOverride({ loaded: mkLoaded(), controllerName: 'CA', resourceName: 'RA', taskName: 'TK' })
-  assert.deepEqual(r.override, { N: { timeout: 400, from: 'g' } })
-  // from 只在 global 声明 → 未被覆盖的字段保留；timeout 被 task 级覆盖
-  assert.equal(r.override.N.timeout, 400)
-  assert.equal(r.override.N.from, 'g')
+  /* 输出是分层数组：每级 case 各占一层、按生效顺序排，框架逐层继承（上游已核）。
+   * 不要把它摊平了断言——摊平会丢失层间 type 边界（这是被修掉的 bug）。 */
+  assert.ok(Array.isArray(r.override), 'override 是分层数组')
+  assert.deepEqual(r.override, [
+    { N: { timeout: 100, from: 'g' } },  // gOpt.on
+    { N: { timeout: 200 } },             // resOpt.on
+    { N: { timeout: 300 } },             // ctlOpt.on
+    { N: { timeout: 400 } },             // taskOpt.on（最高优先级）
+  ])
+  assert.deepEqual(flat(r.override), { N: { timeout: 400, from: 'g' } })
   assert.equal(r.applied.length, 4)
 })
 
 test('高级存在、低级缺位：不被 undefined 级覆盖', () => {
   const r = computePipelineOverride({ loaded: mkLoaded(), controllerName: 'CA', resourceName: null, taskName: null })
-  assert.equal(r.override.N.timeout, 300)
+  assert.equal(flat(r.override).N.timeout, 300)
   const r2 = computePipelineOverride({ loaded: mkLoaded(), controllerName: null, resourceName: null, taskName: null })
-  assert.equal(r2.override.N.timeout, 100)
+  assert.equal(flat(r2.override).N.timeout, 100)
 })
 
 test('适用性过滤：option 声明的 controller 不含当前 → 全级别跳过', () => {
   const loaded = mkLoaded()
   loaded.options.taskOpt.controller = ['OTHER']
   const r = computePipelineOverride({ loaded, controllerName: 'CA', resourceName: 'RA', taskName: 'TK' })
-  assert.equal(r.override.N.timeout, 300, 'taskOpt 被过滤，controller 级生效')
+  assert.equal(flat(r.override).N.timeout, 300, 'taskOpt 被过滤，controller 级生效')
   // 未声明的控制器：controller 级不进链（不猜），只剩 global 级
   const undeclared = computePipelineOverride({ loaded: mkLoaded(), controllerName: 'CB', resourceName: null, taskName: null })
-  assert.equal(undeclared.override.N.timeout, 100)
+  assert.equal(flat(undeclared.override).N.timeout, 100)
 })
 
 test('preset 覆盖 default_case；preset 缺失告警', () => {
@@ -79,9 +103,9 @@ test('preset 覆盖 default_case；preset 缺失告警', () => {
     presets: [{ name: 'P1', task: [{ name: 'TK', option: { sw: 'on' } }] }],
   })
   const viaDefault = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK' })
-  assert.equal(viaDefault.override.X, undefined, 'default=off 无 override')
+  assert.equal(flat(viaDefault.override).X, undefined, 'default=off 无 override')
   const viaPreset = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK', presetName: 'P1' })
-  assert.deepEqual(viaPreset.override, { X: { enabled: true } })
+  assert.deepEqual(flat(viaPreset.override), { X: { enabled: true } })
   assert.ok(viaPreset.applied.some((a) => a.includes('via preset')))
   const missing = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK', presetName: 'NOPE' })
   assert.ok(missing.warns.some((w) => w.includes('NOPE') && w.includes('不存在')))
@@ -102,21 +126,27 @@ test('checkbox 多选按 cases 声明序合并，后 case 覆盖前 case 同字�
     globalOption: ['multi'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.deepEqual(r.override, { M: { speed: 2, tag: 'a' } })
+  /* checkbox：每个勾中 case 各占一层（上游 merge_option_overrides 逐 case emplace） */
+  assert.deepEqual(r.override, [{ M: { speed: 1, tag: 'a' } }, { M: { speed: 2 } }])
+  assert.deepEqual(flat(r.override), { M: { speed: 2, tag: 'a' } })
 })
 
 /**
- * `mergeOverride` 是 override 合并的**唯一一份实现**（四级链 / `run --override` / `timing --override`）。
- * 重点是"非对象值原样替换"：直接展开会把字符串摊成 `{0:'a',1:'b'}`、把 null / 数字静默变成空对象，
- * 于是同一个 `--override` 在 run 与 timing 下得到不同结果（timing 曾经就是自己展开的）。
+ * `appendOverride` 是 `--override` 追加进链的**唯一一个口**（`run --override` / `timing --override`）。
+ * 分层数组原样放行（框架逐层继承）；对象 = 一层；空对象/undefined 不入链——
+ * 曾经这里各自展开，同一个 --override 在 run 与 timing 下得到不同结果。
  */
-test('mergeOverride：对象浅合并，非对象值原样替换（不展开、不丢）', () => {
-  const acc = { N: { timeout: 100, keep: true } }
-  mergeOverride(acc, { N: { timeout: 200 }, S: 'enabled', Z: null, K: 3, A: [1, 2] })
-  assert.deepEqual(acc, {
-    N: { timeout: 200, keep: true },
-    S: 'enabled', Z: null, K: 3, A: [1, 2],
-  })
+test('appendOverride：对象成一层、数组逐层、空值不入链', () => {
+  const layers = [{ N: { timeout: 100 } }]
+  appendOverride(layers, { N: { timeout: 200 }, S: 'enabled', Z: null, A: [1, 2] })
+  appendOverride(layers, [{ X: 1 }, { Y: 2 }])
+  appendOverride(layers, undefined)
+  appendOverride(layers, {})
+  assert.deepEqual(layers, [
+    { N: { timeout: 100 } },
+    { N: { timeout: 200 }, S: 'enabled', Z: null, A: [1, 2] },
+    { X: 1 }, { Y: 2 },
+  ])
 })
 
 test('嵌套 option 自引用：记警告并跳过，不让递归栈溢出', () => {
@@ -128,7 +158,7 @@ test('嵌套 option 自引用：记警告并跳过，不让递归栈溢出', () 
     globalOption: ['a'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.deepEqual(r.override, { A: { v: 1 }, B: { v: 2 } }, '链上各方的有效覆盖都要保留，只跳过重复那一步')
+  assert.deepEqual(flat(r.override), { A: { v: 1 }, B: { v: 2 } }, '链上各方的有效覆盖都要保留，只跳过重复那一步')
   assert.ok(r.warns.some((w) => /嵌套链/.test(w)), '要留下可行动的警告：' + JSON.stringify(r.warns))
 })
 
@@ -149,7 +179,9 @@ test('嵌套 option：父 case 生效后按声明序合并子项（晚于父级�
     globalOption: ['parent'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.deepEqual(r.override, { P: { mode: 'child', extra: 1 } })
+  /* 子 option 紧跟父 case 之后（更具体，晚生效） */
+  assert.deepEqual(r.override, [{ P: { mode: 'parent' } }, { P: { mode: 'child', extra: 1 } }])
+  assert.deepEqual(flat(r.override), { P: { mode: 'child', extra: 1 } })
 })
 
 test('无取值：select 无 default/preset → 告警；input 没有模板 → 不打扰', () => {
@@ -161,7 +193,7 @@ test('无取值：select 无 default/preset → 告警；input 没有模板 → 
     globalOption: ['novalue', 'bare'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.equal(r.override.Q, undefined)
+  assert.equal(flat(r.override).Q, undefined)
   assert.equal(r.warns.filter((w) => w.includes('novalue') && w.includes('无 preset')).length, 1)
   assert.ok(!r.warns.some((w) => w.includes('bare')), '没有模板 = 没有东西会丢，不打扰')
 })
@@ -182,7 +214,7 @@ test('input：option 级模板 + 字段取值 → 整串按 pipeline_type 转型
     globalOption: ['cnt'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.deepEqual(r.override.Node, { timeout: 30, next: 'MainChapter_4' }, '整串转型成数字，片段拼接成字符串')
+  assert.deepEqual(flat(r.override).Node, { timeout: 30, next: 'MainChapter_4' }, '整串转型成数字，片段拼接成字符串')
   assert.ok(r.applied.some((l) => l.includes('cnt') && l.includes('input')), JSON.stringify(r.applied))
 })
 
@@ -198,7 +230,7 @@ test('input：占位没有取值 → 整条模板放弃（不写半套）并说�
     globalOption: ['cnt'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.equal(r.override.Node, undefined)
+  assert.equal(flat(r.override).Node, undefined)
   assert.ok(r.warns.some((w) => w.includes('超时') && w.includes('没有取值')), JSON.stringify(r.warns))
 })
 
@@ -216,9 +248,9 @@ test('input：取值优先级 CLI --option > preset > 字段 default', () => {
     tasks: [{ name: 'TK', entry: 'e', option: ['cnt'] }],
   })
   const base = { controllerName: null, resourceName: null, taskName: 'TK', presetName: 'P' }
-  assert.equal(computePipelineOverride({ loaded: mk(), ...base }).override.Node.timeout, 5, 'preset 压过字段 default')
+  assert.equal(flat(computePipelineOverride({ loaded: mk(), ...base }).override).Node.timeout, 5, 'preset 压过字段 default')
   assert.equal(
-    computePipelineOverride({ loaded: mk(), ...base, optionFields: { cnt: { n: '9' } } }).override.Node.timeout,
+    flat(computePipelineOverride({ loaded: mk(), ...base, optionFields: { cnt: { n: '9' } } }).override).Node.timeout,
     9,
     'CLI 按次取值压过 preset（本地约定：协议未规定优先级）',
   )
@@ -236,7 +268,7 @@ test('hotkey：没选中控制器 → 无法确定键码表，跳过并说清楚
     globalOption: ['hk'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.equal(r.override.KeyNode, undefined)
+  assert.equal(flat(r.override).KeyNode, undefined)
   assert.ok(r.warns.some((w) => w.includes('hotkey') && w.includes('未确定')), JSON.stringify(r.warns))
 })
 
@@ -255,7 +287,7 @@ test('hotkey：按控制器 type 解析成整数键码，四个占位符都可�
     globalOption: ['hk'],
   })
   const r = computePipelineOverride({ loaded, controllerName: 'C1', resourceName: null, taskName: null })
-  assert.deepEqual(r.override.Node, { key: 0x41, modifier: 0x11, both: 0x41 }, '"Ctrl+A"：末段主键，前段修饰键')
+  assert.deepEqual(flat(r.override).Node, { key: 0x41, modifier: 0x11, both: 0x41 }, '"Ctrl+A"：末段主键，前段修饰键')
 })
 
 test('hotkey：控制器类型没有键码表（Gamepad）→ 跳过而不是按 Win32 猜', () => {
@@ -271,7 +303,7 @@ test('hotkey：控制器类型没有键码表（Gamepad）→ 跳过而不是按
     globalOption: ['hk'],
   })
   const r = computePipelineOverride({ loaded, controllerName: 'C1', resourceName: null, taskName: null })
-  assert.equal(r.override.KeyNode, undefined)
+  assert.equal(flat(r.override).KeyNode, undefined)
   assert.ok(r.warns.some((w) => w.includes('Gamepad')), JSON.stringify(r.warns))
 })
 
@@ -280,8 +312,10 @@ test('task 级 pipeline_override 是基底，option 链在其上覆盖', () => {
     tasks: [{ name: 'TK', entry: 'e', option: ['taskOpt'], pipelineOverride: { N: { timeout: 1, keep: 'task' } } }],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK' })
-  assert.equal(r.override.N.timeout, 400, 'option 覆盖 task 级同字段')
-  assert.equal(r.override.N.keep, 'task', 'task 级独有的字段保留')
+  /* task 基底是 [0]，option 层在其后（上游：json::array{task.po} + 逐层 emplace） */
+  assert.equal(r.override[0].N.timeout, 1, 'task 级 override 是数组首层')
+  assert.equal(flat(r.override).N.timeout, 400, 'option 覆盖 task 级同字段')
+  assert.equal(flat(r.override).N.keep, 'task', 'task 级独有的字段保留')
   assert.ok(r.applied[0].includes('task.pipeline_override'), '基底要在生效记录里可见')
 })
 
@@ -300,11 +334,11 @@ test('取值指向未声明 case → 告警跳过该 case', () => {
     globalOption: ['ghost'],
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: null })
-  assert.equal(r.override.G, undefined)
+  assert.equal(flat(r.override).G, undefined)
   assert.ok(r.warns.some((w) => w.includes('phantom') && w.includes('不是已声明的 case')))
 })
 
-test('节点级字段浅合并：同节点不同字段共存，同字段对象整体替换（不深度合并）', () => {
+test('同节点跨层字段共存，同字段后者替换（框架逐层继承的等价断言）', () => {
   const loaded = mkLoaded({
     options: {
       gOpt: { name: 'gOpt', type: 'select', cases: [{ name: 'on', pipelineOverride: { N: { deep: { a: 1 }, keep: 1 } } }], defaultCase: 'on' },
@@ -312,7 +346,10 @@ test('节点级字段浅合并：同节点不同字段共存，同字段对象�
     },
   })
   const r = computePipelineOverride({ loaded, controllerName: null, resourceName: null, taskName: 'TK' })
-  assert.deepEqual(r.override.N, { deep: { b: 2 }, keep: 1 }, 'deep 整体替换、keep 保留')
+  /* 层保持分离：gOpt 与 taskOpt 各自的 N 各占一层，框架 parse_node 逐层继承字段。
+   * recognition/action 的 param 深合并发生在框架侧（同 type 按键继承），flat() 只模拟顶层字段。 */
+  assert.deepEqual(r.override, [{ N: { deep: { a: 1 }, keep: 1 } }, { N: { deep: { b: 2 } } }])
+  assert.deepEqual(flat(r.override).N, { deep: { b: 2 }, keep: 1 }, 'deep 整体替换、keep 保留')
 })
 
 /* ────────────────────────── import 合并（loadInterface，走真实文件） ────────────────────────── */

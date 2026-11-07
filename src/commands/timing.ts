@@ -9,7 +9,7 @@
  * 单次采样退化为 P50=P95=该值，与历史单次行为逐字段一致。
  */
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
-import { computePipelineOverride, mergeOverride } from '../interface/index.js'
+import { computePipelineOverride, appendOverride } from '../interface/index.js'
 import { buildAgentEnv } from '../runtime/pi-env.js'
 import { parseOptionArgs } from '../option-args.js'
 import * as act from '../runtime/actions.js'
@@ -148,7 +148,7 @@ export const timingCommand: Command = {
     if (!Number.isInteger(runs) || runs < 1 || runs > 10) {
       return fail('BAD_ARGUMENTS', '--runs 需为 1-10 的整数（真机动作采样，别当压测跑）', undefined, EXIT.USAGE)
     }
-    let override: Record<string, unknown> = {}
+    let override: Record<string, unknown> | Record<string, unknown>[] = {}
     if (typeof ctx.values.override === 'string') {
       try { override = JSON.parse(ctx.values.override) as Record<string, unknown> } catch (e) {
         return fail('BAD_ARGUMENTS', '--override 不是合法 JSON', undefined, EXIT.USAGE)
@@ -180,10 +180,9 @@ export const timingCommand: Command = {
             ...(Object.keys(parsedOptions.cases).length ? { optionCases: parsedOptions.cases } : {}),
             ...(Object.keys(parsedOptions.fields).length ? { optionFields: parsedOptions.fields } : {}),
           })
-          /* 用户 --override 最后覆盖合成结果：**与 run 共用同一份合并实现**。
-           * 这里曾经自己展开 fields——字符串会被摊成 {0:'a',1:'b'}、null / 数字静默变空对象，
-           * 于是同一个 --override 在 timing 与 run 下结果不同。 */
-          mergeOverride(chain.override, override)
+          /* 用户 --override 追加到链尾 = 最高优先级：**与 run 共用同一份追加实现**。
+           * 分层数组交给框架逐层继承；不在这里预合并（层间 type 边界会被摊平毁掉）。 */
+          appendOverride(chain.override, override)
           args = {
             resourceDirs: paths, entry: task?.entry ?? entry,
             override: chain.override, timeoutMs,

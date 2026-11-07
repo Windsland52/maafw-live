@@ -62,8 +62,15 @@ test('入口解析 + 四级链 + preset + 用户 override 合成同一条链', (
   assert.equal(prep.entry, 'StartUp', 'task 名要解析成 pipeline 入口')
   assert.equal(prep.taskName, '启动')
   assert.deepEqual(prep.args.resourceDirs, [path.join(dir, 'res')])
-  assert.deepEqual(prep.args.override, { Node: { g: 1, res: 2, ctl: 3, task: 'b', user: 9 } },
-    'global→resource→controller→task，preset 覆盖 default_case，用户 --override 最后')
+  /* 分层数组（上游已核：层间字段继承靠数组形态保边界）：task 基底（无）+ 四级 option
+   * 各占一层 + 用户 --override 在尾部=最高优先级。 */
+  assert.deepEqual(prep.args.override, [
+    { Node: { g: 1 } },
+    { Node: { res: 2 } },
+    { Node: { ctl: 3 } },
+    { Node: { task: 'b' } },
+    { Node: { user: 9 } },
+  ], 'global→resource→controller→task，preset 覆盖 default_case，用户 --override 最后')
   assert.ok(prep.applied.some((l) => /taskOpt=b（task\.option，via preset）/.test(l)), JSON.stringify(prep.applied))
   assert.deepEqual(prep.args.agents, [], '没有 agent 声明时也要给 daemon 一个空数组（旧线形保持）')
 })
@@ -109,7 +116,8 @@ test('preset 不存在：告警继续，用 default_case 取值', (t) => {
   assert.equal(prep.ok, true)
   if (!prep.ok) return
   assert.ok(prep.warns.some((w) => /preset NOPE 不存在/.test(w)), JSON.stringify(prep.warns))
-  assert.equal(prep.args.override.Node.task, 'a', 'preset 缺失时回到 default_case')
+  /* 分层数组：taskOpt 层是数组尾，default_case=a */
+  assert.equal(prep.args.override.at(-1).Node.task, 'a', 'preset 缺失时回到 default_case')
 })
 
 test('多个资源都适用：run 把"选了哪个、还有谁适用"升成 warning（--json 侧也看得到）', (t) => {
@@ -133,7 +141,7 @@ test('--option 按次取值进链：CLI 值压过 default_case', (t) => {
   const prep = prepareProjectRun({ project: projectOf(dir), entry: '启动', optionCases: { taskOpt: 'b' } })
   assert.equal(prep.ok, true, JSON.stringify(prep))
   if (!prep.ok) return
-  assert.equal(prep.args.override.Node.task, 'b', 'default_case 是 a，CLI 给 b 应生效')
+  assert.equal(prep.args.override.at(-1).Node.task, 'b', 'default_case 是 a，CLI 给 b 应生效（taskOpt 层在数组尾）')
 })
 
 test('agent 子进程环境：PI_* 按当前选择生成，且不编 5.14.2 里没有的 PI_USER_DATA_DIR', (t) => {
