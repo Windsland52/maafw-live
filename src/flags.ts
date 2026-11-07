@@ -24,6 +24,8 @@ export const GLOBAL_OPTIONS = {
   verbose: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
   version: { type: 'boolean', short: 'V' },
+  /** 把命令转发到命名会话的常驻 daemon（`repl --session <name>` 起的那个） */
+  session: { type: 'string' },
 } satisfies ParseArgsOptionsConfig
 
 export interface GlobalFlags {

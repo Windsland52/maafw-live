@@ -28,7 +28,7 @@ export const calibrateCommand: Command = {
       return fail('BAD_ARGUMENTS', '--interval 必须是毫秒数（默认 300）', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         const r = await calibrate(client, {
           ...(frames !== undefined ? { frames } : {}),

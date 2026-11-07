@@ -151,7 +151,7 @@ export const timingCommand: Command = {
     }
 
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         let args: Record<string, unknown>
         if (o.project) {

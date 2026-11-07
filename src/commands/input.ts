@@ -4,7 +4,7 @@
  * 全部经 maafw 控制器本体注入（不直接调 adb），坐标是控制器分辨率空间——默认短边 720，
  * 与 pipeline 里 roi / 模板图同一坐标系。要设备就必须给 --project（推荐）或 --kind。
  */
-import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
+import { EXIT, fail, type Command, type CommandContext, type CommandResult } from '../protocol.js'
 import { input, withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, type SessionOptions } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
@@ -27,13 +27,14 @@ function num(values: Record<string, unknown>, key: string): number | undefined {
 }
 
 async function inject(
+  ctx: CommandContext,
   o: SessionOptions,
   payload: Record<string, unknown>,
   human: (r: Record<string, unknown>) => string[],
   timeoutMs = 20000,
 ): Promise<CommandResult> {
   try {
-    return await withDaemon(async (client) => {
+    return await withDaemon(ctx, async (client) => {
       const s = await ensureSession(client, o)
       const r = await input(client, payload, timeoutMs)
       return { exitCode: EXIT.OK, human: [...describeSession(s), ...human(r)], data: r }
@@ -59,6 +60,7 @@ export const clickCommand: Command = {
       return fail('BAD_ARGUMENTS', '用法：maafw-live click <x> <y>', undefined, EXIT.USAGE)
     }
     return inject(
+      ctx,
       o,
       { kind: 'click', x, y, contact: num(ctx.values, 'contact') ?? 0, pressure: num(ctx.values, 'pressure') ?? 1 },
       (r) => ['已点击 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'],
@@ -93,6 +95,7 @@ export const swipeCommand: Command = {
       }
     }
     return inject(
+      ctx,
       o,
       {
         kind: 'swipe', x1, y1, x2, y2,
@@ -121,7 +124,7 @@ export const keyCommand: Command = {
     if (miss) return miss
     const code = Number(ctx.positionals[0])
     if (!Number.isFinite(code)) return fail('BAD_ARGUMENTS', '用法：maafw-live key <code>', undefined, EXIT.USAGE)
-    return inject(o, { kind: 'key', code }, (r) => ['已按键 ' + code + '，' + String(r.ms) + 'ms'])
+    return inject(ctx, o, { kind: 'key', code }, (r) => ['已按键 ' + code + '，' + String(r.ms) + 'ms'])
   },
 }
 
@@ -141,6 +144,7 @@ export const keysCommand: Command = {
       return fail('BAD_ARGUMENTS', '用法：maafw-live keys <code[,code+...]>（至少一个正整数键码）', undefined, EXIT.USAGE)
     }
     return inject(
+      ctx,
       o,
       { kind: 'keys', codes, hold: num(ctx.values, 'hold') ?? 60 },
       (r) => ['已组合键 ' + codes.join('+') + '，' + String(r.ms) + 'ms'],
@@ -164,6 +168,7 @@ export const pressCommand: Command = {
       return fail('BAD_ARGUMENTS', '用法：maafw-live press <x> <y>', undefined, EXIT.USAGE)
     }
     return inject(
+      ctx,
       o,
       { kind: 'press', x, y, duration: num(ctx.values, 'duration') ?? 800 },
       (r) => ['已长按 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'],
@@ -186,7 +191,7 @@ export const dbclickCommand: Command = {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return fail('BAD_ARGUMENTS', '用法：maafw-live dbclick <x> <y>', undefined, EXIT.USAGE)
     }
-    return inject(o, { kind: 'dbclick', x, y, gap: num(ctx.values, 'gap') ?? 60 }, (r) => ['已双击 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'])
+    return inject(ctx, o, { kind: 'dbclick', x, y, gap: num(ctx.values, 'gap') ?? 60 }, (r) => ['已双击 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'])
   },
 }
 
@@ -205,7 +210,7 @@ export const scrollCommand: Command = {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
       return fail('BAD_ARGUMENTS', '用法：maafw-live scroll <dx> <dy>（如 0 -120 向上一格）', undefined, EXIT.USAGE)
     }
-    return inject(o, { kind: 'scroll', dx, dy }, (r) => ['已滚动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
+    return inject(ctx, o, { kind: 'scroll', dx, dy }, (r) => ['已滚动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
   },
 }
 
@@ -224,7 +229,7 @@ export const moveCommand: Command = {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
       return fail('BAD_ARGUMENTS', '用法：maafw-live move <dx> <dy>', undefined, EXIT.USAGE)
     }
-    return inject(o, { kind: 'move', dx, dy }, (r) => ['已相对移动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
+    return inject(ctx, o, { kind: 'move', dx, dy }, (r) => ['已相对移动 (' + dx + ', ' + dy + ')，' + String(r.ms) + 'ms'])
   },
 }
 
@@ -240,7 +245,7 @@ export const textCommand: Command = {
     if (miss) return miss
     const text = ctx.positionals.join(' ')
     if (!text) return fail('BAD_ARGUMENTS', '用法：maafw-live text <string>', undefined, EXIT.USAGE)
-    return inject(o, { kind: 'text', text }, (r) => ['已输入 ' + text.length + ' 字符，' + String(r.ms) + 'ms'])
+    return inject(ctx, o, { kind: 'text', text }, (r) => ['已输入 ' + text.length + ' 字符，' + String(r.ms) + 'ms'])
   },
 }
 

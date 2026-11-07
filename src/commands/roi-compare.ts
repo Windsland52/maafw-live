@@ -219,7 +219,7 @@ export const roiCompareCommand: Command = {
     }
 
     try {
-      return await withDaemon(async (c) => {
+      return await withDaemon(ctx, async (c) => {
         const t0 = Date.now()
         /* 客户端预算必须比 daemon 侧那笔更宽（daemon：max(90s, 5s×例)，spawnRecoChild 再封顶 120s）
          * ——反过来的话，还在正常跑的子进程会先被客户端判成超时，看起来像"识别失败"。 */

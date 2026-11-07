@@ -21,6 +21,9 @@ export const kfCommand: Command = {
     '       maafw-live kf list [--dir <frames>]      （离线，不需要设备）\n' +
     '       maafw-live kf resolve <kf:...> [--dir <frames>]   （离线）',
   options: { ...CONNECT_OPTIONS, note: { type: 'string' }, dir: { type: 'string' }, latest: { type: 'boolean' } },
+  /* promote 要的是"捕获帧的那个 daemon 会话"：一次性进程 seq=0 恒失败
+   *（P0-3 L4）。list/resolve/status 离线或边界语义可用，不拦。 */
+  requiresSession: (ctx) => ctx.positionals[0] === 'promote',
 
   async run(ctx): Promise<CommandResult> {
     const sub = ctx.positionals[0] ?? 'status'
@@ -58,7 +61,7 @@ export const kfCommand: Command = {
 
     if (sub === 'status') {
       try {
-        return await withDaemon(async (client) => {
+        return await withDaemon(ctx, async (client) => {
           const st = await l0Status(client)
           const roll = st.roll as { count?: number; cap?: number; bytes?: number } | undefined
           const anchor = st.anchor as { count?: number; cap?: number; bytes?: number; entries?: unknown[] } | undefined
@@ -112,7 +115,7 @@ export const kfCommand: Command = {
           EXIT.USAGE)
       }
       try {
-        return await withDaemon(async (client) => {
+        return await withDaemon(ctx, async (client) => {
           if (o.project || o.kind) {
             /* 设备会话存在才值得连：L0 缓存是进程态，连一次至少能把输入/截图边界帧留下 */
             await ensureSession(client, o)

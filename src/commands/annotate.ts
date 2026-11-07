@@ -89,7 +89,7 @@ export const annotateCommand: Command = {
     const offline = kfSource !== undefined
 
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s: SessionState = offline ? { connected: false } : await ensureSession(client, o)
         let resourceDir = (typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)
           ?? s.plan?.resource?.paths[0]

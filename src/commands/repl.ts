@@ -21,10 +21,22 @@ import { ocrModelName, suggestThreshold } from './reco.js'
 import { ensureSession, SessionError, type SessionOptions, type SessionState } from '../runtime/session.js'
 import { writeRunReceipt } from '../runtime/receipts.js'
 import {
-  ensureSessionDir, pidAlive, readSessionMeta, sendToSession, SessionServer, sessionPipePath, sessionServeLogTail,
+  ensureSessionDir, pidAlive, readSessionMeta, sendToSession, sendToSessionExec, SessionServer,
+  sessionPipePath, sessionServeLogTail,
   spawnSessionServer, stopSession, validSessionName, waitPipeReady,
 } from '../runtime/session-ipc.js'
+/* 不能 import './index.js' 拿 findCommand：commands/index 也 import 本模块（replCommand），
+ * 循环依赖会在"谁先进来"那条路径上炸（Cannot access before initialization）。
+ * 真命令名清单就地维护——新命令加进 commands/index 时在这里补一行。 */
+const EXEC_HEADS = new Set([
+  'annotate', 'calibrate', 'color', 'connect', 'crop', 'device', 'disconnect', 'env',
+  'events', 'frame', 'kf', 'probe', 'reco', 'roi-check', 'roi-compare', 'run', 'screencap',
+  'stop', 'timing', 'version', 'wait',
+  /* 手势命令与 input.ts 同名，直接走 exec */
+  'click', 'swipe', 'key', 'keys', 'press', 'dbclick', 'scroll', 'move', 'text',
+])
 import { CONNECT_OPTIONS, sessionOptions } from './runtime.js'
+import { dispatchArgv } from './dispatch.js'
 
 const HELP = [
   '命令：',
@@ -1159,22 +1171,81 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
     return { exitCode: EXIT.OK, human: ['会话 ' + name + ' 保持运行（用 --session-stop ' + name + ' 收掉）'], data: { name, pid: meta.pid } }
   }
 
-  /* 带 --cmd：逐条串行送进会话，把回执按序打印。任一条 quit/exit 就结束会话。 */
+  /* 带 --cmd：逐条串行送进会话。能翻成 argv 的走 exec（结构化 result 随回执回来——
+   * --json 下信封才有命令数据，不再只剩 {name,pid}）；REPL 方言（quit/stream/logs/
+   * wait stable 这类）仍走 line 路径由常驻侧 switch 解释。 */
   const human: string[] = []
+  const results: Array<CommandResult | null> = []
   let exitCode: ExitCode = EXIT.OK
-  for (const cmd of cmds) {
-    const rep = await sendToSession(meta, cmd, 600000)
+  for (const line of cmds) {
+    const argv = replToArgv(line)
+    if (argv) {
+      const rep = await sendToSessionExec(meta, argv, 600000)
+      /* rep.lines = 待认领输出（连接横幅、上一条异步收尾）+ 本命令 human——并入
+       * result.human，否则 --json 下横幅与异步尾巴整条丢（forwardToSession 同款逻辑） */
+      if (rep.result && rep.lines.length) rep.result.human = rep.lines
+      human.push(...rep.lines)
+      if (rep.error) human.push('错误：' + rep.error)
+      results.push(rep.result ?? null)
+      if (exitCode === EXIT.OK && rep.result && rep.result.exitCode !== EXIT.OK) {
+        exitCode = rep.result.exitCode
+      }
+      if (exitCode === EXIT.OK && !rep.result && rep.error) exitCode = EXIT.FAIL
+      continue
+    }
+    const rep = await sendToSession(meta, line, 600000)
     human.push(...rep.lines)
+    results.push(null)
     if (rep.error) {
       human.push('错误：' + rep.error)
-      exitCode = EXIT.FAIL
+      if (exitCode === EXIT.OK) exitCode = EXIT.FAIL
     }
-    if (rep.closing || /^(quit|exit)\s*$/i.test(cmd.trim())) {
+    if (rep.closing || /^(quit|exit)\s*$/i.test(line.trim())) {
       stopSession(name)
       break
     }
   }
-  return { exitCode, human, data: { name, pid: meta.pid } }
+  return {
+    exitCode,
+    human,
+    /* results 与 cmds 对齐；REPL 方言条目为 null（line 路径没有结构化结果） */
+    data: { name, pid: meta.pid, results },
+  }
+}
+
+/**
+ * REPL 行 → argv 的方言翻译表。翻不了（REPL 私有命令）返回 null，调用方走 line 路径。
+ * 这是会话"两个实现漂移"的止血带：翻译完进的是 dispatchArgv，与一次性 CLI 同一份
+ * 实现——`run T --option` 在 --cmd 里从此生效（P0-3）。
+ */
+export function replToArgv(line: string): string[] | null {
+  const t = tokenize(line)
+  const head = t[0] ?? ''
+  switch (head) {
+    case 'connect': {
+      if (t[1] === 'project') return ['connect', '--project', ...(t.slice(2).length ? t.slice(2) : [])]
+      if (t[1] === 'win32') {
+        if (!t[2]) return null
+        return ['connect', '--kind', 'win32', '--target', t[2], ...t.slice(3)]
+      }
+      if (t[1] === 'adb') {
+        if (!t[2]) return null
+        return ['connect', '--kind', 'adb', '--address', t[2], ...t.slice(3)]
+      }
+      /* `connect --project d` 这类直接就是 argv 形态 */
+      if (t[1]?.startsWith('--')) return t
+      return null
+    }
+    case 'wait':
+      if (t[1] === 'stable' || t[1] === 'change') return ['wait', '--mode', t[1], ...t.slice(2)]
+      return null
+    case 'help': case 'quit': case 'exit': case 'stream': case 'logs': case 'repl':
+      return null
+    default:
+      /* 真命令名直接放行（EXEC_HEADS 与 commands/index 同步维护）；
+       * REPL 私有的 touchdown/touchmove/touchup 手势等留 line 路径。 */
+      return EXEC_HEADS.has(head) ? t : null
+  }
 }
 
 /** 常驻侧：从命名管道收命令，交给与交互式 repl 同一份 `runReplLine` 执行。 */
@@ -1186,21 +1257,37 @@ async function runSessionServer(name: string, ctx: CommandContext): Promise<Comm
     state.plan = s.plan ?? null
   }
 
-  const server = new SessionServer((line, reply) => {
-    void runReplLine(line, { client, out: (l) => server.pushOutput(l), state, remember })
-      .then((step) => {
-        reply({ ok: true, lines: [], ...(step === 'quit' ? { closing: true } : {}) })
-        if (step === 'quit') {
-          /* 收尾延后一拍：先把回执写出去，调用方才能读到"会话已结束"而不是连接被掐 */
-          setTimeout(() => {
-            server.close()
-            try { client.close() } catch { /* ignore */ }
-            process.exit(0)
-          }, 150)
-        }
-      })
-      .catch((e) => reply({ ok: false, lines: [], error: e instanceof Error ? e.message : String(e) }))
-  })
+  const server = new SessionServer(
+    (line, reply) => {
+      void runReplLine(line, { client, out: (l) => server.pushOutput(l), state, remember })
+        .then((step) => {
+          reply({ ok: true, lines: [], ...(step === 'quit' ? { closing: true } : {}) })
+          if (step === 'quit') {
+            /* 收尾延后一拍：先把回执写出去，调用方才能读到"会话已结束"而不是连接被掐 */
+            setTimeout(() => {
+              server.close()
+              try { client.close() } catch { /* ignore */ }
+              process.exit(0)
+            }, 150)
+          }
+        })
+        .catch((e) => reply({ ok: false, lines: [], error: e instanceof Error ? e.message : String(e) }))
+    },
+    /* exec 路径：argv → dispatchArgv（与一次性 CLI 同一份实现），result 结构化回给调用方。
+     * human 行同时推进回执缓冲——非 --json 的调用方要的文本、会话日志都靠它。 */
+    (argv, reply) => {
+      void dispatchArgv(argv, { client, cwd: process.cwd() })
+        .then(({ result }) => {
+          for (const l of result.human ?? []) server.pushOutput(l)
+          reply({
+            ok: result.exitCode === EXIT.OK || result.exitCode === EXIT.FINDINGS,
+            result,
+            ...(result.error ? { error: result.error.message } : {}),
+          })
+        })
+        .catch((e) => reply({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+    },
+  )
 
   /* 先建连接、再 listen：反过来的话命令可能在 `ensureSession` 完成**之前**到达，
    * 那条命令会跑在一个还没连接的会话上（表现为"第一条命令报未连接，第二条才好"）。

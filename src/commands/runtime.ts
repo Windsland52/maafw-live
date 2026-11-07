@@ -65,9 +65,9 @@ export const probeCommand: Command = {
   summary: '自检 maa-node 运行时：绑定版本、adb/win32 设备发现数',
   usage: 'maafw-live probe',
 
-  async run(): Promise<CommandResult> {
+  async run(ctx): Promise<CommandResult> {
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const info = await act.probe(client)
         const devices = await act.deviceList(client, 'all').catch(() => [])
         const human = [
@@ -97,7 +97,7 @@ export const deviceCommand: Command = {
       return fail('BAD_ARGUMENTS', 'kind 只能是 all / adb / win32', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const list = await act.deviceList(client, kind)
         type Row = { kind?: string; id?: string; name?: string; cls?: string }
         const human = list.length
@@ -133,7 +133,7 @@ export const connectCommand: Command = {
         '推荐 --project：控制器类型/窗口正则/输入方法/识别缩放全跟项目走', EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         const lines = describeSession(s)
         if (s.streamStopped) {
@@ -159,9 +159,11 @@ export const connectCommand: Command = {
 
 export const disconnectCommand: Command = {
   name: 'disconnect',
-  summary: '断开设备并销毁 Tasker/Controller（一次性命令，等价于结束 REPL 会话）',
-  usage: 'maafw-live disconnect --project <dir> | --kind ...',
+  summary: '断开设备并销毁 Tasker/Controller（会话内命令，等价于结束 REPL 会话）',
+  usage: 'maafw-live disconnect --session <name>（一次性形态：为断开先新连一次，没意义）',
   options: { ...CONNECT_OPTIONS },
+  /* 为断开先新连一次是自相矛盾的操作——断开会话态才需要"断开"（P0-3 L4） */
+  requiresSession: true,
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx.values)
@@ -169,7 +171,7 @@ export const disconnectCommand: Command = {
       return fail('BAD_ARGUMENTS', '需要 --project 或 --kind 才能建立会话再断开', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         await ensureSession(client, o)
         const r = await act.disconnect(client)
         return { exitCode: EXIT.OK, human: ['已断开：' + JSON.stringify(r)], data: r }
@@ -195,7 +197,7 @@ export const screencapCommand: Command = {
       mkdirSync(dirname(out), { recursive: true })
     } catch { /* 落盘失败交给 daemon 报错 */ }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         const r = await act.screencap(client, out)
         return {
@@ -245,7 +247,7 @@ export const eventsCommand: Command = {
       return fail('BAD_ARGUMENTS', '--fps 必须是正数', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         /* --watch：daemon 随命令退出而销毁，事件环不跨进程存活——所以"自己起流、现场采集"
          * 是一次性 CLI 拿到事件的唯一可靠方式。用 `wait` 的 change/stable 语义不合适
@@ -288,6 +290,8 @@ export const eventsCommand: Command = {
 
 export const frameCommand: Command = {
   name: 'frame',
+  /* frame get 的环恒空（NO_FRAME）；frame status 读的是流状态，空环也算有内容的回答 */
+  requiresSession: (ctx) => ctx.positionals[0] === 'get',
   summary: '帧流状态与历史帧取用（环形缓冲只在 REPL 会话里才有内容）',
   usage: 'maafw-live frame status | maafw-live frame get [seq] [--roi x,y,w,h] [--out <png>] [--src auto|full|ring]\n' +
     '        --src full 强制要控制器分辨率原图（L0 已淘汰则报错，绝不给缩小图冒充）',
@@ -298,7 +302,7 @@ export const frameCommand: Command = {
     const o = sessionOptions(ctx.values)
     if (sub === 'status') {
       try {
-        return await withDaemon(async (client) => {
+        return await withDaemon(ctx, async (client) => {
           const s = await ensureSession(client, o)
           const st = await act.streamStatus(client)
           return { exitCode: EXIT.OK, human: [...describeSession(s), '帧流：' + JSON.stringify(st)], data: st }
@@ -329,7 +333,7 @@ export const frameCommand: Command = {
     }
     const src = srcRaw as 'auto' | 'full' | 'ring'
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         await ensureSession(client, o)
         const r = await act.frameGet(client, { seq, roi, out, src })
         if (r.ok === false) {
@@ -360,6 +364,9 @@ export const frameCommand: Command = {
 
 export const waitCommand: Command = {
   name: 'wait',
+  /* 预热截图不进环 → 恒 NO_FRAME 退 3；就算有帧也没流，stable 秒成立/change 必超时——
+   * 两种结果都是假信号（P0-3 L4） */
+  requiresSession: true,
   summary: '等状态谓词成立：stable=画面静下来 / change=画面动了（取代硬睡时钟）',
   usage: 'maafw-live wait stable|change [--timeout ms] [--quiet ms] [--roi x,y,w,h] [--threshold n]\n' +
     '        超时不算命令失败（ok=true, satisfied=false, 退出码 3）——"没等到"是观测结果',
@@ -398,7 +405,7 @@ export const waitCommand: Command = {
       return fail('BAD_ARGUMENTS', '--roi 需要 4 个数字：x,y,w,h', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         await ensureSession(client, o)
         const r = await act.waitState(client, {
           mode,
@@ -490,7 +497,7 @@ export const runCommand: Command = {
   if (Object.keys(optionFields).length) o.optionFields = optionFields
 
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         let args: Record<string, unknown>
         let resolvedEntry: string = entry
@@ -668,10 +675,12 @@ export const stopCommand: Command = {
   name: 'stop',
   summary: '停止运行中的任务（post_stop）',
   usage: 'maafw-live stop',
+  /* 一次性形态没意义：停的是自己刚起的空 daemon，回 ok 误导（设计审查 P0-3 L4） */
+  requiresSession: true,
 
-  async run(): Promise<CommandResult> {
+  async run(ctx): Promise<CommandResult> {
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const r = await act.runStop(client)
         return { exitCode: EXIT.OK, human: ['已请求停止：' + JSON.stringify(r)], data: r }
       })

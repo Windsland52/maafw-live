@@ -105,7 +105,7 @@ export const roiCheckCommand: Command = {
     const sent = build().candidates
 
     try {
-      return await withDaemon(async (c) => {
+      return await withDaemon(ctx, async (c) => {
         const t0 = Date.now()
         const r = await recoTest(c, {
           resourceDir, type, image,

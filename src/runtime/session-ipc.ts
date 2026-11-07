@@ -29,6 +29,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { CommandResult } from '../protocol.js'
 
 /** 会话名白名单：字母数字与 `-` `_`，1..48 字符。要进管道名与文件路径，必须收紧。 */
 export function validSessionName(name: string): boolean {
@@ -91,16 +92,25 @@ export function pidAlive(pid: number): boolean {
     }
 }
 
-/** 一条命令的请求/回执信封。`lines` 是 repl 该命令打出的全部输出行（按序）。 */
+/** 一条命令的请求/回执信封。`lines` 是 repl 该命令打出的全部输出行（按序）。
+ *
+ * 协议 v2：请求可以是 `line`（旧，走 REPL 行解释器）或 `exec`（argv，走 dispatchArgv
+ * 拿到结构化 CommandResult）——信封丢结构化结果（`--session` 下 `--json` 只剩 {name,pid}）
+ * 就是因为只有 line 这条路。 */
 export interface ServeRequest {
     id: number
-    line: string
+    /** 缺省按 line 处理（兼容旧调用方） */
+    kind?: 'line' | 'exec'
+    line?: string
+    argv?: string[]
 }
 export interface ServeReply {
     id: number
     ok: boolean
     lines: string[]
     error?: string
+    /** exec 请求的结构化结果（v2）；line 请求没有这个字段 */
+    result?: CommandResult
     /** `quit`/`exit` 之后常驻进程会自行收尾 */
     closing?: boolean
 }
@@ -111,6 +121,8 @@ export interface ServeReplyInput {
     ok: boolean
     lines?: string[]
     error?: string
+    /** exec 请求的结构化结果（v2） */
+    result?: CommandResult
     /** `quit`/`exit` 之后常驻进程会自行收尾 */
     closing?: boolean
 }
@@ -124,7 +136,16 @@ export class SessionServer {
     private buffer: string[] = []
     private current: { id: number; socket: Socket } | null = null
 
-    constructor(private readonly onLine: (line: string, reply: (r: ServeReplyInput) => void) => void) {}
+    /**
+     * @param onLine  REPL 行解释器（旧 kind=line 路径）
+     * @param onExec  argv 分发器（kind=exec）：注入常驻 client 后走 dispatchArgv，
+     *                回执里带结构化 CommandResult——`--session` 下的 --json 信封靠它才存在。
+     *                不给时 exec 请求回 UNSUPPORTED（防"静默按 line 跑了别的命令"）。
+     */
+    constructor(
+        private readonly onLine: (line: string, reply: (r: ServeReplyInput) => void) => void,
+        private readonly onExec?: (argv: string[], reply: (r: ServeReplyInput) => void) => void,
+    ) {}
 
     /** 供 repl 循环调用：把一行输出归到当前命令的回执里。
      *
@@ -153,7 +174,13 @@ export class SessionServer {
         if (!cur) return
         this.current = null
         /* 一律以服务端缓冲为准：调用方给的 lines 只是形状占位，不能覆盖实际输出 */
-        const payload: ServeReply = { id: cur.id, ok: r.ok, ...(r.error ? { error: r.error } : {}), ...(r.closing ? { closing: true } : {}), lines: this.buffer }
+        const payload: ServeReply = {
+            id: cur.id, ok: r.ok,
+            ...(r.error ? { error: r.error } : {}),
+            ...(r.closing ? { closing: true } : {}),
+            ...(r.result ? { result: r.result } : {}),
+            lines: this.buffer,
+        }
         this.buffer = []
         try {
             cur.socket.write(JSON.stringify(payload) + '\n')
@@ -199,16 +226,21 @@ export class SessionServer {
                             /* 待认领的输出（连接横幅、上一条异步命令的收尾）先给，再按本命令的
                              * 实测输出追加——顺序即时间序，调用方读起来才与交互式 repl 一致。 */
                             this.buffer = this.unclaimed.splice(0, this.unclaimed.length)
-                            try {
-                                this.onLine(req.line, (r) => {
-                                    this.reply(r)
-                                    const next = this.pending.shift()
-                                    if (next) next()
-                                })
-                            } catch (e) {
-                                this.reply({ ok: false, lines: [], error: e instanceof Error ? e.message : String(e) })
+                            const finish = (r: ServeReplyInput): void => {
+                                this.reply(r)
                                 const next = this.pending.shift()
                                 if (next) next()
+                            }
+                            try {
+                                if (req.kind === 'exec' && this.onExec) {
+                                    this.onExec(req.argv ?? [], finish)
+                                } else if (req.kind === 'exec') {
+                                    finish({ ok: false, error: '这个常驻进程不支持 exec 请求（请重启会话）' })
+                                } else {
+                                    this.onLine(String(req.line ?? ''), finish)
+                                }
+                            } catch (e) {
+                                finish({ ok: false, error: e instanceof Error ? e.message : String(e) })
                             }
                         }
                         if (this.current) this.pending.push(run)
@@ -267,6 +299,53 @@ export async function sendToSession(
         }, timeoutMs)
         sock.setEncoding('utf8')
         sock.on('connect', () => sock.write(JSON.stringify({ id, line }) + '\n'))
+        sock.on('data', (chunk: string) => {
+            buf += chunk
+            let i
+            while ((i = buf.indexOf('\n')) >= 0) {
+                const raw = buf.slice(0, i)
+                buf = buf.slice(i + 1)
+                if (!raw.trim()) continue
+                let rep: ServeReply
+                try {
+                    rep = JSON.parse(raw) as ServeReply
+                } catch {
+                    continue
+                }
+                if (rep.id !== id) continue
+                done(() => resolve(rep))
+                return
+            }
+        })
+        sock.on('error', (e) => done(() => reject(e)))
+    })
+}
+
+/** 调用侧（v2）：把一条 argv 送到会话，等它那条带结构化 result 的回执。
+ * 与 sendToSession 共用同一条管道/协议，只是 kind/载荷不同。 */
+export async function sendToSessionExec(
+    meta: SessionMeta,
+    argv: string[],
+    timeoutMs: number,
+): Promise<ServeReply> {
+    return await new Promise<ServeReply>((resolve, reject) => {
+        const sock = connect(meta.pipe)
+        const id = Date.now() % 1_000_000_000
+        let buf = ''
+        const done = (fn: () => void): void => {
+            clearTimeout(timer)
+            try {
+                sock.destroy()
+            } catch {
+                /* ignore */
+            }
+            fn()
+        }
+        const timer = setTimeout(() => {
+            done(() => reject(new Error(`会话 '${meta.name}' 在 ${timeoutMs}ms 内没有回执（会话可能卡在一条长命令上；先 quit 再重试）`)))
+        }, timeoutMs)
+        sock.setEncoding('utf8')
+        sock.on('connect', () => sock.write(JSON.stringify({ id, kind: 'exec', argv }) + '\n'))
         sock.on('data', (chunk: string) => {
             buf += chunk
             let i

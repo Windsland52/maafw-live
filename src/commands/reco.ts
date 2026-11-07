@@ -238,7 +238,7 @@ export const recoCommand: Command = {
     }
 
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s: SessionState = offline ? { connected: false } : await ensureSession(client, o)
         /* 资源链：--resource-dir 是显式单包；否则按项目声明解析**整条链**（resource.path[] 叠加
          * 控制器 attach_resource_path）。必须走 resolveResourcePaths —— 只写 resource.path 会让

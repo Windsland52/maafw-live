@@ -37,11 +37,17 @@ export interface ConnectSession {
   streamStopped?: boolean
 }
 
-/** 起一个 daemon、跑 fn、无论如何都收掉子进程。一次性命令用它，REPL 用长活客户端。 */
+/**
+ * 给命令一个 daemon 客户端：ctx.client 有就借用（REPL / 命名会话，**不关**——
+ * 会话的生命周期不归命令管）；没有才 spawn 一次性的，跑完即关。
+ * 统一入口的意义：命令只需写一遍，`--session` 转发与 REPL 复用走的是同一份实现。
+ */
 export async function withDaemon<T>(
+  ctx: { client?: DaemonClient },
   fn: (client: DaemonClient) => Promise<T>,
   options: SpawnOptions = {},
 ): Promise<T> {
+  if (ctx.client) return await fn(ctx.client)
   const client = spawnDaemon(options)
   try {
     return await fn(client)

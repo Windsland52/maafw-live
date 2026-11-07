@@ -91,6 +91,11 @@ export interface CommandContext {
   flags: GlobalFlags
   /** 已解析并校验过存在性的工作目录（绝对路径） */
   cwd: string
+  /**
+   * 复用既有 daemon 客户端（REPL / 命名会话 dispatch 时注入）。一次性命令路径此字段为空，
+   * `withDaemon` 才会新起一个 daemon、用完即关——两条路径跑的是同一份 Command.run。
+   */
+  client?: import('./client/daemon.js').DaemonClient
 }
 
 export interface Command {
@@ -101,6 +106,13 @@ export interface Command {
   usage: string
   /** 命令私有选项；全局选项由入口自动合并 */
   options?: ParseArgsOptionsConfig
+  /**
+   * 需要会话态才能工作的命令（会话 daemon 才有帧流 / 事件环 / 在跑任务）。
+   * `true` 整命令要；谓词形态按子命令分（frame get 要、frame status 不要；kf promote 要、
+   * kf list 不要）。一次性形态下入口直接退 2 + 指向 `--session <name>` 的提示，
+   * 不让"看起来成功了"的空跑存在（stop 停空 daemon、frame get 恒 NO_FRAME 这类）。
+   */
+  requiresSession?: boolean | ((ctx: CommandContext) => boolean)
   run(ctx: CommandContext): Promise<CommandResult>
 }
 

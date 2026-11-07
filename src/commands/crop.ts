@@ -126,7 +126,7 @@ export const cropCommand: Command = {
     }
 
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s: SessionState = offline ? { connected: false } : await ensureSession(client, o)
         /* 自匹配要加载资源（模板走 override_image，不写项目目录）；项目模式用规划出的资源 */
         let resourceDir = (typeof ctx.values['resource-dir'] === 'string' ? ctx.values['resource-dir'] : undefined)

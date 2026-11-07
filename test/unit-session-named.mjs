@@ -111,12 +111,12 @@ test('命名会话：首次调用起会话并执行，后续独立进程复用�
     const first = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe'], logPath)
     assert.equal(first.code, 0, '首次调用应成功：' + first.out)
     assert.match(first.out, /已连接/, '启动横幅要在第一条回执里给出（"会话连到了什么"）：' + first.out)
-    assert.match(first.out, /\{"ok":true\}/, '命令本身要执行（桩对 probe 回 ok:true）：' + first.out)
+    assert.match(first.out, /maa-node/, 'probe 命令本身要执行（exec 路径回 human 行）：' + first.out)
 
     // ② 第二个独立进程：复用同一会话（桩是新的，但会话进程是同一个）
     const second = await runCli(['repl', '--session', name, '--cmd', 'probe'], logPath)
     assert.equal(second.code, 0, '复用调用应成功：' + second.out)
-    assert.match(second.out, /\{"ok":true\}/, '第二条命令也要真的执行：' + second.out)
+    assert.match(second.out, /maa-node/, '第二条命令也要真的执行：' + second.out)
     assert.doesNotMatch(second.out, /已连接/, '启动横幅只跟第一条命令走，不重复：' + second.out)
 
     // ③ 状态可查
@@ -136,13 +136,20 @@ test('命名会话：一次送多条命令按序串行执行', async (t) => {
     const logPath = stubLogFor(name).path
     t.after(() => cleanup(name))
 
-    const r = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'probe', '--cmd', 'frame status', '--cmd', 'kf status'], logPath)
+    const r = await runCli(['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--json', '--cmd', 'probe', '--cmd', 'frame status', '--cmd', 'kf status'], logPath)
     assert.equal(r.code, 0, '多条命令应全部成功：' + r.out)
-    /* 桩对三条命令都回 ok:true，"都执行了"用条数证明；顺序用"回执不乱"证明——
-     * 每条命令一段，段数 = 命令数（衔接处不会串行错位）。 */
-    const okCount = (r.out.match(/\{"ok":true\}/g) ?? []).length
-    assert.equal(okCount, 3, '三条命令各出一份回执（实际 ' + okCount + '）：' + r.out)
-    assert.match(r.out, /已连接/, '启动横幅在最前：' + r.out)
+    /* exec 路径把每条命令的 CommandResult 结构化带回来（旧 line 路径只剩文本行——
+     * 数 {"ok":true} 那种断言测的是旧实现的渲染细节，不是命令真的跑成了）。 */
+    const env = JSON.parse(r.out.slice(r.out.indexOf('{')))
+    assert.equal(env.data.results.length, 3, '三条命令各有一份结构化结果：' + r.out)
+    for (const [i, res] of env.data.results.entries()) {
+        assert.equal(res && res.exitCode, 0, `第 ${i} 条命令 exitCode 应为 0：` + JSON.stringify(res))
+    }
+    /* 连接横幅在第一条命令的 human 最前（待认领输出按时间序并入） */
+    assert.ok(
+        (env.data.results[0].human ?? []).some((l) => /已连接/.test(l)),
+        '启动横幅要出现在第一条命令的 human 里：' + r.out,
+    )
 })
 
 test('命名会话：quit 收掉会话，之后状态报不存在（收尾不留常驻进程）', async (t) => {
@@ -212,10 +219,12 @@ test('命名会话：--cmd 里的子命令选项原样交给会话（不被 repl
         ['repl', '--session', name, '--kind', 'adb', '--target', 'stub', '--cmd', 'run StartUp --timeout 1200'],
         logPath,
     )
-    assert.equal(r.code, 0, '--cmd 应正常执行：' + r.out)
-    assert.doesNotMatch(r.out, /Unknown option|\[BAD_ARGUMENTS\]/, '--timeout 不该被 repl 的选项表拒掉：' + r.out)
+    /* exec 路径如实传播命令的退出码：run 缺 --project/--resource-dir → BAD_ARGUMENTS(2)。
+     * 旧的"恒 0"正是被 P0-3 修掉的信封掩盖——exit 0 + error 行让脚本把失败当成功。 */
+    assert.equal(r.code, 2, '命令自己的退出码要原样传回（掩 0 是旧 bug）：' + r.out)
+    assert.doesNotMatch(r.out, /Unknown option/, '--timeout 不该被 repl 的选项表拒掉：' + r.out)
     assert.doesNotMatch(r.out, /未知命令：--timeout/, '--timeout 不该被切成独立命令：' + r.out)
-    assert.match(r.out, /缺资源|已提交|"ok":true/, '命令要真的走到 run 分支：' + r.out)
+    assert.match(r.out, /BAD_ARGUMENTS|--project|--resource-dir/, '命令要真的走到 run 分支、如实报缺资源：' + r.out)
 })
 
 test('命名会话：会话名白名单（要进管道名与文件路径，不能被穿越）', async () => {

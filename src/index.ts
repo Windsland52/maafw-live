@@ -15,9 +15,11 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { findCommand, suggestCommand } from './commands/index.js'
+import { dispatchArgv } from './commands/dispatch.js'
 import { GLOBAL_OPTIONS, readGlobalFlags } from './flags.js'
 import { cliPackage } from './pkg.js'
 import { EXIT, emit, fail, type CommandResult } from './protocol.js'
+import { forwardToSession, stripSessionFlag } from './runtime/session-forward.js'
 import { commandUsage, topLevelUsage } from './usage.js'
 
 function print(lines: string[], toStderr = false): void {
@@ -77,47 +79,28 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT.USAGE
   }
 
-  // 解析选项：全局 + 命令私有
-  const options = { ...GLOBAL_OPTIONS, ...(cmd.options ?? {}) }
-  let parsed: { values: Record<string, unknown>; positionals: string[] }
+  /* cwd 与 --json/--color 先粗解析（全局选项集即可，命令私有选项不在这层消费）。
+   * --session 转发发生在 dispatchArgv **之前**：会话侧跑的是同一份命令实现，
+   * 本地不该为"转发给会话的命令"先新起一个 daemon 再丢（requiresSession 闸门
+   * 在会话侧才有意义——ctx.client 已注入时不拦）。 */
+  let rough: { values: Record<string, unknown>; positionals: string[] }
   try {
-    parsed = parseArgs({
+    rough = parseArgs({
       args: argv.slice(1),
-      options,
+      options: GLOBAL_OPTIONS,
       allowPositionals: true,
-      strict: true,
+      strict: false,
     }) as { values: Record<string, unknown>; positionals: string[] }
-  } catch (e) {
-    const result = fail('BAD_ARGUMENTS', message(e), `用法：${cmd.usage}`, EXIT.USAGE)
-    emit(cmd.name, result, { json: argv.includes('--json'), color: false })
-    return EXIT.USAGE
+  } catch {
+    /* 全局层解析不过就让 dispatchArgv 走完整错误路径（BAD_ARGUMENTS 信封） */
+    rough = { values: {}, positionals: argv.slice(1) }
   }
 
-  // cwd 先解析，因为 --json 之外的所有输出都要用到它
   let cwd = process.cwd()
-  if (typeof parsed.values.cwd === 'string' && parsed.values.cwd !== '') {
-    cwd = resolve(parsed.values.cwd)
+  if (typeof rough.values.cwd === 'string' && rough.values.cwd !== '') {
+    cwd = resolve(rough.values.cwd)
   }
-
-  const flags = readGlobalFlags(parsed.values, cwd)
-
-  /* 预留旗标没有消费者：传了就退 2 而不是静默吞掉——"以为在试跑其实已经落盘"
-   * 是 agent 最坏的失败模式。`--limit` 例外：events 自己声明并消费同名列，
-   * 命令有消费时才放行。 */
-  const unimpl: string[] = []
-  if (flags.dryRun) unimpl.push('--dry-run')
-  if (flags.verbose) unimpl.push('--verbose')
-  if (parsed.values.limit !== undefined && !(cmd.options && 'limit' in cmd.options)) unimpl.push('--limit')
-  if (unimpl.length > 0) {
-    const result = fail(
-      'FLAG_NOT_IMPLEMENTED',
-      `未实现的旗标：${unimpl.join(' ')}（接受但不生效是最坏的失败模式，所以直接报错）`,
-      '要"只校验不落盘"用 validate；要截断输出用命令自己的分页参数',
-      EXIT.USAGE,
-    )
-    emit(cmd.name, result, { json: flags.json, color: flags.color })
-    return EXIT.USAGE
-  }
+  const flags = readGlobalFlags(rough.values, cwd)
 
   if (flags.help) {
     print(commandUsage(cmd))
@@ -130,18 +113,16 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT.ENV
   }
 
-  let result: CommandResult
-  try {
-    result = await cmd.run({ positionals: parsed.positionals, values: parsed.values, flags, cwd })
-  } catch (e) {
-    result = fail(
-      'UNEXPECTED',
-      message(e),
-      '这是未预期异常，请把 --json 输出一并反馈',
-      EXIT.FAIL,
-    )
+  /* `--session <name>`：把整条 argv（剥掉 --session 本体）送进常驻会话执行。
+   * `repl` 自己的 --session 是"起/查/收会话"的参数，不是转发旗标，不能拦。 */
+  const sessionName = typeof rough.values.session === 'string' ? rough.values.session : undefined
+  if (sessionName && cmd.name !== 'repl') {
+    const result = await forwardToSession(sessionName, stripSessionFlag(argv))
+    emit(cmd.name, result, { json: flags.json, color: flags.color })
+    return result.exitCode
   }
 
+  const { result } = await dispatchArgv(argv, { cwd })
   emit(cmd.name, result, { json: flags.json, color: flags.color })
   return result.exitCode
 }

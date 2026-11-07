@@ -33,7 +33,7 @@ export const colorCommand: Command = {
       return fail('BAD_ARGUMENTS', '--seq 必须是数字', undefined, EXIT.USAGE)
     }
     try {
-      return await withDaemon(async (client) => {
+      return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
         /* 一次性命令缓冲为空：先截一帧产生观测（screencap 现在进环，有捕获身份）。
          * 截帧文件用完即删——它只是观测载体，既不落用户 cwd，也不留在临时目录。 */
