@@ -10,6 +10,8 @@
  */
 import { EXIT, fail, type Command, type CommandResult } from '../protocol.js'
 import { computePipelineOverride, mergeOverride } from '../interface/index.js'
+import { buildAgentEnv } from '../runtime/pi-env.js'
+import { parseOptionArgs } from '../option-args.js'
 import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession } from '../runtime/session.js'
@@ -127,6 +129,9 @@ export const timingCommand: Command = {
     runs: { type: 'string' },
     override: { type: 'string' },
     preset: { type: 'string' },
+    /* 与 run 同一取值通道：timing 测的就是 run 那条路，option 进不去会让
+     * "时长分布"测的是一个根本不该跑的配置（P1-#4）。 */
+    option: { type: 'string', multiple: true },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -150,6 +155,12 @@ export const timingCommand: Command = {
       }
     }
 
+    /* --option 与 run 同一取值通道（CLI > preset > default_case 由 computePipelineOverride 判） */
+    const parsedOptions = parseOptionArgs(ctx.values.option)
+    if (parsedOptions.error) {
+      return fail('BAD_ARGUMENTS', parsedOptions.error, '例：--option taskOpt=b  --option 章节数.章节号=4', EXIT.USAGE)
+    }
+
     try {
       return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
@@ -166,6 +177,8 @@ export const timingCommand: Command = {
             resourceName: s.plan?.resource?.selected ?? null,
             taskName: task?.name ?? null,
             presetName: typeof ctx.values.preset === 'string' ? ctx.values.preset : null,
+            ...(Object.keys(parsedOptions.cases).length ? { optionCases: parsedOptions.cases } : {}),
+            ...(Object.keys(parsedOptions.fields).length ? { optionFields: parsedOptions.fields } : {}),
           })
           /* 用户 --override 最后覆盖合成结果：**与 run 共用同一份合并实现**。
            * 这里曾经自己展开 fields——字符串会被摊成 {0:'a',1:'b'}、null / 数字静默变空对象，
@@ -176,6 +189,13 @@ export const timingCommand: Command = {
             override: chain.override, timeoutMs,
             agents: s.plan!.loaded.agents.map((a) => ({ exec: a.exec, args: a.args })),
             agentCwd: s.plan!.loaded.dir ?? undefined,
+            /* agent 子进程的环境变量声明按"当前 controller/resource 选择"生成——
+             * 此前 timing 不带 env，agent 拿到的配置与 run 跑的不是同一套（P1-#4）。 */
+            agentEnv: buildAgentEnv({
+              loaded: s.plan!.loaded,
+              controllerName: s.plan?.controllerName ?? null,
+              resourceName: s.plan?.resource?.selected ?? null,
+            }),
           }
         } else {
           args = { resourceDir, entry, override, timeoutMs }

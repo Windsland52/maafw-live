@@ -91,6 +91,12 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
         planned.plan.code || 'PLAN_FAILED',
       )
     }
+    /* interface.json 的加载告警：加载成功不代表没问题（缺字段、被跳过的 task/option 都在
+     * problems[]）。此前整个文件加载失败才读第一条，加载成功的告警在 human 与 --json 都看不到。 */
+    const loadWarns = planned.loaded.problems.map((p) => 'interface 告警：' + p.message)
+    if (planned.resource?.error) {
+      throw new SessionError(planned.resource.error, 'RESOURCE_NOT_FOUND')
+    }
     /* pretask 的位置是契约的一部分：PI 要求它在**连接 Controller 之前**跑完，非零退出即中止启动。
      * 放到 connect 之后就不再是同一件事（控制器已经建出来了）。 */
     const conn = await connect(client, { ...planned.plan.connect })
@@ -98,7 +104,7 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
     return {
       connected: true, plan: planned, session: conn.session ?? null,
       /* 资源侧提示（多个条目适用、已替用户选了哪一个）与控制器提示同一条 human 通道 */
-      notes: [...(planned.plan.notes ?? []), ...(planned.resource?.notes ?? []), ...preNotes],
+      notes: [...(planned.plan.notes ?? []), ...(planned.resource?.notes ?? []), ...loadWarns, ...preNotes],
       ...(conn.streamStopped === true ? { streamStopped: true } : {}),
     }
   }
@@ -141,6 +147,9 @@ export function offlineResource(
   }
   const controllerName = controller ?? loaded.controllers[0]?.name ?? null
   const plan = resolveResourcePaths(loaded, controllerName ?? undefined, resource)
+  /* --resource 名字没匹配上且不是目录：离线路径同样拒绝（自匹配拿错资源集，
+   * 裁出来的模板整个不对）。 */
+  if (plan.error) return { paths: [], names: [], selected: null, controllerName, error: plan.error }
   return { paths: plan.paths, names: plan.names, selected: plan.selected, controllerName }
 }
 

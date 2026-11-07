@@ -4,8 +4,17 @@
  *
  * 为什么不猜设备：猜错不只是连错窗口，还会把 roi 与模板的坐标系一起猜错。
  */
+import { existsSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { LoadedInterface } from './load.js'
+
+function isDirectory(p: string): boolean {
+  try {
+    return existsSync(p) && statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
 
 /** daemon device_list 的条目：adb 的 id 是 address，win32 的 id 是 hwnd。 */
 export interface DeviceLike {
@@ -49,6 +58,9 @@ export interface ResourcePlan {
    * 加载完 path 后、加载 attach 之前，两段必须分开才能只在边界处读 `res.hash`。
    */
   hashCheck?: { resourceName: string; expected: string; pathDirs: string[]; attachDirs: string[] }
+  /** --resource 指到的值没匹配上任何条目，且不是磁盘上存在的目录：拒绝启动
+   * （打错一个字 = selected=null = 资源级 option/pretask 过滤全部跳过，比报错更贵）。 */
+  error?: string
 }
 
 const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', Linux: 'linux' }
@@ -242,6 +254,16 @@ export function resolveResourcePaths(
     const byName = loaded.resources.find((r) => r.name === override)
     if (byName && dir) {
       return withAttach(byName.paths.map((p) => resolve(dir, p)), [byName.name], byName.name, [], byName.hash)
+    }
+    /* 名字没匹配上时允许当目录路径（老行为），但必须真的存在——打错一个字的资源名
+     * 会被静默接受成路径，selected=null 让所有资源级过滤（option 适用性、pretask、
+     * hash 校验）跳过，比拒绝启动更难查。 */
+    if (!isDirectory(resolve(override))) {
+      return {
+        paths: [], names: [], selected: null,
+        error: '--resource ' + JSON.stringify(override) + ' 不是资源名也不是存在的目录' +
+          (loaded.resources.length ? '（可用：' + loaded.resources.map((r) => r.name).join(' / ') + '）' : ''),
+      }
     }
     return withAttach([resolve(override)], ['(--resource)'], null)
   }

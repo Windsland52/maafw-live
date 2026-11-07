@@ -406,8 +406,15 @@ test('resolveResourcePaths：--resource 指定条目或路径时，仍追加 con
     assert.deepEqual(byName.paths, [path.join(dir, 'res2'), attach], '按名选中：也要带附加路径')
     assert.equal(byName.selected, 'R2')
 
-    const byPath = resolveResourcePaths(l, 'C1', path.join(dir, 'loose'))
-    assert.deepEqual(byPath.paths, [path.join(dir, 'loose'), attach], '按路径选中：也要带附加路径')
+    const loose = path.join(dir, 'loose')
+    fs.mkdirSync(loose)   /* 存在的目录才按路径接受——不存在=打错字=拒绝 */
+    const byPath = resolveResourcePaths(l, 'C1', loose)
+    assert.deepEqual(byPath.paths, [loose, attach], '按路径选中：也要带附加路径')
+
+    /* 名字没匹配上且目录不存在：拒绝启动（此前 silently 当路径，资源级过滤全跳） */
+    const miss = resolveResourcePaths(l, 'C1', 'typo-name')
+    assert.equal(miss.paths.length, 0)
+    assert.ok(miss.error && miss.error.includes('typo-name'), '要报"不是资源名也不是目录"：' + miss.error)
 
     const noCtrl = resolveResourcePaths(l, undefined, 'R2')
     assert.deepEqual(noCtrl.paths, [path.join(dir, 'res2')], '没说控制器就没有附加路径')

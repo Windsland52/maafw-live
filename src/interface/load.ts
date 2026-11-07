@@ -362,7 +362,10 @@ export function loadInterface(dir: string): LoadedInterface {
     }
     for (const [key, val] of Object.entries(d)) {
       const v = obj(val)
-      if (!v || !str(v.type)) {
+      /* type 缺省按 select（上游 PI 文档与 Types.h:212 的默认）；仍记 problem，
+       * 因为它大概率是漏写而非有意缺省——警告可见，行为对齐上游。 */
+      const type = v ? (str(v.type) ?? 'select') : undefined
+      if (!v || !type) {
         problems.push({ message: 'option ' + key + ' 缺少 type，已跳过（' + src + '）' })
         continue
       }
@@ -400,7 +403,7 @@ export function loadInterface(dir: string): LoadedInterface {
       }
       options[key] = {
         name: key,
-        type: String(v.type),
+        type,
         cases,
         ...(tpl ? { pipelineOverride: tpl } : {}),
         ...(inputs.length ? { inputs } : {}),
