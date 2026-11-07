@@ -481,6 +481,9 @@ export const runCommand: Command = {
     return fail('BAD_ARGUMENTS', parsedOptions.error, '例：--option taskOpt=b  --option 章节数.章节号=4', EXIT.USAGE)
   }
   const { cases: optionCases, fields: optionFields } = parsedOptions
+  /* run 是"启动工作"类命令：pretask 要跑（P0-2——观测/输入类命令不跑，run 保留）。
+   * --no-pretask 显式关。 */
+  if (o.pretask === undefined) o.pretask = true
   /* pretask 在连接之前就跑，所以按次取值必须在 ensureSession 之前挂进 SessionOptions——
    * 否则同一次 run 里 pretask 的末位 JSON 与 pipeline_override 用的不是同一份取值。 */
   if (Object.keys(optionCases).length) o.optionCases = optionCases

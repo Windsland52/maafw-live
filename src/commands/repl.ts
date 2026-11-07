@@ -299,6 +299,9 @@ export const replCommand: Command = {
 
     const o: SessionOptions = sessionOptions(ctx.values)
     if (o.project || o.kind) {
+      /* 起连 = 启动工作：pretask 要跑（--no-pretask 关）。项目 pretask 先于设备扫描，
+       * "启动模拟器"类脚本冷启动也到得了（P0-2）。 */
+      if (o.pretask === undefined) o.pretask = true
       try {
         const s = await ensureSession(client, o)
         remember(s)
@@ -387,7 +390,8 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               let s
               try {
                 if (tokens[1] === 'project') {
-                  s = await ensureSession(client, { project: tokens[2], hwnd: tokens[3], address: tokens[3] })
+                  /* 会话内手动重连也是一次"启动"：pretask 照跑（非零中止、超时 120s） */
+                  s = await ensureSession(client, { project: tokens[2], hwnd: tokens[3], address: tokens[3], pretask: true })
                 } else {
                   s = await ensureSession(client, { kind: tokens[1], target: tokens[2] })
                 }
@@ -1096,10 +1100,16 @@ async function runNamedSession(name: string, ctx: CommandContext): Promise<Comma
   let meta = existing
   if (!meta || !pidAlive(meta.pid)) {
     if (meta) stopSession(name)
+    /* 连接参数透传 = CONNECT_OPTIONS 全集：之前只传 7 个字符串项，--no-pretask /
+     * --short-side / --long-side / --raw 在 --session 下被静默丢掉（P0-2）。
+     * 布尔值以裸旗标形态进 argv（connectArgsToArgv 对 true 只发 --k）。 */
     const connectArgs: Record<string, unknown> = {}
-    for (const k of ['project', 'controller', 'resource', 'hwnd', 'address', 'kind', 'target']) {
+    for (const k of ['project', 'controller', 'resource', 'hwnd', 'address', 'kind', 'target', 'short-side', 'long-side']) {
       const v = ctx.values[k]
       if (typeof v === 'string') connectArgs[k] = v
+    }
+    for (const k of ['raw', 'no-pretask']) {
+      if (ctx.values[k] === true) connectArgs[k] = true
     }
     meta = spawnSessionServer(name, process.argv[1] ?? '', connectArgs)
     const ready = await waitPipeReady(meta.pipe, 20000)
@@ -1199,6 +1209,8 @@ async function runSessionServer(name: string, ctx: CommandContext): Promise<Comm
   const o: SessionOptions = sessionOptions(ctx.values)
   const startup: string[] = []
   if (o.project || o.kind) {
+    /* 命名会话的起连同样算"启动"（--no-pretask 已可经 connectArgs 透传进来） */
+    if (o.pretask === undefined) o.pretask = true
     try {
       const s = await ensureSession(client, o)
       remember(s)

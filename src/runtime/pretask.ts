@@ -13,9 +13,11 @@
  *    可以隐藏/置灰，不保证跳过执行；但"启动模拟器"这类命令跑错控制器代价更大。
  * 2. 末位 JSON **不用 preset**：pretask 发生在任务选择之前，而 preset 是按任务的快照。
  *    这里只吃 CLI `--option` 与声明里的初始值（`default_case` / `inputs[].default`）。
- * 3. 不设超时：协议没有超时语义。挂住只能靠调用方中断（信号处理仍是待办）。
+ * 3. 超时协议没规定，本工具定 120s（`MAAFW_PRETASK_TIMEOUT_MS` 覆盖；<=0 关超时）：
+ *    "启动模拟器"挂成死等时不能靠调用方 Ctrl-C 收摊（设计审查 P0-2）。超时杀的是
+ *    **进程树**（Windows taskkill /T）——pretask 拉起模拟器的链式脚本只杀头部会留孙代。
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import type { InterfacePretask, LoadedInterface } from '../interface/load.js'
 import { resolveOptionValue, type OptionValueCtx } from '../interface/override.js'
 
@@ -49,6 +51,8 @@ export interface PretaskInput {
   resourceName: string | null
   optionCases?: Record<string, string | string[]>
   optionFields?: Record<string, Record<string, string>>
+  /** 单条 pretask 的总时限；<=0 不限时。缺省 MAAFW_PRETASK_TIMEOUT_MS → 120s。 */
+  timeoutMs?: number
 }
 
 /**
@@ -95,9 +99,38 @@ interface SpawnOutcome {
   signal: string | null
   tail: string
   error?: string
+  /** 超时树杀：与"非零退出"分开报，超时不是脚本自己的选择 */
+  timedOut?: boolean
 }
 
-function spawnOnce(exe: string, args: string[], cwd: string | null): Promise<SpawnOutcome> {
+/** pretask 超时缺省 120s：够"启动模拟器到可连"的常态，又兜住真正挂死的脚本。 */
+export const PRETASK_TIMEOUT_MS = 120000
+
+function pretaskTimeoutMs(): number {
+  const raw = process.env.MAAFW_PRETASK_TIMEOUT_MS
+  if (raw === undefined) return PRETASK_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : PRETASK_TIMEOUT_MS
+}
+
+/** 进程树杀：pretask 常是"拉起模拟器"的壳脚本，只杀头部会留孙代占设备。 */
+function killTree(child: { pid?: number; kill: (s?: NodeJS.Signals) => void }): void {
+  const pid = child.pid
+  if (pid === undefined) { try { child.kill() } catch { /* ignore */ } return }
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 5000 }) } catch { /* ignore */ }
+    return
+  }
+  try { process.kill(-pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* ignore */ } }
+}
+
+/**
+ * 执行一条 pretask；timeoutMs<=0 不限时。
+ * Windows 的 .cmd/.bat 必须过 cmd.exe（CreateProcess 只认 exe；不带 shell 的 spawn 同步抛
+ * EINVAL，原实现却提示"检查 PATH"——把用户往完全错的方向带）。args 逐元素传给 cmd.exe：
+ * Node 会自己做 cmd 元字符转义，不经 shell:true（那个走全串拼接，空格参数必坏）。
+ */
+function spawnOnce(exe: string, args: string[], cwd: string | null, timeoutMs: number): Promise<SpawnOutcome> {
   return new Promise((resolve) => {
     let tail = ''
     let settled = false
@@ -107,9 +140,16 @@ function spawnOnce(exe: string, args: string[], cwd: string | null): Promise<Spa
         resolve(r)
       }
     }
+    const isBatch = process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe)
+    const realExe = isBatch ? 'cmd.exe' : exe
+    const realArgs = isBatch ? ['/d', '/s', '/c', exe, ...args] : args
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(exe, args, { cwd: cwd ?? undefined, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      child = spawn(realExe, realArgs, {
+        cwd: cwd ?? undefined, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+        /* POSIX 单独成组，超时才能 -pid 收整棵树；Windows 不靠 detached（它另有语义），taskkill /T 收。 */
+        ...(isBatch || process.platform === 'win32' ? {} : { detached: true }),
+      })
     } catch (e) {
       done({ code: null, signal: null, tail: '', error: String((e as Error).message || e) })
       return
@@ -119,6 +159,13 @@ function spawnOnce(exe: string, args: string[], cwd: string | null): Promise<Spa
     child.stderr?.on('data', feed)
     child.on('error', (e) => done({ code: null, signal: null, tail, error: e.message }))
     child.on('exit', (code, signal) => done({ code, signal, tail }))
+    if (timeoutMs > 0) {
+      const timer = setTimeout(() => {
+        killTree(child)
+        done({ code: null, signal: null, tail, timedOut: true })
+      }, timeoutMs)
+      timer.unref?.()
+    }
   })
 }
 
@@ -155,7 +202,7 @@ export async function runPretasks(input: PretaskInput): Promise<PretaskResult> {
     warns.push(...built.warns)
     const [exe, ...args] = built.argv
     const started = Date.now()
-    const r = await spawnOnce(exe, args, loaded.dir)
+    const r = await spawnOnce(exe, args, loaded.dir, input.timeoutMs ?? pretaskTimeoutMs())
     const outcome: PretaskOutcome = {
       name: label, exec: exe, argv: built.argv, code: r.code, signal: r.signal, ms: Date.now() - started, tail: r.tail,
     }
@@ -167,6 +214,17 @@ export async function runPretasks(input: PretaskInput): Promise<PretaskResult> {
           code: 'PRETASK_SPAWN',
           message: 'pretask ' + label + ' 启动失败：' + r.error,
           hint: '检查 exec 是否在 PATH 里（协议的 exec 不走 shell，不能写管道/重定向）',
+        },
+      }
+    }
+    if (r.timedOut) {
+      return {
+        ok: false, ran, skipped, notes, warns,
+        error: {
+          code: 'PRETASK_TIMEOUT',
+          message: 'pretask ' + label + ' 超时（' + (input.timeoutMs ?? pretaskTimeoutMs()) + 'ms）已树杀，本次启动中止',
+          hint: (r.tail ? '子进程输出尾部：\n' + r.tail + '\n' : '') +
+            '启动模拟器类脚本确实需要更久时，用 MAAFW_PRETASK_TIMEOUT_MS 放宽（毫秒），不是去掉超时',
         },
       }
     }

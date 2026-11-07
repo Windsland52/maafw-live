@@ -236,3 +236,11 @@ test('命名会话：meta 里记下连接参数（诊断"这条会话连的是�
     assert.match(status.out, /连接参数/, '状态里要能看出连接参数：' + status.out)
     assert.match(status.out, /stub/, '连接参数要包含实际给的目标：' + status.out)
 })
+
+test('connectArgsToArgv：布尔值只发裸旗标（--raw true 会把 true 当位置参数）', async () => {
+  const { connectArgsToArgv } = await import('../lib/runtime/session-ipc.js')
+  assert.deepEqual(connectArgsToArgv({ project: '/x', raw: true, 'no-pretask': true }),
+    ['--project', '/x', '--raw', '--no-pretask'])
+  assert.deepEqual(connectArgsToArgv({ project: '/x', raw: false }), ['--project', '/x'],
+    'false 不发：parseArgs 的布尔旗标没"显式 false"形态，发字符串反而是真值')
+})

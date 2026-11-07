@@ -136,3 +136,27 @@ test('loadInterface：pretask 的 args / option / 过滤字段都要读进来（
   assert.deepEqual(p.controller, ['C1'])
   assert.deepEqual(p.resource, ['R1'])
 })
+
+test('runPretasks：超时 → PRETASK_TIMEOUT + 树杀（不是"非零退出"）', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-pretask-to-'))
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+  const script = path.join(dir, 'hang.mjs')
+  fs.writeFileSync(script, "setInterval(()=>{},1000)")   // 永挂，等超时树杀
+  const loaded = mkLoaded({ dir, pretask: [{ exec: process.execPath, args: [script], option: [] }] })
+  const r = await runPretasks({ loaded, controllerName: null, resourceName: null, timeoutMs: 500 })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'PRETASK_TIMEOUT', JSON.stringify(r.error))
+  assert.ok(r.error.message.includes('500'), r.error.message)
+})
+
+test('runPretasks：.cmd / .bat 过 cmd.exe 起得来（不带 shell 的 spawn 直接 EINVAL）', { skip: process.platform !== 'win32' }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-pretask-cmd-'))
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ } })
+  const cmd = path.join(dir, 'pre.cmd')
+  const mark = path.join(dir, 'ran.txt')
+  fs.writeFileSync(cmd, '@echo off\r\necho ok> "' + mark.replace(/\\/g, '/') + '"\r\nexit /b 0\r\n')
+  const loaded = mkLoaded({ dir, pretask: [{ exec: cmd, args: [], option: [] }] })
+  const r = await runPretasks({ loaded, controllerName: null, resourceName: null })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  assert.equal(fs.existsSync(mark), true, '.cmd 应真的执行了')
+})

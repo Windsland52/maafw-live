@@ -343,11 +343,14 @@ export function sessionServeLogTail(name: string, lines = 12): string[] {
     }
 }
 
-/** 连接参数 → argv（会话常驻进程用同一套 CLI 旗标启动，不另造一套参数面）。 */
+/** 连接参数 → argv（会话常驻进程用同一套 CLI 旗标启动，不另造一套参数面）。
+ *  布尔值只发裸旗标：`--raw true` 里的 `true` 会被 parseArgs 当成位置参数（用法错误），
+ *  而且"false"是字符串真值，传成参数就把语义反了。 */
 export function connectArgsToArgv(a: Record<string, unknown>): string[] {
     const out: string[] = []
     for (const [k, v] of Object.entries(a)) {
-        if (v === undefined || v === null) continue
+        if (v === undefined || v === null || v === false) continue
+        if (v === true) { out.push('--' + k); continue }
         out.push('--' + k, String(v))
     }
     return out

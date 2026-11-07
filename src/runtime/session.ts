@@ -26,7 +26,12 @@ export interface SessionOptions {
   shortSide?: number
   longSide?: number
   rawSize?: boolean
-  /** 默认执行 interface.json 的 pretask；传 false 跳过（`--no-pretask`） */
+  /**
+   * 跑 interface.json 的 pretask。**显式开启**：只有"启动工作"类命令（run / 交互式与命名
+   * 会话的起连 / REPL connect project）该跑——观测与输入类命令（click / frame / wait / screencap）
+   * 经 ensureSession 隐式连接，跑一遍"重启游戏"类 pretask 会把正要观测的现场毁掉（设计审查 P0-2）。
+   * `false` 也显式关闭（`--no-pretask`）。未传 = 不跑。
+   */
   pretask?: boolean
   /** run 的按次取值：pretask 的末位 JSON 也用这两份 */
   optionCases?: Record<string, string | string[]>
@@ -54,6 +59,23 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
   if (!o.project && !o.kind) return { connected: false }
 
   if (o.project) {
+    /* pretask 要先于 planProject 的设备扫描：'启动模拟器'类 pretask 跑完设备才出现，
+     * 排在扫描之后冷启动永远跑不到（P0-2）。过滤所需的 controller / resource 名都能离线推出来
+     * （controller 覆盖或第一个声明；resource 覆盖或第一个），不需要先扫设备。 */
+    const preNotes: string[] = []
+    if (o.pretask === true) {
+      const loaded = loadInterface(o.project)
+      if (!loaded.file) throw new SessionError(loaded.problems[0]?.message ?? '未找到 interface.json', 'PLAN_FAILED')
+      const pre = await runPretasks({
+        loaded,
+        controllerName: o.controller ?? loaded.controllers[0]?.name ?? null,
+        resourceName: o.resource ?? loaded.resources[0]?.name ?? null,
+        ...(o.optionCases ? { optionCases: o.optionCases } : {}),
+        ...(o.optionFields ? { optionFields: o.optionFields } : {}),
+      })
+      preNotes.push(...pre.notes, ...pre.warns.map((w) => 'pretask 警告：' + w))
+      if (!pre.ok && pre.error) throw new SessionError(pre.error.message, pre.error.code)
+    }
     const planned = await planProject(client, o.project, {
       controller: o.controller,
       hwnd: o.hwnd,
@@ -71,18 +93,6 @@ export async function ensureSession(client: DaemonClient, o: SessionOptions): Pr
     }
     /* pretask 的位置是契约的一部分：PI 要求它在**连接 Controller 之前**跑完，非零退出即中止启动。
      * 放到 connect 之后就不再是同一件事（控制器已经建出来了）。 */
-    const preNotes: string[] = []
-    if (o.pretask !== false) {
-      const pre = await runPretasks({
-        loaded: planned.loaded,
-        controllerName: planned.controllerName,
-        resourceName: planned.resource?.selected ?? null,
-        ...(o.optionCases ? { optionCases: o.optionCases } : {}),
-        ...(o.optionFields ? { optionFields: o.optionFields } : {}),
-      })
-      preNotes.push(...pre.notes, ...pre.warns.map((w) => 'pretask 警告：' + w))
-      if (!pre.ok && pre.error) throw new SessionError(pre.error.message, pre.error.code)
-    }
     const conn = await connect(client, { ...planned.plan.connect })
     if (conn && conn.ok === false) throw new SessionError(conn.error ?? '连接失败', 'CONNECT_FAILED')
     return {
