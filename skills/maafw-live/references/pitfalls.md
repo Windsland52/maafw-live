@@ -177,3 +177,34 @@
 - `maa-node` 是**原生模块**，版本钉在工具自带的那份（如 5.14.2），可能与被测项目依赖的 MaaFW
   版本有代差。识别分数与框一致时可直接用，但**下结论前先标出这个版本差**。
 - 本工具是 **Node CLI，不是 Python 包**：`import maafw_live` 必然失败，别把这个当成环境损坏。
+
+### 8.5 进程树清理（`uv run` / 宿主死了 daemon 还活着）
+
+这层坑全是 Windows 平台行为 + uv 的重 exec 模型叠出来的，改 cleanup / stop 逻辑前过一遍：
+
+- **`process.kill(pid)` = `TerminateProcess`，管道不破。** 宿主被它杀死时，daemon 的 stdin
+  既不 `end` 也不 `close` 也不 `error`——`rl.on('close')` / `stdin 'end'` / `'close'`
+  全不触发，`readableEnded` 恒 false。**宿主死亡探测只能靠 `process.ppid` 心跳**
+  （`process.kill(ppid, 0)` 抛错即宿主已死），500ms 一拍 `unref`。
+- **`taskkill /T` 在 `uv run` 的重 exec 链上漏中层。** 链是
+  `uv.exe → venv-python → uv-python`：`uv` 把中层 re-parent，`taskkill` 只按杀时的
+  直接父子关系递归，中层一脱离就打不到——实测收掉 `uv.exe` 和末级 `uv-python`，
+  中间 `venv-python` 留成孤儿。**只 `taskkill /T` 不够**，得再按命令行特征
+  （agent 每层 argv 都带同一个 `identifier`）点名扫一遍兜底。
+- **`uv run` 的孙级在 kill 途中还在生。** `taskkill /T` 返回不等于树已死完——
+  `uv.exe` 死的瞬间它重 exec 出的新子进程已脱离父链。快照、递归、等时长都救不了，
+  只能靠命令行特征兜底。
+- **先杀树、后 disconnect。** `disconnect()` 会让 `uv.exe` 自己优雅退出，python 子孙
+  瞬间断链，`taskkill /T` 再够不到——顺序反过来必留两层 python 孤儿（实测）。
+- **powershell 兜底脚本会被 `-like` 自杀。** `CommandLine -like '%ident%'` 会命中这条
+  powershell 自己的 `CommandLine`（字面量里就带着 ident），`Stop-Process` 把自己
+  干掉在中途，python 照样留下。必须 `$PID` 排除自身。
+- **`Get-CimInstance` 在冷 powershell 里可能慢到被超时杀。** 逐层递归查询会堆叠冷启动
+  成本（实测 15s+）；单次全表扫描 ~1s。查询设计先想清楚递归深度。
+- **Node `process.on('exit')` 里 `spawn`/`execFile` 不可靠。** exit 回调里异步 spawn 的
+  子进程可能根本起不来；要同步 `spawnSync`。即便如此，`spawnSync` 在 exit 里也不保证
+  能 fork 新进程——exit 兜底只做信号级 `child.kill()`（POSIX 负 pid 杀组），
+  树杀只能放在 async 的 `cleanupAgents` 路径里。
+- **验收"无孤儿"用 `Get-Process` 数，不用 `Get-CimInstance`。** WMI 有快照滞后：进程已死
+  但行还在（"survivor" 名单全是假阳）。`Get-Process -Id <pid>` 返回空才是真的死。
+  同理，"还有 N 个"的结论要给 sweep 至少 30s 跑完再下。
