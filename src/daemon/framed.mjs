@@ -1915,29 +1915,20 @@ function kfUsageBytes(m) {
   return total
 }
 
-async function cmdKfPromote(args) {
-  /* 固定捕获身份：latest 在接受请求时解析成具体 seq；已淘汰则失败，绝不改取更新帧冒充 */
-  let seq = null
-  if (args.seq !== undefined && args.seq !== null) {
-    seq = Number(args.seq)
-    if (!Number.isFinite(seq)) return { ok: false, error: 'seq 必须是数字' }
-  } else if (args.latest === true) {
-    seq = S.seq
-  } else {
-    return { ok: false, error: '给 seq（数字）或 latest:true 指定要升格的捕获' }
-  }
-  if (seq <= 0) return { ok: false, error: '本会话尚无捕获（seq=0），无可升格' }
+async function cmdKfPromoteOne(seq, note) {
+  /* 单个 seq 升格（供 cmdKfPromote 与批量模式共用）。返回 { ok, id?, error?, ... } */
+  if (seq <= 0) return { ok: false, error: '本会话尚无捕获（seq=0），无可升格', seq }
   const ent = S.l0.anchor.find((x) => x.seq === seq) ?? S.l0.roll.find((x) => x.seq === seq)
   if (!ent) {
     const range = (l) => (l.length ? l[0].seq + '..' + l[l.length - 1].seq : '空')
     return {
-      ok: false,
+      ok: false, seq,
       error: 'L0 已淘汰：seq=' + seq + '（滚动区 ' + range(S.l0.roll) + '，锚区 ' + range(S.l0.anchor) + '）。' +
-        'L1 参考帧可用 frame_get 导出，但按契约不作 state 证据本体',
+        '可降级导出参考帧：frame_get ' + seq + ' --out <file>（L1 参考帧，按契约不作 state 证据本体）',
     }
   }
   let m
-  try { m = kfOpen() } catch (e) { return { ok: false, error: '关键帧库不可用：' + String(e && e.message || e) } }
+  try { m = kfOpen() } catch (e) { return { ok: false, error: '关键帧库不可用：' + String(e && e.message || e), seq } }
   const sess = S.session || {}
   const sessionRef = { daemon: S.daemonId, gen: S.connGen, kind: sess.kind ?? null, target: sess.target ?? null }
   const sha = createHash('sha256').update(ent.png).digest('hex')
@@ -1945,8 +1936,8 @@ async function cmdKfPromote(args) {
   const dup = m.frames.find((f) => f.session && f.session.daemon === sessionRef.daemon &&
     Number(f.session.gen) === sessionRef.gen && Number(f.captureSeq) === seq)
   if (dup) {
-    if (dup.sha256 === sha) return { ok: true, idempotent: true, id: dup.id, record: dup, path: kfAbsPath(dup.file), sha256: sha }
-    return { ok: false, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
+    if (dup.sha256 === sha) return { ok: true, idempotent: true, id: dup.id, record: dup, path: kfAbsPath(dup.file), sha256: sha, seq }
+    return { ok: false, seq, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
   }
   /* 磁盘配额（契约 §4.1）：幂等重试在上面已返回，走到这里的都是新增字节。
    * 满额拒绝并报告——已升格对象不后台清理，清理由用户决定。 */
@@ -1955,7 +1946,7 @@ async function cmdKfPromote(args) {
     const mb = (v) => (v / 1048576).toFixed(1) + 'MB'
     if (used + ent.png.length > S.kfQuota) {
       return {
-        ok: false,
+        ok: false, seq,
         error: '关键帧库配额不足：已用 ' + mb(used) + ' + 新增 ' + mb(ent.png.length) +
           ' 超过配额 ' + mb(S.kfQuota) + '（' + m.frames.length + ' 帧留存于 ' + kfRoot() + '）。' +
           '不会自动删除已升格帧——清理后重试，或调大配额（init kfQuotaBytes / MAAFW_KF_QUOTA_BYTES）',
@@ -1972,7 +1963,7 @@ async function cmdKfPromote(args) {
     fs.writeFileSync(tmp, ent.png)
     fs.renameSync(tmp, abs)
   } catch (e) {
-    return { ok: false, error: 'L0 文件写入失败：' + String(e && e.message || e) }
+    return { ok: false, seq, error: 'L0 文件写入失败：' + String(e && e.message || e) }
   }
   /* 小图信息只取环内同 seq 帧；已淘汰则明确为空，不借用最新帧数据（契约 §4） */
   const small = S.ring.find((r) => r.seq === seq)
@@ -1985,15 +1976,41 @@ async function cmdKfPromote(args) {
     smallW: small ? small.w : null, smallH: small ? small.h : null,
     scale: small && ent.w ? Math.round((small.w / ent.w) * 1000) / 1000 : null,
     source: ent.source || 'explicit',
-    note: args.note != null ? String(args.note) : null,
+    note: note != null ? String(note) : null,
   }
   m.frames.push(rec)
   m.next = num + 1
   try { kfSave(m) } catch (e) {
     try { fs.rmSync(abs, { force: true }) } catch (e2) { /* ignore */ }
-    return { ok: false, error: 'manifest 写入失败（L0 文件已回收，未发布引用）：' + String(e && e.message || e) }
+    return { ok: false, seq, error: 'manifest 写入失败（L0 文件已回收，未发布引用）：' + String(e && e.message || e) }
   }
-  return { ok: true, id, path: abs, sha256: sha, retained: 'promoted', record: rec }
+  return { ok: true, id, path: abs, sha256: sha, retained: 'promoted', record: rec, seq }
+}
+
+async function cmdKfPromote(args) {
+  /* 批量：args.seqs 为 seq 数组（CLI 的 "3909 3910" 或 "a..b" 已解析好）。
+   * 逐条走 cmdKfPromoteOne，各自的成功/淘汰分开报告，不因一条失败中断整批。 */
+  if (Array.isArray(args.seqs) && args.seqs.length > 0) {
+    const results = []
+    for (const s of args.seqs) {
+      results.push(await cmdKfPromoteOne(Number(s), args.note))
+    }
+    const ok = results.every((r) => r.ok)
+    const promoted = results.filter((r) => r.ok)
+    const failed = results.filter((r) => !r.ok)
+    return { ok, results, promoted: promoted.length, failed: failed.length }
+  }
+  /* 固定捕获身份：latest 在接受请求时解析成具体 seq；已淘汰则失败，绝不改取更新帧冒充 */
+  let seq = null
+  if (args.seq !== undefined && args.seq !== null) {
+    seq = Number(args.seq)
+    if (!Number.isFinite(seq)) return { ok: false, error: 'seq 必须是数字' }
+  } else if (args.latest === true) {
+    seq = S.seq
+  } else {
+    return { ok: false, error: '给 seq（数字）、latest:true，或 seqs 数组（批量）指定要升格的捕获' }
+  }
+  return cmdKfPromoteOne(seq, args.note)
 }
 
 function cmdL0Status() {

@@ -17,7 +17,7 @@ export const kfCommand: Command = {
   name: 'kf',
   summary: '关键帧：status 看 L0 缓存，promote 升格原图进本地库，list/resolve 离线解析',
   usage: 'maafw-live kf status [--project <dir>|--kind ...]\n' +
-    '       maafw-live kf promote <seq>|latest [--note <s>] [--project <dir>|--kind ...]\n' +
+    '       maafw-live kf promote <seq|seq seq|a..b|latest> [--note <s>] [--project <dir>|--kind ...]\n' +
     '       maafw-live kf list [--dir <frames>]      （离线，不需要设备）\n' +
     '       maafw-live kf resolve <kf:...> [--dir <frames>]   （离线）',
   options: { ...CONNECT_OPTIONS, note: { type: 'string' }, dir: { type: 'string' }, latest: { type: 'boolean' } },
@@ -83,14 +83,31 @@ export const kfCommand: Command = {
 
     if (sub === 'promote') {
       const o = sessionOptions(ctx.values)
-      const seqRaw = ctx.positionals[1]
-      let args: { seq?: number; latest?: boolean; note?: string }
-      if (seqRaw !== undefined && /^\d+$/.test(seqRaw)) args = { seq: Number(seqRaw) }
-      else if (seqRaw === 'latest' || ctx.values.latest === true) args = { latest: true }
-      else args = {}
+      /* 批量：kf promote 3909 3910 | kf promote 10..15 | kf promote 10,11,12。
+       * 逐条升格、成功/淘汰分开报告；淘汰的附 frame_get <seq> 降级命令（L1 参考帧）。 */
+      const seqToks = ctx.positionals.slice(1).flatMap((t) => t.split(',')).filter((t) => t !== '')
+      let args: { seq?: number; seqs?: number[]; latest?: boolean; note?: string } = {}
+      const range = seqToks.length === 1 && /^(\d+)\.\.(\d+)$/.exec(seqToks[0])
+      if (range) {
+        const a = Number(range[1]), b = Number(range[2])
+        if (a > b || b - a > 200) {
+          return fail('BAD_ARGUMENTS', '范围 ' + seqToks[0] + ' 非法（a..b 且跨度 ≤200）', undefined, EXIT.USAGE)
+        }
+        args.seqs = Array.from({ length: b - a + 1 }, (_, i) => a + i)
+      } else if (seqToks.length > 1 || (seqToks.length === 1 && /^\d+$/.test(seqToks[0]))) {
+        const nums = seqToks.map((t) => Number(t))
+        if (nums.some((n) => !Number.isInteger(n) || n <= 0)) {
+          return fail('BAD_ARGUMENTS', 'seq 必须是正整数：' + seqToks.join(' '), undefined, EXIT.USAGE)
+        }
+        if (nums.length === 1) args = { seq: nums[0] }
+        else args = { seqs: nums }
+      } else if (seqToks[0] === 'latest' || ctx.values.latest === true) {
+        args = { latest: true }
+      }
       if (typeof ctx.values.note === 'string') args.note = ctx.values.note
-      if (!args.seq && !args.latest) {
-        return fail('BAD_ARGUMENTS', '给序号（kf promote 42）或 kf promote latest；身份在接受请求时固定，已淘汰则失败',
+      if (!args.seq && !args.latest && !(args.seqs && args.seqs.length)) {
+        return fail('BAD_ARGUMENTS',
+          '给序号（kf promote 42）、多个序号（kf promote 42 43）、范围（kf promote 10..15）、或 kf promote latest；身份在接受请求时固定，已淘汰则失败',
           '升格要在捕获它的 daemon 会话里做（repl：stream/输入/run 后立刻升格）；一次性命令的 L0 通常只有边界帧',
           EXIT.USAGE)
       }
@@ -101,6 +118,20 @@ export const kfCommand: Command = {
             await ensureSession(client, o)
           }
           const r = await kfPromote(client, args)
+          /* 批量：逐条列结果；淘汰的 seq 附可复制的 frame_get 降级命令（L1 参考帧） */
+          if (Array.isArray(r.results)) {
+            const results = r.results as Array<{ ok?: boolean; seq?: number; id?: string; idempotent?: boolean; error?: string }>
+            const lines = []
+            for (const it of results) {
+              if (it.ok) lines.push('  seq=' + it.seq + ' → ' + it.id + (it.idempotent ? '（幂等）' : ''))
+              else lines.push('  seq=' + it.seq + ' ✗ ' + it.error)
+            }
+            const failed = Number(r.failed ?? 0)
+            if (failed > 0) {
+              return { exitCode: EXIT.FINDINGS, human: ['批量升格：' + r.promoted + ' 成功 / ' + failed + ' 失败', ...lines], data: r }
+            }
+            return { exitCode: EXIT.OK, human: ['批量升格 ' + r.promoted + ' 例全部成功', ...lines], data: r }
+          }
           if (r.ok === false) {
             return fail('KF_PROMOTE', String(r.error ?? '升格失败'), 'L0 淘汰是诚实失败：换 frame_get 导 L1 参考帧，或重采', EXIT.FINDINGS)
           }

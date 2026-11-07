@@ -984,12 +984,33 @@ async function runReplLine(line: string, rt: ReplRuntime): Promise<ReplStep> {
               if (sub === 'status') {
                 out(short(await act.l0Status(client), 600))
               } else if (sub === 'promote') {
-                const what = tokens[2]
                 const note = readFlag(tokens, '--note')
-                const r = await act.kfPromote(client, /^\d+$/.test(String(what))
-                  ? { seq: Number(what), ...(note ? { note } : {}) }
-                  : { latest: true, ...(note ? { note } : {}) })
-                if (r.ok === false) out('升格失败：' + String(r.error))
+                /* 批量：kf promote 1 2 3 | kf promote 10..15 | kf promote 1,2,3。逐个升格，
+                 * 淘汰的 seq 附 frame_get 降级命令（daemon 已把 hint 编进 error 文案）。 */
+                const seqToks = tokens.slice(2).filter((t) => t !== '--note' && t !== String(note)).flatMap((t) => t.split(',')).filter((t) => t !== '')
+                const range = seqToks.length === 1 && /^(\d+)\.\.(\d+)$/.exec(seqToks[0])
+                let pArgs: Record<string, unknown>
+                if (range) {
+                  const a = Number(range[1]), b = Number(range[2])
+                  if (a > b || b - a > 200) { out('范围非法（a..b 且跨度 ≤200）'); break }
+                  pArgs = { seqs: Array.from({ length: b - a + 1 }, (_, i) => a + i), ...(note ? { note } : {}) }
+                } else if (seqToks.length > 1) {
+                  const nums = seqToks.map((t) => Number(t))
+                  if (nums.some((n) => !Number.isInteger(n) || n <= 0)) { out('seq 必须是正整数'); break }
+                  pArgs = { seqs: nums, ...(note ? { note } : {}) }
+                } else if (seqToks.length === 1 && /^\d+$/.test(seqToks[0])) {
+                  pArgs = { seq: Number(seqToks[0]), ...(note ? { note } : {}) }
+                } else {
+                  pArgs = { latest: true, ...(note ? { note } : {}) }
+                }
+                const r = await act.kfPromote(client, pArgs)
+                if (Array.isArray(r.results)) {
+                  for (const it of r.results as Array<{ ok?: boolean; seq?: number; id?: string; error?: string }>) {
+                    if (it.ok) out('  seq=' + it.seq + ' → ' + it.id)
+                    else out('  seq=' + it.seq + ' ✗ ' + it.error)
+                  }
+                  out('批量：' + String(r.promoted) + ' 成功 / ' + String(r.failed) + ' 失败')
+                } else if (r.ok === false) out('升格失败：' + String(r.error))
                 else out('已升格 ' + String(r.id) + ' → ' + String(r.path) + (r.idempotent ? '（幂等重试）' : ''))
               } else if (sub === 'list') {
                 const { manifest, error } = loadManifest(defaultFramesDir())
