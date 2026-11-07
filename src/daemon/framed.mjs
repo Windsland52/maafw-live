@@ -1904,6 +1904,44 @@ function kfSave(m) {
   fs.renameSync(tmp, file)
 }
 
+/* ─── 关键帧库写锁（P1-#8）───────────────────────────────────────────────────
+ * manifest 的读-改-写此前无锁：常驻会话与一次性 `crop --keep-source` 同秒升格时，
+ * 两个进程都读 m.next=N、都写 l0/000N.png，manifest 后写者赢——已发出的 kf ID
+ * 指向另一份像素或 sha 校验失败。锁是文件系统可见的（跨 daemon 进程）；
+ * O_EXCL 拿锁（原子，不会两人同时创建成功）；持有者崩了留残渣时按 mtime 过期重拿。 */
+const KF_LOCK_STALE_MS = 60_000
+function kfLockPath() { return path.join(kfRoot(), 'manifest.lock') }
+function kfLockAcquire() {
+  const p = kfLockPath()
+  fs.mkdirSync(kfRoot(), { recursive: true })
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    try {
+      const fd = fs.openSync(p, 'wx')   /* 'wx' = O_EXCL：存在即抛，原子拿锁 */
+      fs.closeSync(fd)
+      return true
+    } catch (e) {
+      if (e.code !== 'EEXIST') return false
+      /* 锁在：看是不是崩溃残渣（mtime 太老 = 持有者死了没放） */
+      try {
+        const age = Date.now() - fs.statSync(p).mtimeMs
+        if (age > KF_LOCK_STALE_MS) {
+          try { fs.rmSync(p, { force: true }) } catch (e2) { /* ignore */ }
+          continue   /* 删掉残渣立即重试拿锁 */
+        }
+      } catch (e2) { /* stat 失败当新锁等 */ }
+      /* 新锁：等持有者放。帧库写者并发本来就极低（常驻 + 一次性偶发），
+       * 单次升格毫秒级——40ms 空转一拍就够。 */
+      const t0 = Date.now()
+      while (Date.now() - t0 < 40) { /* spin */ }
+    }
+  }
+  return false
+}
+function kfLockRelease() {
+  try { fs.rmSync(kfLockPath(), { force: true }) } catch (e) { /* ignore */ }
+}
+
 /** 库目录现有 L0 字节（按 manifest 记录的文件实测；丢失文件计 0——磁盘占用只算真实存在的） */
 function kfUsageBytes(m) {
   let total = 0
@@ -1925,64 +1963,75 @@ async function cmdKfPromoteOne(seq, note) {
         '可降级导出参考帧：frame_get ' + seq + ' --out <file>（L1 参考帧，按契约不作 state 证据本体）',
     }
   }
+  /* manifest 读-改-写外面加文件锁（P1-#8）：常驻会话与一次性 crop --keep-source
+   * 同秒升格时，两个进程不能各读各的 m.next=N、各写各的 l0/000N.png 后让 manifest
+   * 后写者赢——那会让一个已发出的 kf ID 指向另一份像素。拿锁后重读 manifest，
+   * 整个 RMW 都在临界区。 */
+  if (!kfLockAcquire()) {
+    return { ok: false, seq, error: '关键帧库写锁拿不到（30s）：另一进程可能在升格/崩溃残留——稍候重试，或查 ' + kfLockPath() }
+  }
   let m
-  try { m = kfOpen() } catch (e) { return { ok: false, error: '关键帧库不可用：' + String(e && e.message || e), seq } }
+  try { m = kfOpen() } catch (e) { kfLockRelease(); return { ok: false, error: '关键帧库不可用：' + String(e && e.message || e), seq } }
   const sess = S.session || {}
   const sessionRef = { daemon: S.daemonId, gen: S.connGen, kind: sess.kind ?? null, target: sess.target ?? null }
   const sha = createHash('sha256').update(ent.png).digest('hex')
-  /* 幂等：同一捕获（daemon + 代次 + seq）重试返回原对象；内容不符报冲突，不任选一份 */
-  const dup = m.frames.find((f) => f.session && f.session.daemon === sessionRef.daemon &&
-    Number(f.session.gen) === sessionRef.gen && Number(f.captureSeq) === seq)
-  if (dup) {
-    if (dup.sha256 === sha) return { ok: true, idempotent: true, id: dup.id, record: dup, path: kfAbsPath(dup.file), sha256: sha, seq }
-    return { ok: false, seq, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
-  }
-  /* 磁盘配额（契约 §4.1）：幂等重试在上面已返回，走到这里的都是新增字节。
-   * 满额拒绝并报告——已升格对象不后台清理，清理由用户决定。 */
-  if (S.kfQuota > 0) {
-    const used = kfUsageBytes(m)
-    const mb = (v) => (v / 1048576).toFixed(1) + 'MB'
-    if (used + ent.png.length > S.kfQuota) {
-      return {
-        ok: false, seq,
-        error: '关键帧库配额不足：已用 ' + mb(used) + ' + 新增 ' + mb(ent.png.length) +
-          ' 超过配额 ' + mb(S.kfQuota) + '（' + m.frames.length + ' 帧留存于 ' + kfRoot() + '）。' +
-          '不会自动删除已升格帧——清理后重试，或调大配额（init kfQuotaBytes / MAAFW_KF_QUOTA_BYTES）',
+  try {
+    /* 幂等：同一捕获（daemon + 代次 + seq）重试返回原对象；内容不符报冲突，不任选一份 */
+    const dup = m.frames.find((f) => f.session && f.session.daemon === sessionRef.daemon &&
+      Number(f.session.gen) === sessionRef.gen && Number(f.captureSeq) === seq)
+    if (dup) {
+      if (dup.sha256 === sha) return { ok: true, idempotent: true, id: dup.id, record: dup, path: kfAbsPath(dup.file), sha256: sha, seq }
+      return { ok: false, seq, error: '同一捕获已有内容不同的记录（' + dup.id + '）：冲突，拒绝改写旧 ID 的含义' }
+    }
+    /* 磁盘配额（契约 §4.1）：幂等重试在上面已返回，走到这里的都是新增字节。
+     * 满额拒绝并报告——已升格对象不后台清理，清理由用户决定。 */
+    if (S.kfQuota > 0) {
+      const used = kfUsageBytes(m)
+      const mb = (v) => (v / 1048576).toFixed(1) + 'MB'
+      if (used + ent.png.length > S.kfQuota) {
+        return {
+          ok: false, seq,
+          error: '关键帧库配额不足：已用 ' + mb(used) + ' + 新增 ' + mb(ent.png.length) +
+            ' 超过配额 ' + mb(S.kfQuota) + '（' + m.frames.length + ' 帧留存于 ' + kfRoot() + '）。' +
+            '不会自动删除已升格帧——清理后重试，或调大配额（init kfQuotaBytes / MAAFW_KF_QUOTA_BYTES）',
+        }
       }
     }
+    const num = Number(m.next) || m.frames.length + 1
+    const id = 'kf:' + m.libraryId + ':' + String(num).padStart(4, '0')
+    const fileRel = 'l0/' + String(num).padStart(4, '0') + '.png'
+    const abs = kfAbsPath(fileRel)
+    try {
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      const tmp = abs + '.tmp'
+      fs.writeFileSync(tmp, ent.png)
+      fs.renameSync(tmp, abs)
+    } catch (e) {
+      return { ok: false, seq, error: 'L0 文件写入失败：' + String(e && e.message || e) }
+    }
+    /* 小图信息只取环内同 seq 帧；已淘汰则明确为空，不借用最新帧数据（契约 §4） */
+    const small = S.ring.find((r) => r.seq === seq)
+    const rec = {
+      id, file: fileRel, sha256: sha,
+      session: sessionRef,
+      capturedAt: new Date(ent.t).toISOString(),
+      captureSeq: seq,
+      ctrlW: ent.w, ctrlH: ent.h,
+      smallW: small ? small.w : null, smallH: small ? small.h : null,
+      scale: small && ent.w ? Math.round((small.w / ent.w) * 1000) / 1000 : null,
+      source: ent.source || 'explicit',
+      note: note != null ? String(note) : null,
+    }
+    m.frames.push(rec)
+    m.next = num + 1
+    try { kfSave(m) } catch (e) {
+      try { fs.rmSync(abs, { force: true }) } catch (e2) { /* ignore */ }
+      return { ok: false, seq, error: 'manifest 写入失败（L0 文件已回收，未发布引用）：' + String(e && e.message || e) }
+    }
+    return { ok: true, id, path: abs, sha256: sha, retained: 'promoted', record: rec, seq }
+  } finally {
+    kfLockRelease()
   }
-  const num = Number(m.next) || m.frames.length + 1
-  const id = 'kf:' + m.libraryId + ':' + String(num).padStart(4, '0')
-  const fileRel = 'l0/' + String(num).padStart(4, '0') + '.png'
-  const abs = kfAbsPath(fileRel)
-  try {
-    fs.mkdirSync(path.dirname(abs), { recursive: true })
-    const tmp = abs + '.tmp'
-    fs.writeFileSync(tmp, ent.png)
-    fs.renameSync(tmp, abs)
-  } catch (e) {
-    return { ok: false, seq, error: 'L0 文件写入失败：' + String(e && e.message || e) }
-  }
-  /* 小图信息只取环内同 seq 帧；已淘汰则明确为空，不借用最新帧数据（契约 §4） */
-  const small = S.ring.find((r) => r.seq === seq)
-  const rec = {
-    id, file: fileRel, sha256: sha,
-    session: sessionRef,
-    capturedAt: new Date(ent.t).toISOString(),
-    captureSeq: seq,
-    ctrlW: ent.w, ctrlH: ent.h,
-    smallW: small ? small.w : null, smallH: small ? small.h : null,
-    scale: small && ent.w ? Math.round((small.w / ent.w) * 1000) / 1000 : null,
-    source: ent.source || 'explicit',
-    note: note != null ? String(note) : null,
-  }
-  m.frames.push(rec)
-  m.next = num + 1
-  try { kfSave(m) } catch (e) {
-    try { fs.rmSync(abs, { force: true }) } catch (e2) { /* ignore */ }
-    return { ok: false, seq, error: 'manifest 写入失败（L0 文件已回收，未发布引用）：' + String(e && e.message || e) }
-  }
-  return { ok: true, id, path: abs, sha256: sha, retained: 'promoted', record: rec, seq }
 }
 
 async function cmdKfPromote(args) {
