@@ -18,7 +18,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   跑过"，不知道"这一步看的是哪个元素/点的是哪"（示范轨迹前置缺口）。`hit:false` 也如实带出（miss 是
   结论性证据）；只增不改，消费方按"有才读"处理。**按节点留帧**：节点结束时读 `cached_image` 入锚区
   （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
-  同屏循环跑会白占锚区与字节。
+  同屏循环跑会白占锚区与字节。**`baseline`/`space` 落账**：`record.baseline` = 控制器交付帧短边、
+  `record.space` = `{w,h}`——trace 契约要求的元信息（跨项目迁移按它拒"坐标不在同一空间"的记录）。
 - **`events`：查帧流事件（stable/change/run）**——每条带画面锚点与 `retained` 状态（`l0` 可
   `frame get`/`kf promote`，`gone` 已滚出）；`--watch <ms>` 自起帧流现场采集（一次性 CLI 里事件环
   不跨进程存活，这是拿到事件的可靠方式）。

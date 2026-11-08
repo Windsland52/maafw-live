@@ -1548,6 +1548,11 @@ async function cmdRun(args) {
      * 「跑满窗口」与「自己结束但没成功」——两者都是 stopped:true，而处置完全不同。 */
     timeoutMs,
     durationMs: Date.now() - t0,
+    /* baseline 落账：节点坐标/识别框所在控制器空间的短边（契约 demo-trace §meta：
+     * trace 元信息必带 baseline，跨项目迁移时与计划不一致即拒）。取控制器实际交付帧
+     * 的短边——改了 shortSide / 换过设备时如实反映，不冒称"配置值"。 */
+    baseline: Math.min(S.fullW, S.fullH) || null,
+    space: S.fullW ? { w: S.fullW, h: S.fullH } : null,
     startSeq: nodes.size ? order[0].seq : null,
     endSeq: S.seq,
     framesCaptured: S.seq,
