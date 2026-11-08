@@ -11,6 +11,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pruneDir } from './prune.js'
+
+/** 保留上限：回执是"一次性观测"的证据，留够回看的就够，不让它无声膨胀。 */
+const RUNS_KEEP = 50
 
 export function runsDir(): string {
   const override = process.env.MAAFW_LIVE_RUNS_DIR
@@ -39,6 +43,7 @@ export function writeRunReceipt(record: unknown, entry: string, now: Date = new 
       const path = join(dir, name)
       try {
         writeFileSync(path, body, { flag: 'wx' })
+        pruneDir(dir, { keep: RUNS_KEEP, suffix: '.json' })
         return { path }
       } catch (e) {
         /* 撞名是"已有同名回执"，换序号重试；别的 IO 错误按落盘失败处理 */

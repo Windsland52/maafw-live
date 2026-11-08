@@ -91,7 +91,7 @@ Resource 不是会话态：每次 `run` / `reco_test --act` 都按本次声明�
 ## 落盘约定（`out` 类参数）
 
 会产出文件的命令（`screencap` / `frame_get` / `tpl_crop` / `annotate`）都接受 `out` 指定路径。
-**不传 `out` 时落在 daemon 的 run 目录下 `out/`（一次性命令给的是临时目录），不写调用方的 cwd**——
+**不传 `out` 时落在 daemon 的 run 目录下 `out/`（缺省是 `~/.maafw-live/`，不是临时目录），不写调用方的 cwd**——
 调用方的 cwd 通常就是项目仓库，而这些命令本质是"看/量"，产物只是顺便落盘（实测踩过两次：
 `maa_frame_*.png`、`maa_som_*.png` 进了仓库根）。要留住产物就显式给 `out`。
 

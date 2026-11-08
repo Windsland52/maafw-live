@@ -14,6 +14,7 @@ import * as act from '../runtime/actions.js'
 import { withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, SessionError, type SessionOptions } from '../runtime/session.js'
 import { writeRunReceipt } from '../runtime/receipts.js'
+import { pruneDir } from '../runtime/prune.js'
 import { installRunSignalGuard } from '../runtime/signal-guard.js'
 
 /** 连接类选项：凡是要设备的命令都接受同一组，保证"怎么连"只有一套说法。 */
@@ -204,6 +205,9 @@ export const disconnectCommand: Command = {
   },
 }
 
+/** 缺省落点 png/ 的保留上限（与 runs/ 同量级的"不留着看"产物） */
+const PNG_KEEP = 30
+
 export const screencapCommand: Command = {
   name: 'screencap',
   summary: '截一帧图并落盘（需要连接：给 --project 或 --kind）',
@@ -217,6 +221,10 @@ export const screencapCommand: Command = {
     try {
       mkdirSync(dirname(out), { recursive: true })
     } catch { /* 落盘失败交给 daemon 报错 */ }
+    /* 只修剪缺省落点 png/——显式 --out 是用户指定的位置，不动它 */
+    if (dirname(out) === join(defaultRunDir(), 'png')) {
+      pruneDir(dirname(out), { keep: PNG_KEEP, suffix: '.png' })
+    }
     try {
       return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)

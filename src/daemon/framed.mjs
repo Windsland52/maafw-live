@@ -2279,12 +2279,29 @@ function buildL2Provenance(o) {
   }
 }
 
-/** 缺省落点：daemon 的 run 目录下 `out/`（一次性命令给的是临时目录）——**不写调用方的 cwd**。
- * 调用方的 cwd 通常就是项目仓库：一次 `frame_get` / `annotate` 就把产物丢进仓库。
+/** 缺省落点 out/ 的保留上限（只进不出的产物，不让它无声膨胀） */
+const OUT_KEEP = 50
+/** out/ 目录保留修剪：按 mtime 留最新 OUT_KEEP 个 .png。与 client 侧 src/runtime/prune.ts 同逻辑的内联
+ *  副本——framed.mjs 自包含、不能 import lib。失败不抛：清理从来不是任务结论。 */
+function pruneOutDir(dir) {
+  try {
+    const names = fs.readdirSync(dir)
+      .filter((n) => n.endsWith('.png'))
+      .map((n) => ({ n, t: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+    for (const f of names.slice(OUT_KEEP)) {
+      try { fs.unlinkSync(path.join(dir, f.n)) } catch { /* 单个删不掉就留 */ }
+    }
+  } catch { /* 目录不存在/读不了：没有要清的 */ }
+}
+
+/** 缺省落点：daemon 的 run 目录下 `out/`（缺省 runDir 是 `~/.maafw-live`，不是临时目录）——
+ * **不写调用方的 cwd**。调用方的 cwd 通常就是项目仓库：一次 `frame_get` / `annotate` 就把产物丢进仓库。
  * 实测踩过两次（`maa_frame_*.png` 十张进了 maafw-live 仓、`maa_som_*.png` 进了同一个根目录），
  * 而这几个命令本质是"看/量"，产物只是顺便落盘——落哪儿由 `out` 说话，不落调用方家里。 */
 function defaultOutFile(runDir, prefix, ts = Date.now()) {
   const dir = path.join(runDir || os.tmpdir(), 'out')
+  pruneOutDir(dir) /* 只在缺省落点修剪——显式 out 是用户指定的位置，不动它 */
   return { dir, file: path.join(dir, prefix + '-' + ts + '.png') }
 }
 
