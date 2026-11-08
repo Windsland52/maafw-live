@@ -57,7 +57,7 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live events` | 查帧流事件（stable/change/run），每条带画面锚点与 retained 状态；`--watch <ms>` 自起帧流现场采集 |
 | `maafw-live run` | 运行 pipeline；项目模式合成 pipeline_override 四级链；`--timeout 0` 不自动停；退出码按任务级 `record.ok` |
 | `maafw-live stop` | 停止运行中的任务 |
-| `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
+| `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区）。`click` 可带 `--expect-seq N` 或 `--expect-frame <hash>`：**画面已变就拒发输入**（FINDINGS 退出）——"我是在看到 seq=N 那帧后决定要点的"，帧变了按旧坐标点就是误触；`frame get` 回执的 `frameHash` 供取期望 hash |
 | `maafw-live reco` | 识别单测（子进程隔离）：`--param`/`--param-file`/`--sweep` 阈值扫描，`--node`/`--node-file` 整节点透传（V1/V2），`--node-name` 按资源原名跑（整条资源链含 attach），`--act` 识别拿框 → 真机执行动作半；给 `--image` 即离线评估，不连设备 |
 | `maafw-live roi-check` | ROI 验真：外来模板比对「本位置」与「偏移半周期」候选，分不出来时明确报 AMBIGUOUS（退出 3） |
 | `maafw-live roi-compare` | 候选集合比较：外来模板在 `--rois`/`--offsets`/`--scan` 生成的一批位置假设上排序，报 bestGap 与并列带 |

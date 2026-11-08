@@ -895,6 +895,9 @@ function cmdFrameGet(args) {
       return {
         ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: rw, h: rh,
         seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: full.w, ctrlH: full.h,
+        /* 帧身份：观测面 blockHash 的 64bit 串——input 的 expectFrame 拿它核对
+         * "现在这帧还是不是我当初看到的那帧"。同 seq 的两帧 hash 必同（同一份像素）。 */
+        frameHash: hashStr(fr.hash),
         source: 'l0-full', sourceResolution: 1, degraded: false,
         requested: { w, h },
       }
@@ -943,6 +946,7 @@ function cmdFrameGet(args) {
     return {
       ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: full.w, h: full.h,
       seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: full.w, ctrlH: full.h,
+      frameHash: hashStr(fr.hash),
       source: 'l0-full', sourceResolution: 1,
     }
   }
@@ -953,6 +957,7 @@ function cmdFrameGet(args) {
   return {
     ok: true, path: outFile, bytes: fs.statSync(outFile).size, w: fr.w, h: fr.h,
     seq: fr.seq, t: fr.t, diff: fr.diff, ctrlW: fr.fw, ctrlH: fr.fh,
+    frameHash: hashStr(fr.hash),
     source: 'l1-ring', sourceResolution: sx0,
     /* 整帧小图是**文档写明的缺省行为**，不是降级：只标注来源与分辨率，不警告、不判 findings——
      * 否则最普通的 `frame get`（不带 roi）会时不时退 3。要原图就显式 `--src full`。 */
@@ -1588,6 +1593,30 @@ async function cmdRunStop() {
 /* 输入注入：全部经 maafw 控制器（adb/win32 由 maafw 本体选择注入方法），不直接调 adb。
  * 动作边界（前/后）各抓一张原图进 L0 锚区（契约 §1"采得到"）：
  * 采集失败不阻断动作——动作结果与留存失败分别报告（契约 §9）。 */
+/** 帧身份守卫（纯函数，供单测）：核对"现在这帧"与调用方期望的身份。
+ * now = S.ring 最新帧（{seq, hash}）；expectSeq 是单调帧号、expectFrame 是 64bit hash 串。
+ * 返回 { ok:true } 放行；{ ok:false, error, detail } 拒发（detail 带 expected/actual 进回执）。 */
+function checkExpect(now, expectSeqRaw, expectFrameRaw) {
+  const expectSeq = expectSeqRaw !== undefined && expectSeqRaw !== null ? Number(expectSeqRaw) : null
+  const expectFrame = typeof expectFrameRaw === 'string' && expectFrameRaw ? expectFrameRaw : null
+  if (expectSeq === null && expectFrame === null) return { ok: true }
+  if (!now) return { ok: false, error: '帧身份守卫：取不到当前帧（环形缓冲空），不发输入', detail: {} }
+  if (expectSeq !== null && now.seq !== expectSeq) {
+    return { ok: false, error: '帧身份守卫不通过：期望 seq=' + expectSeq + '，当前 seq=' + now.seq
+      + '——画面已经变了（' + (now.seq - expectSeq) + ' 帧），不发输入。重看再点。',
+      detail: { expected: { seq: expectSeq }, actual: { seq: now.seq } } }
+  }
+  if (expectFrame !== null) {
+    const nowHash = hashStr(now.hash)
+    if (nowHash !== expectFrame) {
+      return { ok: false, error: '帧身份守卫不通过：期望帧 hash 与当前帧不符（期望 ' + expectFrame.slice(0, 20)
+        + '… 当前 ' + nowHash.slice(0, 20) + '…，seq=' + now.seq + '）——画面已经变了，不发输入。',
+        detail: { expected: { frameHash: expectFrame }, actual: { seq: now.seq, frameHash: nowHash } } }
+    }
+  }
+  return { ok: true }
+}
+
 async function cmdInput(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   const t0 = Date.now()
@@ -1595,6 +1624,12 @@ async function cmdInput(args) {
   const retention = {}
   const done = (job) => ({ ok: true, kind: k, ms: Date.now() - t0, retention })
   retention.before = await captureNow('action-before')
+  /* 帧身份守卫：调用方说"我是在看到 seq=N 那帧之后决定要点的"——守卫核对**现在**这帧
+   * 是不是同一帧。不是就不发输入（MPE validateClick 的拒点同义：画面已经变了，按旧画面
+   * 算的坐标点下去就是误触）。seq 是单调计数器、expectFrame 是像素 hash——前者快（同 seq
+   * 必同像素），后者跨 seq 也能核（同一画面重现）。回执里 code 让 CLI 落到 FINDINGS(3)。 */
+  const chk = checkExpect(S.ring[S.ring.length - 1], args.expectSeq, args.expectFrame)
+  if (!chk.ok) return { ok: false, code: 'EXPECT_FAILED', kind: k, error: chk.error, retention, ...chk.detail }
   let job = null
   if (k === 'click') {
     job = S.ctrl.post_click(Number(args.x), Number(args.y), Number(args.contact ?? 0), Number(args.pressure ?? 1))
@@ -3407,6 +3442,6 @@ export const __test = {
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
-  pickRecoBox, pickActionBox, anchorFromCacheDedup,
+  pickRecoBox, pickActionBox, anchorFromCacheDedup, checkExpect, blockHash, hashStr,
   setupAgents,
 }

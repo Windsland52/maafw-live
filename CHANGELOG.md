@@ -20,6 +20,10 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
   同屏循环跑会白占锚区与字节。**`baseline`/`space` 落账**：`record.baseline` = 控制器交付帧短边、
   `record.space` = `{w,h}`——trace 契约要求的元信息（跨项目迁移按它拒"坐标不在同一空间"的记录）。
+- **`click --expect-seq`/`--expect-frame` 帧身份守卫**："我是在看到 seq=N 那帧之后决定要点的"——抓完
+  before 帧、派发输入前核对**当前帧**与期望身份，不符就**不发输入**（FINDINGS 退出，`code:'EXPECT_FAILED'`）。
+  `expectSeq` 核帧号（单调计数器、同 seq 必同像素）、`expectFrame` 核 64bit `blockHash` 串（跨 seq 也能核——
+  同一画面重现时 seq 变了但像素没变）。`frame get` 回执新增 `frameHash` 供取期望 hash。
 - **`events`：查帧流事件（stable/change/run）**——每条带画面锚点与 `retained` 状态（`l0` 可
   `frame get`/`kf promote`，`gone` 已滚出）；`--watch <ms>` 自起帧流现场采集（一次性 CLI 里事件环
   不跨进程存活，这是拿到事件的可靠方式）。

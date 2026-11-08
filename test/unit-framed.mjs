@@ -14,7 +14,7 @@ import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
-  pickRecoBox, pickActionBox, anchorFromCacheDedup,
+  pickRecoBox, pickActionBox, anchorFromCacheDedup, checkExpect, blockHash, hashStr,
   l0EvictToBudget, readRoi, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
@@ -598,4 +598,43 @@ test('anchorFromCacheDedup：无控制器返回 no-ctrl；同图 skipped:same �
     S.fullH = backup.fullH
     Object.assign(S.l0, backup.l0)
   }
+})
+
+/* ────────────────────── checkExpect（click 的帧身份守卫） ──────────────────────
+ * 缺口 #4 前置原语："我是在看到 seq=N 那帧后决定要点的"——守卫核对现在这帧是不是同一帧，
+ * 不是就不发输入（画面已变按旧坐标点=误触）。纯函数：now 是 S.ring 最新帧 {seq,hash}。 */
+test('checkExpect：不设守卫放行；seq/hash 同放行；异则拒发并带 expected/actual', () => {
+  /* 两张 hash 真的不同的图：纯色图各块均值全等 → blockHash 全 0（它记"块对全局的
+   * 相对明暗"，不是颜色本身）。A 左半亮右半暗 → hash 有 1 有 0；B 均匀亮 → 全 0。 */
+  const rgbA = solid(64, 64, [40, 40, 40])
+  fillRect(rgbA, 64, 0, 0, 32, 64, [220, 220, 220])
+  const h = blockHash(rgbA, 64, 64)
+  const h2 = blockHash(solid(64, 64, [40, 40, 40]), 64, 64)
+  const now = { seq: 42, hash: h }
+  const str = hashStr(h)
+  assert.notEqual(str, hashStr(h2), '测试前提：两张图 hash 必须不同')
+
+  assert.equal(checkExpect(now, undefined, undefined).ok, true, '不设守卫总是放行')
+  assert.equal(checkExpect(now, null, null).ok, true, 'null 也视为没设')
+
+  assert.equal(checkExpect(now, 42, undefined).ok, true, 'seq 同 → 放行')
+  const bad = checkExpect(now, 40, undefined)
+  assert.equal(bad.ok, false, 'seq 不同 → 拒发')
+  assert.equal(bad.detail.expected.seq, 40); assert.equal(bad.detail.actual.seq, 42)
+  assert.match(bad.error, /帧身份守卫/)
+
+  assert.equal(checkExpect(now, undefined, str).ok, true, 'hash 同 → 放行')
+  const badHash = checkExpect(now, undefined, hashStr(h2))
+  assert.equal(badHash.ok, false, 'hash 不同 → 拒发')
+  assert.equal(badHash.detail.actual.frameHash, str)
+
+  /* 两个都设：先核 seq（快），seq 不符就拒（不用再核 hash） */
+  const seqFirst = checkExpect(now, 40, str)
+  assert.equal(seqFirst.ok, false)
+  assert.equal(seqFirst.detail.expected.seq, 40, 'seq 不符先报 seq，不混到 hash 上')
+
+  /* 空环（还没截过图）：拒发但如实报"取不到帧"（不是守卫判负，是没东西可核） */
+  const empty = checkExpect(null, 42, undefined)
+  assert.equal(empty.ok, false)
+  assert.match(empty.error, /取不到当前帧/)
 })

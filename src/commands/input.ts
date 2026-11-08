@@ -32,6 +32,7 @@ async function inject(
   payload: Record<string, unknown>,
   human: (r: Record<string, unknown>) => string[],
   timeoutMs = 20000,
+  expectGuard = false,
 ): Promise<CommandResult> {
   try {
     return await withDaemon(ctx, async (client) => {
@@ -40,6 +41,11 @@ async function inject(
       return { exitCode: EXIT.OK, human: [...describeSession(s), ...human(r)], data: r }
     })
   } catch (e) {
+    /* 帧身份守卫拒发：daemon 回 ok:false 经 client.call 变 Error（只带 error 文本）。
+     * 用文本前缀识别——守卫错误都以"帧身份守卫"开头；落到 FINDINGS（画面已变是"发现"，不是崩）。 */
+    if (expectGuard && /帧身份守卫/.test(String((e as Error)?.message ?? e))) {
+      return fail('EXPECT_FAILED', String((e as Error)?.message ?? e), '重看当前画面再点', EXIT.FINDINGS)
+    }
     return daemonFail(e)
   }
 }
@@ -47,8 +53,12 @@ async function inject(
 export const clickCommand: Command = {
   name: 'click',
   summary: '点击一个坐标（控制器分辨率空间，默认短边 720）',
-  usage: 'maafw-live click <x> <y> [--project <dir>|--kind ...] [--contact n] [--pressure n]',
-  options: { ...CONNECT_OPTIONS, contact: { type: 'string' }, pressure: { type: 'string' } },
+  usage: 'maafw-live click <x> <y> [--project <dir>|--kind ...] [--contact n] [--pressure n]\n' +
+    '       [--expect-seq N | --expect-frame <hash>]——帧身份守卫：画面已变则拒发输入（FINDINGS 退出）',
+  options: {
+    ...CONNECT_OPTIONS, contact: { type: 'string' }, pressure: { type: 'string' },
+    'expect-seq': { type: 'string' }, 'expect-frame': { type: 'string' },
+  },
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
@@ -59,11 +69,18 @@ export const clickCommand: Command = {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return fail('BAD_ARGUMENTS', '用法：maafw-live click <x> <y>', undefined, EXIT.USAGE)
     }
+    const expectSeq = num(ctx.values, 'expect-seq')
+    const expectFrame = typeof ctx.values['expect-frame'] === 'string' && ctx.values['expect-frame']
+      ? String(ctx.values['expect-frame']) : undefined
     return inject(
       ctx,
       o,
-      { kind: 'click', x, y, contact: num(ctx.values, 'contact') ?? 0, pressure: num(ctx.values, 'pressure') ?? 1 },
+      { kind: 'click', x, y, contact: num(ctx.values, 'contact') ?? 0, pressure: num(ctx.values, 'pressure') ?? 1,
+        ...(expectSeq !== undefined ? { expectSeq } : {}),
+        ...(expectFrame ? { expectFrame } : {}) },
       (r) => ['已点击 (' + x + ', ' + y + ')，' + String(r.ms) + 'ms'],
+      20000,
+      true,
     )
   },
 }
