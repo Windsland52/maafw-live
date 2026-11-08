@@ -660,24 +660,33 @@ async function captureNow(source) {
 }
 
 /**
- * 用控制器缓存图入锚区（node-ok/fail 锚点的实现方式）。
+ * node-ok/fail 锚点：用控制器缓存图入锚区，带"上一张已留帧的 hash"去重。
  * 关键约束：不要在节点回调里发 post_screencap——add_sink 回调中并发截图会与 Tasker
  * 识别回路竞争控制器，实测触发原生崩溃 0xC0000005（maa-node 5.14.2 win32-x64，
  * 2026-10-05 真机：同任务关锚点正常 / 开锚点必崩）。
  * cached_image 是框架识别回路自己截的图：零新任务、无竞争，且节点回调时刻的缓存
  * 通常就是该节点识别所用的那张（bound 倾向）；但下一节点识别可能已刷新缓存，
- * 关联强度按 adjacent 报，不冒称 bound（契约 §4）。 */
-function anchorFromCache(source) {
-  if (!S.ctrl) return
+ * 关联强度按 adjacent 报，不冒称 bound（契约 §4）。
+ * 节点结束帧若与上一张已留帧相同（hashDist < NODE_FRAME_DEDUP）就不重复入锚区，
+ * 返回 { seq:null, skipped:'same' }；不同则入锚区并返回 { seq, hash }（调用方拿 hash 记给下一次）。
+ * 阈值取小：目标是"同一个屏重复出现只留一张"，不是"相似就丢"——近似画面各自留，别误并。
+ */
+const NODE_FRAME_DEDUP = 0.02
+function anchorFromCacheDedup(source, lastHash) {
+  if (!S.ctrl) return { seq: null, skipped: 'no-ctrl' }
   let img = null
-  try { img = S.ctrl.cached_image } catch (e) { return }
-  if (!img || img.byteLength < 9) return
+  try { img = S.ctrl.cached_image } catch (e) { return { seq: null, skipped: 'no-img' } }
+  if (!img || img.byteLength < 9) return { seq: null, skipped: 'no-img' }
   const b = Buffer.from(img)
   let dec = null
-  try { dec = pngDecode(b) } catch (e) { return }
+  try { dec = pngDecode(b) } catch (e) { return { seq: null, skipped: 'decode' } }
+  const rgb = toRgb(dec)
+  const h = blockHash(rgb, dec.w, dec.h)
+  if (lastHash && hashDist(lastHash, h) < NODE_FRAME_DEDUP) return { seq: null, skipped: 'same' }
   pushFrame(dec, b)
   const ent = S.l0.roll[S.l0.roll.length - 1]
   l0AnchorAdd({ ...ent, source }, true)
+  return { seq: ent.seq, hash: h }
 }
 /** 事件入环 + 推送 host（cap 1200）。
  *
@@ -1395,8 +1404,9 @@ async function cmdRun(args) {
   const timeoutMs = rawT === 0 ? 0 : (Number.isFinite(rawT) && rawT > 0 ? Math.max(500, rawT) : 30000)
   const t0 = Date.now()
   const retention = { start: await captureNow('run-start') }
-  const nodes = new Map()   // node_id → {name, start, end, msg, success, seq}
+  const nodes = new Map()   // node_id → {name, start, end, msg, success, seq, reco?, action?, frameSeq?}
   const order = []
+  let lastNodeHash = null   // 按节点留帧的去重基准：上一张已留节点帧的 blockHash（新屏才留）
   const nextCandidates = []   // 框架本轮宣布过的候选（NextList 通知），按顺序
   let nextCandidateCount = 0  // 全部公告次数（含超出上限未记入数组的）
   const onMsg = (m) => {
@@ -1437,10 +1447,20 @@ async function cmdRun(args) {
       if (rec) n.reco = rec
       const act = pickActionBox(m)
       if (act) n.action = act
-      /* node-ok/fail 锚点：读控制器缓存图（不发新截图任务，规避并发崩溃，见 anchorFromCache） */
+      /* node-ok/fail 锚点：读控制器缓存图（不发新截图任务，规避并发崩溃，见 anchorFromCacheDedup）；
+       * 按节点留帧带去重——与上一张已留帧相同就跳过（画面没变重复留只是浪费锚区与字节），
+       * 并把留下的 seq 记进节点（record.nodes[].frameSeq），消费方知道"这一节点留的是哪帧"。 */
       if (/Starting$/.test(m.msg)) { n.status = 'running'; n.start = t }
-      else if (/Succeeded$/.test(m.msg)) { n.status = 'ok'; n.end = t; anchorFromCache('node-ok') }
-      else if (/Failed$/.test(m.msg)) { n.status = 'fail'; n.end = t; anchorFromCache('node-fail') }
+      else if (/Succeeded$/.test(m.msg)) {
+        n.status = 'ok'; n.end = t
+        const r = anchorFromCacheDedup('node-ok', lastNodeHash)
+        if (r.seq !== null) { n.frameSeq = r.seq; lastNodeHash = r.hash }
+      }
+      else if (/Failed$/.test(m.msg)) {
+        n.status = 'fail'; n.end = t
+        const r = anchorFromCacheDedup('node-fail', lastNodeHash)
+        if (r.seq !== null) { n.frameSeq = r.seq; lastNodeHash = r.hash }
+      }
       else if (n.msgs.length < 6) n.msgs.push(m.msg)
       n.seq = seq
       /* 节点级消息进事件流：maa_frame_poll / maa_timing_measure 直接消费 */
@@ -1538,9 +1558,11 @@ async function cmdRun(args) {
     nodes: order.map((n) => ({
       id: n.id, name: n.name, nameSource: n.nameSource, status: n.status,
       ms: (n.end ?? Date.now()) - n.start, seq: n.seq, msgs: n.msgs.slice(-6),
-      /* 识别框/动作框：只增不改（协议约定），消费方按"有就读、没有就当该节点没报"处理 */
+      /* 识别框/动作框/节点留存帧：只增不改（协议约定），消费方按"有就读、没有就当该节点没报"处理 */
       ...(n.reco ? { reco: n.reco } : {}),
       ...(n.action ? { action: n.action } : {}),
+      /* 按节点留帧的 seq：画面与上一节点相同会跳过（不重复占锚区），此时没有 frameSeq */
+      ...(n.frameSeq !== undefined ? { frameSeq: n.frameSeq } : {}),
     })),
     dump: dump ? { taskCount: dump.tasks ? dump.tasks.length : 0, nodes: Object.keys(dump.nodes || {}).length } : null,
   }
@@ -3380,6 +3402,6 @@ export const __test = {
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
-  pickRecoBox, pickActionBox,
+  pickRecoBox, pickActionBox, anchorFromCacheDedup,
   setupAgents,
 }

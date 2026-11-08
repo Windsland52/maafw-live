@@ -14,7 +14,7 @@ import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
-  pickRecoBox, pickActionBox,
+  pickRecoBox, pickActionBox, anchorFromCacheDedup,
   l0EvictToBudget, readRoi, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
@@ -532,5 +532,70 @@ test('l0EvictToBudget 预算为 0（未配置）不淘汰', () => {
     assert.equal(S.l0.evicted, 0)
   } finally {
     Object.assign(S.l0, backup)
+  }
+})
+
+/* ────────────────── anchorFromCacheDedup（按节点留帧的 hash 去重） ──────────────────
+ * 缺口 #2：同一屏在多个节点结束重复出现只留一张——去重基准是"上一张已留帧的 blockHash"。
+ * 无控制器 → no-ctrl；同图 → same 不入锚区；不同图 → 入锚区并回报 seq。 */
+test('anchorFromCacheDedup：无控制器返回 no-ctrl；同图 skipped:same 不占锚区；不同图入锚区带 seq', () => {
+  /* S.ctrl/S.l0/S.ring 都是模块态——快照后还原，别污染别的用例 */
+  const backup = {
+    ctrl: S.ctrl, streamScale: S.streamScale, ring: S.ring, maxFrames: S.maxFrames,
+    seq: S.seq, fullW: S.fullW, fullH: S.fullH,
+    l0: { roll: S.l0.roll, anchor: S.l0.anchor, anchorCap: S.l0.anchorCap, rollCap: S.l0.rollCap, bytesCap: S.l0.bytesCap },
+  }
+  try {
+    /* 最小可用态：pushFrame 依赖 streamScale/ring/maxFrames/seq/l0 */
+    S.streamScale = 0.5
+    S.ring = []
+    S.maxFrames = 60
+    S.seq = 0
+    S.l0.roll = []
+    S.l0.anchor = []
+    S.l0.anchorCap = 64
+    S.l0.rollCap = 32
+    S.l0.bytesCap = 0
+
+    /* 无控制器：如实报 no-ctrl（不是崩溃，是"这条通道没法取图"） */
+    S.ctrl = null
+    assert.deepEqual(anchorFromCacheDedup('node-ok', null), { seq: null, skipped: 'no-ctrl' })
+
+    /* 造两张 PNG：同图 A 与不同图 B（一半涂不同色，blockHash 必然不同） */
+    const rgbA = solid(64, 64, [30, 60, 90])
+    const rgbB = solid(64, 64, [30, 60, 90])
+    fillRect(rgbB, 64, 0, 0, 32, 64, [200, 200, 200])
+    const pngA = pngEncodeRGB(rgbA, 64, 64)
+    const pngB = pngEncodeRGB(rgbB, 64, 64)
+    /* fake 控制器：cached_image 是框架识别回路缓存的截图字节 */
+    let current = pngA
+    S.ctrl = { get cached_image() { return current } }
+
+    /* 第 1 帧（A）：无 lastHash → 入锚区，报 seq 与 hash */
+    const r1 = anchorFromCacheDedup('node-ok', null)
+    assert.ok(r1.seq !== null, '第 1 帧要入锚区：' + JSON.stringify(r1))
+    assert.equal(S.l0.anchor.length, 1)
+    assert.equal(r1.hash !== undefined, true)
+
+    /* 第 2 帧（同 A，传 r1.hash）：画面没变 → skipped:same，不重复占锚区 */
+    const r2 = anchorFromCacheDedup('node-ok', r1.hash)
+    assert.equal(r2.seq, null); assert.equal(r2.skipped, 'same')
+    assert.equal(S.l0.anchor.length, 1, '同图不能再占一个锚位')
+
+    /* 第 3 帧（不同 B，仍传 r1.hash）：画面变了 → 入锚区，seq 推进 */
+    current = pngB
+    const r3 = anchorFromCacheDedup('node-fail', r1.hash)
+    assert.ok(r3.seq !== null && r3.seq > r1.seq, '新屏要留并推进 seq：' + JSON.stringify(r3))
+    assert.equal(S.l0.anchor.length, 2)
+    assert.equal(S.l0.anchor[1].source, 'node-fail', '锚点来源如实标')
+  } finally {
+    S.ctrl = backup.ctrl
+    S.streamScale = backup.streamScale
+    S.ring = backup.ring
+    S.maxFrames = backup.maxFrames
+    S.seq = backup.seq
+    S.fullW = backup.fullW
+    S.fullH = backup.fullH
+    Object.assign(S.l0, backup.l0)
   }
 })

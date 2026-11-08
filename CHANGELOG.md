@@ -13,10 +13,12 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - **`roi-compare`：候选集合比较**——外来模板在 `--rois`（显式全套）/ `--offsets`（相对 --roi 平移）/
   `--scan`（发现模式）生成的一批位置假设上排序，报 `bestGap` 与 `withinGap` 并列带；三态结论
   （唯一最优且过门槛 → 0 / 歧义·未命中·有候选无法评估 → 3 / 参数错 → 2）。
-- **`run` 的 `record.nodes[]` 透出识别框/动作框**：新增 `reco`（`{name,algorithm,hit,box,score?}`）与
+- **`run` 的 `record.nodes[]` 透出识别框/动作框 + 按节点留帧**：新增 `reco`（`{name,algorithm,hit,box,score?}`）与
   `action`（`{name,action,success,box}`），取自框架 `reco_details`/`action_details`——以前只有"哪个节点
   跑过"，不知道"这一步看的是哪个元素/点的是哪"（示范轨迹前置缺口）。`hit:false` 也如实带出（miss 是
-  结论性证据）；只增不改，消费方按"有才读"处理。
+  结论性证据）；只增不改，消费方按"有才读"处理。**按节点留帧**：节点结束时读 `cached_image` 入锚区
+  （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
+  同屏循环跑会白占锚区与字节。
 - **`events`：查帧流事件（stable/change/run）**——每条带画面锚点与 `retained` 状态（`l0` 可
   `frame get`/`kf promote`，`gone` 已滚出）；`--watch <ms>` 自起帧流现场采集（一次性 CLI 里事件环
   不跨进程存活，这是拿到事件的可靠方式）。
