@@ -13,6 +13,7 @@ import { CROP_COMMANDS } from './crop.js'
 import { envCommand } from './env.js'
 import { INPUT_COMMANDS } from './input.js'
 import { KF_COMMANDS } from './kf.js'
+import { screencapProbeCommand } from './probe.js'
 import { RECO_COMMANDS } from './reco.js'
 import { replCommand } from './repl.js'
 import { ROI_CHECK_COMMANDS } from './roi-check.js'
@@ -27,6 +28,7 @@ export const COMMANDS: Command[] = [
   envCommand,
   versionCommand,
   ...RUNTIME_COMMANDS,
+  screencapProbeCommand,
   ...INPUT_COMMANDS,
   ...RECO_COMMANDS,
   ...ROI_COMPARE_COMMANDS,

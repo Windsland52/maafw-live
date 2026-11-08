@@ -180,6 +180,11 @@ export function run(c: DaemonClient, args: Record<string, unknown>, timeoutMs = 
 export const input = (c: DaemonClient, payload: Record<string, unknown>, timeoutMs = 20000) =>
   c.call<Record<string, unknown>>('input', payload, timeoutMs)
 
+/** 截图能力探测（A 路前提）：两次 post_screencap 间隔比 hash/亮度。timeout 给 interval+10s。 */
+export const screencapProbe = (c: DaemonClient, intervalMs = 3000, occluded?: boolean) =>
+  c.call<Record<string, unknown>>('screencap_probe',
+    { intervalMs, ...(occluded !== undefined ? { occluded } : {}) }, intervalMs + 15000)
+
 /** 识别单测。`timeoutMs` 供**多候选**调用方放宽（候选逐例串行，耗时随候选数线性增长：
  * daemon 侧的子进程预算也跟着用例数放宽，见 framed.mjs 的 recoChildBudget）。 */
 export const recoTest = (c: DaemonClient, args: Record<string, unknown>, timeoutMs = 90000) =>

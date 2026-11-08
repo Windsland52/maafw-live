@@ -46,6 +46,7 @@ npm link            # 之后可直接 maafw-live --help
 | 命令 | 说明 |
 | --- | --- |
 | `maafw-live env` | 探测环境与能力：项目根、pipeline 目录、运行时绑定、外部工具（adb / python / git） |
+| `maafw-live screencap-probe` | 截图能力探测：两次 `post_screencap` 比像素与亮度，判"后台可截"（A 路前提）——用窗口把目标完全盖住后带 `--occluded` 再测 |
 | `maafw-live version` | 打印 CLI 与依赖版本 |
 | `maafw-live probe` | 自检运行时：绑定版本、adb / win32 设备发现数 |
 | `maafw-live device` | 列出可连接的设备（adb 设备与 win32 窗口） |

@@ -20,6 +20,11 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
   同屏循环跑会白占锚区与字节。**`baseline`/`space` 落账**：`record.baseline` = 控制器交付帧短边、
   `record.space` = `{w,h}`——trace 契约要求的元信息（跨项目迁移按它拒"坐标不在同一空间"的记录）。
+- **`screencap-probe`：截图能力探测（A 路前提）**——两次 `post_screencap` 间隔比 `blockHash` 与亮度，
+  输出 `verdict`：`changing`（像素在变；带 `--occluded` 声明窗口被完全盖住时即"后台可截"）、`static`（静止：
+  目标停渲染或恰好没动）、`black`（近全黑：截图方法不兼容，换 `win32.screencap`）、`error`（抛错/空）。
+  契约 §3 要求"判定由工具输出"，不是让人读 `constant.d.ts` 的截图方法表推断；探针不验"是否真的遮挡"，
+  `--occluded` 如实回传用户声明（默认 `null`）。
 - **`click --expect-seq`/`--expect-frame` 帧身份守卫**："我是在看到 seq=N 那帧之后决定要点的"——抓完
   before 帧、派发输入前核对**当前帧**与期望身份，不符就**不发输入**（FINDINGS 退出，`code:'EXPECT_FAILED'`）。
   `expectSeq` 核帧号（单调计数器、同 seq 必同像素）、`expectFrame` 核 64bit `blockHash` 串（跨 seq 也能核——

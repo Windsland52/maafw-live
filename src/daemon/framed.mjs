@@ -284,6 +284,58 @@ async function cmdProbe() {
   return out
 }
 
+/**
+ * 截图能力探测（示范轨迹契约 §3）：决定能不能走 A 路（人在我们显示的帧上点）。
+ * 方法：两次 post_screencap 间隔抓帧，比 blockHash 与亮度。
+ *   changed == true                          → 像素在变（遮挡下能变 = 后台可截）
+ *   changed == false 且 mean 正常            → 静止（目标停止渲染？改应用设置，不是截图路径问题）
+ *   mean < 8                                 → 黑图（截图方法不兼容，换一个）
+ *   post_screencap 抛错/空                   → 报错（如实带出）
+ * 探针不知道"此刻是否遮挡"——判据只在遮挡态成立，调用方（CLI）负责提示与如实标注。
+ */
+async function cmdScreencapProbe(args) {
+  if (!S.ctrl) return { ok: false, error: '未连接设备（先 connect）' }
+  const interval = Math.min(20000, Math.max(500, Number(args.intervalMs ?? 3000)))
+  const grab = async () => {
+    try {
+      const j = S.ctrl.post_screencap()
+      await j.wait()
+      const buf = j.get()
+      if (!buf || buf.byteLength < 9) return { ok: false, error: '空截图' }
+      const dec = pngDecode(Buffer.from(buf))
+      const rgb = toRgb(dec)
+      const hash = blockHash(rgb, dec.w, dec.h)
+      /* 黑帧判定用平均亮度：全黑截图的 mean≈0，正常画面几十起步；阈值取 8 有充分余量 */
+      let sum = 0
+      for (let i = 0; i < rgb.length; i++) sum += rgb[i]
+      const mean = Math.round((sum / rgb.length) * 10) / 10
+      return { ok: true, w: dec.w, h: dec.h, hash: hashStr(hash), mean }
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) }
+    }
+  }
+  const first = await grab()
+  await sleep(interval)
+  const second = await grab()
+  if (!first.ok || !second.ok) {
+    return { ok: true, intervalMs: interval, first, second, changed: null,
+      verdict: 'error',
+      note: 'post_screencap 报错或返回空——截图方法不兼容或控制器异常，换 win32.screencap 方法重试。' }
+  }
+  const changed = first.hash !== second.hash
+  let verdict = 'changing'
+  let note = '像素在变：若此刻窗口被完全遮挡，即"后台可截"（A 路前提成立）。'
+  if (!changed && second.mean < 8) {
+    verdict = 'black'
+    note = '截图近乎全黑：截图方法不兼容这台设备/这个窗口——换 win32.screencap 方法（FramePool / PrintWindow）重试。'
+  } else if (!changed) {
+    verdict = 'static'
+    note = '像素静止：目标停止渲染（改模拟器/应用设置），或两帧之间画面恰好没动——遮挡下再测一次确认。'
+  }
+  return { ok: true, intervalMs: interval, first, second, changed, verdict, note,
+    occluded: args.occluded === true ? true : null }
+}
+
 async function cmdDeviceList(kind) {
   const m = loadMaa()
   const list = []
@@ -3326,6 +3378,7 @@ const handlers = {
     return { ok: true, previewPath: S.previewPath, daemonId: S.daemonId, framesDir: kfRoot(), kfQuota: S.kfQuota }
   },
   probe: cmdProbe,
+  screencap_probe: cmdScreencapProbe,
   device_list: (a) => cmdDeviceList(a.kind),
   connect: cmdConnect,
   disconnect: cmdDisconnect,
