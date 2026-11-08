@@ -38,6 +38,15 @@ async function inject(
     return await withDaemon(ctx, async (client) => {
       const s = await ensureSession(client, o)
       const r = await input(client, payload, timeoutMs)
+      /* daemon 回执恒 ok:true 包 handler 返回值——"业务拒绝"（{ok:false,code,...}）落在 data，
+       * 不抛错。必须查 r.ok===false：帧身份守卫拒发就在这里，不能再走"已点击"成功路径。 */
+      if (r.ok === false) {
+        const msg = String(r.error ?? 'daemon 拒绝')
+        if (expectGuard && /帧身份守卫|EXPECT_FAILED/.test(msg + String(r.code ?? ''))) {
+          return fail('EXPECT_FAILED', msg, '重看当前画面再点', EXIT.FINDINGS)
+        }
+        return fail(String(r.code ?? 'INPUT_REJECTED'), msg, undefined, EXIT.FINDINGS)
+      }
       return { exitCode: EXIT.OK, human: [...describeSession(s), ...human(r)], data: r }
     })
   } catch (e) {
