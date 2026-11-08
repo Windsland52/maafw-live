@@ -1317,6 +1317,35 @@ function pickNodeName(m) {
   return { name: String(m.name || ('node#' + m.node_id)), source: 'entry' }
 }
 
+/** 识别半：从带 node_id 的通知里抽识别框——没有它 record.nodes 只有"哪个节点跑过"，
+ * 不知道"这一步看的是哪个元素"（示范轨迹缺口 #1）。字段全防御性取（不同版本字段会缺），
+ * 一条都取不到就返回 null、不挂空对象。 */
+function pickRecoBox(m) {
+  const d = m.reco_details
+  if (!d || typeof d !== 'object') return null
+  const o = {}
+  if (d.name !== undefined) o.name = String(d.name)
+  if (d.algorithm !== undefined) o.algorithm = String(d.algorithm)
+  if (d.hit !== undefined) o.hit = !!d.hit
+  if (Array.isArray(d.box) && d.box.length === 4) o.box = d.box.map(Number)
+  /* detail.best.score 是命中质量分（TemplateMatch 有，OCR 没有）——能拿到就带，拿不到不编 */
+  const best = d.detail && typeof d.detail === 'object' && !Array.isArray(d.detail) ? d.detail.best : null
+  if (best && typeof best === 'object' && best.score !== undefined) o.score = Number(best.score)
+  return Object.keys(o).length ? o : null
+}
+
+/** 动作半：动作的落点框（action_details.box 是实际动作框，success 是动作自身成败）。 */
+function pickActionBox(m) {
+  const d = m.action_details
+  if (!d || typeof d !== 'object') return null
+  const o = {}
+  if (d.name !== undefined) o.name = String(d.name)
+  if (d.action !== undefined) o.action = String(d.action)
+  if (d.success !== undefined) o.success = !!d.success
+  if (Array.isArray(d.box) && d.box.length === 4) o.box = d.box.map(Number)
+  return Object.keys(o).length ? o : null
+}
+
 async function cmdRun(args) {
   if (!S.ctrl) return { ok: false, error: '未连接设备（先 maa_connect）' }
   if (S.runActive) return { ok: false, error: '已有任务在运行（先 maa_run_stop）' }
@@ -1402,6 +1431,12 @@ async function cmdRun(args) {
         n.name = named.name
         n.nameSource = 'node_details'
       }
+      /* 识别框/动作框：同一条通知里若带 details 就并入记录——后者覆盖前者，留下的是
+       * 节点结束前最后一份（通常是 Succeeded 那次的判定结果）。 */
+      const rec = pickRecoBox(m)
+      if (rec) n.reco = rec
+      const act = pickActionBox(m)
+      if (act) n.action = act
       /* node-ok/fail 锚点：读控制器缓存图（不发新截图任务，规避并发崩溃，见 anchorFromCache） */
       if (/Starting$/.test(m.msg)) { n.status = 'running'; n.start = t }
       else if (/Succeeded$/.test(m.msg)) { n.status = 'ok'; n.end = t; anchorFromCache('node-ok') }
@@ -1503,6 +1538,9 @@ async function cmdRun(args) {
     nodes: order.map((n) => ({
       id: n.id, name: n.name, nameSource: n.nameSource, status: n.status,
       ms: (n.end ?? Date.now()) - n.start, seq: n.seq, msgs: n.msgs.slice(-6),
+      /* 识别框/动作框：只增不改（协议约定），消费方按"有就读、没有就当该节点没报"处理 */
+      ...(n.reco ? { reco: n.reco } : {}),
+      ...(n.action ? { action: n.action } : {}),
     })),
     dump: dump ? { taskCount: dump.tasks ? dump.tasks.length : 0, nodes: Object.keys(dump.nodes || {}).length } : null,
   }
@@ -3342,5 +3380,6 @@ export const __test = {
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, edgeMap, cropRgb, connComponents, edgeDensityBoxes,
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
+  pickRecoBox, pickActionBox,
   setupAgents,
 }

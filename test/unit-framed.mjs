@@ -14,6 +14,7 @@ import { __test } from '../src/daemon/framed.mjs'
 
 const { pngDecode, pngEncodeRGB, pngHeaderSize, downscale, blockAnalyze, hashDist,
   regionOfBlocks, tightenBounds, tightenBoundsByEdges, cropRgb, connComponents, edgeDensityBoxes, pickBalancedCandidates, pickNodeName,
+  pickRecoBox, pickActionBox,
   l0EvictToBudget, readRoi, S } = __test
 
 /* ── 构图工具：所有用例的图像都在这里造，像素级可控 ── */
@@ -283,6 +284,39 @@ test('只有 action_details / reco_details 时同样取到真名（字段缺失�
     { name: 'Real2', source: 'node_details' })
   assert.deepEqual(pickNodeName({ msg: 'PipelineNode.Starting', node_id: 7 }), { name: 'node#7', source: 'entry' },
     '连顶层名都没有时给出可辨认的兜底，不返回 undefined')
+})
+
+/* ────────────────────── pickRecoBox / pickActionBox（识别框/动作框进记录） ──────────────────────
+ * 示范轨迹缺口 #1：record.nodes 只有"哪个节点跑过"，不知道"看的是哪个元素/点的是哪"——
+ * 框架的 reco_details.box（识别框）与 action_details.box（动作框）如实透出。形状照 tasker.d.ts
+ * 的 RecoDetail/ActionDetail（box = [x,y,w,h]）。 */
+test('pickRecoBox：抽 name/algorithm/hit/box + detail.best.score；识别失败也要如实带出 hit:false', () => {
+  const m = {
+    msg: 'RecognitionNode.Succeeded', node_id: 1, name: 'Entry',
+    reco_details: {
+      name: 'RewardIcon', algorithm: 'TemplateMatch', hit: true, box: [556, 357, 85, 25],
+      detail: { best: { box: [556, 357, 85, 25], score: 0.93 }, all: [], filtered: [] },
+    },
+  }
+  assert.deepEqual(pickRecoBox(m), {
+    name: 'RewardIcon', algorithm: 'TemplateMatch', hit: true, box: [556, 357, 85, 25], score: 0.93,
+  })
+  /* hit:false（识别没命中）：box 可能是 null——不编 box，但 hit:false 这个事实是结论性证据 */
+  const miss = pickRecoBox({ reco_details: { name: 'X', algorithm: 'OCR', hit: false, box: null } })
+  assert.deepEqual(miss, { name: 'X', algorithm: 'OCR', hit: false })
+})
+
+test('pickActionBox：抽 name/action/success/box；字段缺省与无 details 都返回可用的东西或 null', () => {
+  const m = {
+    msg: 'ActionNode.Succeeded', node_id: 1, name: 'Entry',
+    action_details: { name: 'TapReward', action: 'Click', success: true, box: [580, 360, 10, 10] },
+  }
+  assert.deepEqual(pickActionBox(m), { name: 'TapReward', action: 'Click', success: true, box: [580, 360, 10, 10] })
+  assert.equal(pickActionBox({ msg: 'PipelineNode.Starting' }), null, '没有 action_details → null')
+  assert.equal(pickRecoBox({ msg: 'PipelineNode.Starting' }), null, '没有 reco_details → null')
+  /* 字段全缺（details 是空对象）：不挂空对象 */
+  assert.equal(pickActionBox({ action_details: {} }), null)
+  assert.equal(pickRecoBox({ reco_details: {} }), null)
 })
 
 /* ────────────────────────── connComponents（SoM 连通域候选） ────────────────────────── */
