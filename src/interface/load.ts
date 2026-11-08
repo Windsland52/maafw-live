@@ -60,8 +60,14 @@ export interface InterfaceController {
   attachResourcePath: string[]
   /** v2.3.0：控制器级配置项名单（override 链第三级） */
   option?: string[]
-  /** Linux 控制器：`linux.use_win32_vk_code` 决定服务端按 Win32 VK 还是 evdev 解释键码（hotkey 用） */
-  linux?: { useWin32VkCode?: boolean }
+  /** Linux 控制器声明（PI schema）：`use_win32_vk_code` 决定服务端按 Win32 VK 还是 evdev 解释键码；
+   *  `screencap`/`input`/`pipewire_source` 等交给 daemon 按 maa-support-extension 规则组 config JSON */
+  linux?: {
+    useWin32VkCode?: boolean
+    screencap?: string
+    input?: string
+    pipewireSource?: string
+  }
   /** `permission_required`（schema 字段）：控制器需要管理员/root 权限运行——连接失败时的排查提示 */
   permissionRequired?: boolean
   /** 原始条目（未裁剪）：PI_CONTROLLER 要传"被选中那条的完整对象"，不能按本工具用到的字段重建 */
@@ -329,7 +335,16 @@ export function loadInterface(dir: string): LoadedInterface {
         : undefined,
       attachResourcePath: strList(c.attach_resource_path),
       option: strList(c.option),
-      ...(linuxDecl && linuxDecl.use_win32_vk_code === true ? { linux: { useWin32VkCode: true } } : {}),
+      ...(linuxDecl
+        ? {
+            linux: {
+              ...(linuxDecl.use_win32_vk_code === true ? { useWin32VkCode: true } : {}),
+              ...(str(linuxDecl.screencap) ? { screencap: str(linuxDecl.screencap) } : {}),
+              ...(str(linuxDecl.input) ? { input: str(linuxDecl.input) } : {}),
+              ...(str(linuxDecl.pipewire_source) ? { pipewireSource: str(linuxDecl.pipewire_source) } : {}),
+            },
+          }
+        : {}),
       ...(c.permission_required === true ? { permissionRequired: true } : {}),
     })
   }

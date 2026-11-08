@@ -20,6 +20,18 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
   同屏循环跑会白占锚区与字节。**`baseline`/`space` 落账**：`record.baseline` = 控制器交付帧短边、
   `record.space` = `{w,h}`——trace 契约要求的元信息（跨项目迁移按它拒"坐标不在同一空间"的记录）。
+- **controller 对齐 maa-support-extension + MXU**（第二轮，`src/daemon/framed.mjs` + `src/interface/{load,plan}.ts`）：
+  - PlayCover 缺省对齐：不给 target 时按 `localhost:1717` / `maa.playcover` 构造（maa-support
+    `buildControllerRuntime` 同款硬编码缺省），`TARGET_REQUIRED` 移出 playcover。
+  - `display_expand` 接线：`screenshot_target_expand` setter 已生效；display_* 互斥校验按
+    MXU `DisplayOptions.validate`（raw/expand/long/short 只许一个），多给直接拒。
+  - Linux 声明式 config：interface.json `linux{screencap,input,pipewire_source,use_win32_vk_code}`
+    + 用户字段按 maa-support / MXU `build_linux_controller_config` 规则组 JSON（方法名转数值、
+    缺省 Wlr/Wlr、Wlr 必填 `wlr_socket_path`、`pipewire_source:Portal` 明确拒绝——portal
+    helper 未接）；`--target <JSON>` 原路保留。
+  - adb `agent` 可选第 6 参透传（maa-node 5.14.2 签名；MXU 传 MaaAgentBinary 路径）。
+  - `DS4` 别名与 MXU 一致（`DualShock4`）；gamepad 空 hwnd 超出两家实现（它们都要求 hwnd），
+    保留为更宽松的规范语义（原生 `GamepadController` 接受 null）。
 - **controller 对齐 maafw**（`src/daemon/framed.mjs` + `src/interface/{load,plan}.ts`）：
   - 修 macOS `input_method`：此前误用 `MacOSScreencapMethod` 表 + `keyboard` 参数，改为
     `MacOSInputMethod` + `input`（缺省 `GlobalEvent(1)`）；接 `interface.json` 的 `macos.{screencap,input}`。

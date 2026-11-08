@@ -65,11 +65,12 @@ export interface ResourcePlan {
 
 const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamepad: 'gamepad', PlayCover: 'playcover', MacOS: 'macos', Linux: 'linux' }
 
-/** 没有可枚举设备发现的控制器：必须显式给 --target，工具不猜会话形态。 */
+/** 没有可枚举设备发现、且没有声明式入口的控制器：必须显式给 --target，工具不猜会话形态。
+ *  PlayCover 有缺省（localhost:1717 / maa.playcover）、Linux 可由 interface.json linux{} 组装，
+ *  都不在此列。 */
 const TARGET_REQUIRED: Record<string, string> = {
-  playcover: 'PlayCover 需要 --target <address>/<BundleId>（缺省地址 localhost:1717；BundleId 如 com.playgame.app）',
   macos: 'MacOS 需要 --target <窗口 id 或标题子串>，或在 interface.json 的 macos.title_regex 声明匹配规则',
-  linux: 'Linux 需要 --target <config JSON>（含 screencap_method / input_method 等必填字段）',
+  linux: 'Linux 需要 --target <config JSON>，或在 interface.json linux{} 里声明 screencap/input 等字段（Wlr 方法还需 wlr_socket_path，属用户配置、声明给不了）',
 }
 
 function safeRegExp(pattern: string): RegExp | null {
@@ -131,7 +132,29 @@ export function planController(
   if (c.display?.shortSide !== undefined) connect.shortSide = c.display.shortSide
   if (c.display?.longSide !== undefined) connect.longSide = c.display.longSide
   if (c.display?.raw) connect.rawSize = true
-  if (c.display?.expand) notes.push('display_expand 暂不生效（daemon 未接入），已忽略')
+  if (c.display?.expand) connect.expand = c.display.expand
+
+  /* PlayCover：全缺省可构造（maa-support 同款缺省 localhost:1717 / maa.playcover）。
+     声明或显式给了就带，没给交给 daemon 兜底。 */
+  if (kind === 'playcover') {
+    const t = overrides.manualTarget ?? null
+    if (t) connect.target = t
+    else notes.push('PlayCover 未给 target：按缺省 localhost:1717 / maa.playcover 构造')
+    return { ok: true, controllerName: c.name, connect, notes }
+  }
+
+  /* Linux：interface.json linux{} 交给 daemon 组装 config JSON（maa-support/MXU 同款规则）。
+     用户 config JSON（--target）优先，其次声明式组装；Wlr 必填 wlr_socket_path，属用户配置，
+     interface 给不了——给不了时 daemon 侧如实报错。 */
+  if (kind === 'linux') {
+    const t = overrides.manualTarget ?? null
+    if (c.linux) connect.linuxDecl = c.linux
+    if (t) connect.target = t
+    else if (!c.linux?.screencap && !c.linux?.input) {
+      return fail(c, 'TARGET_REQUIRED', TARGET_REQUIRED.linux, [], connect, notes)
+    } else notes.push('Linux 按 interface.json linux{} 组装 config（缺省 Wlr/Wlr）')
+    return { ok: true, controllerName: c.name, connect, notes }
+  }
 
   const targetHint = TARGET_REQUIRED[kind]
   if (targetHint) {

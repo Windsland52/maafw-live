@@ -416,10 +416,13 @@ async function cmdConnect(args) {
     const [name, adbPath, address, caps, inputs, config] = dev
     /* caps/inputs 是 find() 给出的方法位掩码（Uint64 字符串），照原样透传——框架会按
      * 固定优先级在掩码内自选。仅当 find() 没给时才退 Default（全方法减禁用项），
-     * 不许塞数组：ScreencapOrInputMethods 的绑定类型就是字符串。 */
+     * 不许塞数组：ScreencapOrInputMethods 的绑定类型就是字符串。
+     * agent（maa-node 可选第 6 参）：MXU 传 MaaAgentBinary 路径供 adb 侧 agent；
+     * 声明式 PI 的 agent 桥接走另一条通道（identifier 子进程），这里只透传显式参数。 */
     ctrl = new m.AdbController(adbPath || 'adb', String(address ?? addr),
       caps || String(m.AdbScreencapMethod?.Default ?? '0'),
-      inputs || String(m.AdbInputMethod?.Default ?? '0'), config || '{}')
+      inputs || String(m.AdbInputMethod?.Default ?? '0'), config || '{}',
+      args.agent ? String(args.agent) : undefined)
     session = { kind: 'adb', target: String(address ?? addr), name: String(name) }
   } else if (args.kind === 'win32' || args.kind === 'gamepad') {
     const wins = await cmdDeviceList('win32')
@@ -465,14 +468,12 @@ async function cmdConnect(args) {
       return { ok: false, error: '控制器类型 ' + args.kind + ' 仅支持在 macOS 上使用；当前宿主是 ' + process.platform }
     }
     if (args.kind === 'playcover') {
-      /* PlayCoverController(address, uuid)：address 是设备侧服务地址（PI 缺省 localhost:1717），
-         uuid 是应用的 **Bundle Identifier**（不是设备 UUID——PI 文档 v2.1.0 起明确）。 */
+      /* PlayCoverController(address, uuid)：address 是设备侧服务地址，uuid 是应用的
+         Bundle Identifier。两者都有缺省（maa-support-extension 同款）：
+         localhost:1717 / maa.playcover——不给 target 也按缺省构造。 */
       const parts = String(args.target ?? '').split('/')
-      const address = parts[0] || ''
-      const uuid = args.uuid ? String(args.uuid) : (parts[1] || '')
-      if (!address || !uuid) {
-        return { ok: false, error: 'playcover 需要 target=<address>/<BundleId>（缺省地址 localhost:1717，BundleId 如 com.playgame.app）' }
-      }
+      const address = args.address ? String(args.address) : (parts[0] || 'localhost:1717')
+      const uuid = args.uuid ? String(args.uuid) : (parts[1] || 'maa.playcover')
       ctrl = new m.PlayCoverController(address, uuid)
       session = { kind: 'playcover', target: address + '/' + uuid }
     } else {
@@ -504,14 +505,68 @@ async function cmdConnect(args) {
       session = { kind: 'macos', target: String(pick[0]), name: String(pick[2] ?? ''), method: { screencap: cap, input } }
     }
   } else if (args.kind === 'linux') {
-    /* LinuxController(config JSON)：wlroots / PipeWire / uinput / Libei 会话按配置串交给本体。
-       config 必须显式给（含 screencap_method / input_method 等必填字段），工具不猜会话形态。 */
+    /* LinuxController(config JSON)：两条供给路 ——
+       1) args.target/config 直接给 JSON 串（已有行为，字段全集归用户管）；
+       2) 声明式：args.linuxDecl（interface.json 的 linux{}）+ args.linux（用户字段覆盖），
+          按 maa-support-extension buildControllerRuntime / MXU build_linux_controller_config
+          的规则组 JSON：方法名→数值枚举、缺省 Wlr/Wlr、Wlr 必填 wlr_socket_path、
+          PipeWire 带 pipewire_source（'Portal' 明确拒——portal helper 未接）、
+          UInput/Libei 补各自必填字段，再与用户 JSON 浅合并（用户字段优先）。 */
     if (process.platform !== 'linux') {
       return { ok: false, error: '控制器类型 linux 仅支持在 Linux 上使用；当前宿主是 ' + process.platform }
     }
-    const cfg = String(args.config ?? args.target ?? '')
-    if (!cfg.trim().startsWith('{')) {
-      return { ok: false, error: 'linux 控制器需要 config=<JSON>（screencap_method/input_method 必填；wlroots 要 wlr_socket_path，PipeWire 要 pw_socket_fd+pw_node_id 等）' }
+    const raw = String(args.config ?? args.target ?? '')
+    const decl = (args.linuxDecl && typeof args.linuxDecl === 'object') ? args.linuxDecl : {}
+    const user = (args.linux && typeof args.linux === 'object') ? args.linux : {}
+    const pickL = (k, k2) => user[k] ?? decl[k] ?? decl[k2]
+    const resolveLinuxMethod = (tbl, name) => {
+      if (name === undefined || name === null || name === '') return undefined
+      if (tbl && typeof tbl === 'object' && name in tbl) return Number(tbl[name])
+      const n = Number(name)
+      return Number.isFinite(n) ? n : undefined
+    }
+    const screencapName = pickL('screencap', 'screencap') ?? 'Wlr'
+    const inputName = pickL('input', 'input') ?? 'Wlr'
+    const sc = resolveLinuxMethod(m.LinuxScreencapMethod, screencapName)
+    const im = resolveLinuxMethod(m.LinuxInputMethod, inputName)
+    let cfg = raw.trim()
+    if (!cfg.startsWith('{')) {
+      if (sc === undefined || im === undefined) {
+        return { ok: false, error: 'linux 方法名不合法：screencap=' + screencapName + ' input=' + inputName
+          + '（可选 screencap: Wlr/ExtImage/PipeWire，input: Wlr/UInput/Libei；或直接给 config=<JSON>）' }
+      }
+      const conf = {
+        screencap_method: sc,
+        input_method: im,
+        use_win32_vk_code: !!(user.useWin32VkCode ?? decl.useWin32VkCode ?? decl.use_win32_vk_code),
+      }
+      if (screencapName === 'PipeWire') {
+        const src = pickL('pipewireSource', 'pipewire_source') ?? 'Gamescope'
+        if (src === 'Portal') {
+          return { ok: false, error: 'linux pipewire_source=Portal 暂不支持（portal helper 未接入）——换 Gamescope 或自管 fd' }
+        }
+        conf.pipewire_source = src
+        if (user.pwSocketFd !== undefined) conf.pw_socket_fd = user.pwSocketFd
+        if (user.pwNodeId !== undefined) conf.pw_node_id = user.pwNodeId
+      }
+      if (screencapName === 'Wlr' || inputName === 'Wlr') {
+        const sock = pickL('wlrSocketPath', 'wlr_socket_path')
+        if (!sock) {
+          return { ok: false, error: 'linux 方法含 Wlr：需要 wlr_socket_path（嵌套 compositor 的 socket）——在 linux config JSON 或 interface.json linux{} 里给' }
+        }
+        conf.wlr_socket_path = sock
+      }
+      if (inputName === 'UInput') {
+        if (user.uinputScreenWidth !== undefined) conf.uinput_screen_width = user.uinputScreenWidth
+        if (user.uinputScreenHeight !== undefined) conf.uinput_screen_height = user.uinputScreenHeight
+      }
+      if (inputName === 'Libei') {
+        const eis = pickL('eisSocketPath', 'eis_socket_path')
+        if (eis) conf.eis_socket_path = eis
+      }
+      const dno = pickL('displayNo', 'display_no')
+      if (dno !== undefined) conf.display_no = dno
+      cfg = JSON.stringify(conf)
     }
     ctrl = new m.LinuxController(cfg)
     session = { kind: 'linux', target: '(config)' }
@@ -519,11 +574,25 @@ async function cmdConnect(args) {
     return { ok: false, error: '未知控制器类型：' + args.kind + '（支持 win32/adb/gamepad/playcover/macos/linux）' }
   }
   /* 截图缩放目标：默认不干预 —— maafw 本体按 interface.json 的 short_side（缺省最短边 720p）缩放。
-   * 只有用户显式传参才覆盖；注意这会改变 Tasker 识别图像的尺寸（模板/ROI 坐标系随之变化）。 */
+   * 只有用户显式传参才覆盖；注意这会改变 Tasker 识别图像的尺寸（模板/ROI 坐标系随之变化）。
+   * display_* 四种模式互斥（MXU DisplayOptions.validate 同款规则）：rawSize / expand / longSide
+   * / shortSide 只允许给一个，多给是配置错误——静默多设几个 setter 的覆盖顺序不可观测，直接拒。 */
+  const displayModes = [!!args.rawSize, !!args.expand, !!args.longSide, !!args.shortSide].filter(Boolean).length
+  if (displayModes > 1) {
+    try { ctrl.destroy() } catch (e) { /* ignore */ }
+    return { ok: false, error: 'display_* 互斥：rawSize / expand / longSide / shortSide 只能给一个（同时声明了 ' + displayModes + ' 个）' }
+  }
   try {
-    if (args.shortSide) ctrl.screenshot_target_short_side = Number(args.shortSide)
-    if (args.longSide) ctrl.screenshot_target_long_side = Number(args.longSide)
     if (args.rawSize) ctrl.screenshot_use_raw_size = true
+    else if (args.expand) {
+      const [ew, eh] = Array.isArray(args.expand) ? args.expand : []
+      if (!Number.isFinite(ew) || !Number.isFinite(eh) || ew <= 0 || eh <= 0) {
+        try { ctrl.destroy() } catch (e) { /* ignore */ }
+        return { ok: false, error: 'display_expand 需要两个正整数 [w,h]：' + JSON.stringify(args.expand) }
+      }
+      ctrl.screenshot_target_expand = [Number(ew), Number(eh)]
+    } else if (args.longSide) ctrl.screenshot_target_long_side = Number(args.longSide)
+    else if (args.shortSide) ctrl.screenshot_target_short_side = Number(args.shortSide)
   } catch (e) { /* 绑定版本不支持 setter 时忽略 */ }
   /* 连接判定：5.14.2 实测 `Job.wait()` 在连接失败时**不抛异常**，只把 status 置为 Failed（4000）。
    * 不查 status 就会把失败当成功：S.ctrl/S.session 照设、connect 回 ok:true，下一条命令再踩
