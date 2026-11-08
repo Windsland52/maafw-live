@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { computePipelineOverride, appendOverride } from '../lib/interface/override.js'
 import { loadInterface } from '../lib/interface/load.js'
-import { resolveResourcePaths } from '../lib/interface/plan.js'
+import { resolveResourcePaths, planController } from '../lib/interface/plan.js'
 
 /**
  * 把分层 override 摊平成"测试视角"的合并结果：**只作断言用**。
@@ -683,6 +683,118 @@ test('loadInterface：v2.10 字段进模型——password 禁 default、checkbox
     assert.ok(l.problems.some((p) => p.message.includes('min_count') && p.message.includes('max_count')), '……自相矛盾的约束记 problem：' + JSON.stringify(l.problems))
     assert.equal(l.agents[0].identifier, 'fixed-1')
     assert.equal(l.controllers[0].permissionRequired, true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+/* ──────────────────── controller 声明式路径：load → plan → connect 参数 ────────────────────
+ * 对账 maa-support-extension buildControllerRuntime / MXU：controller{} 声明的字段必须
+ * 能走到 connect 参数——linux{}→linuxDecl、macos{}→macosTitleRegex/screencap/input、
+ * display_expand→expand、playcover 全缺省可构造（不要求 target）。 */
+
+const linuxFixture = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-ctl-'))
+  fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+    interface_version: 2,
+    controller: [{
+      name: 'L1', type: 'Linux',
+      linux: { screencap: 'PipeWire', input: 'UInput', pipewire_source: 'Gamescope', use_win32_vk_code: true },
+      display_short_side: 720, display_expand: [1920, 1080],
+    }],
+    resource: [{ name: 'R1', path: 'res' }],
+    task: [{ name: 'T1', entry: 'E' }],
+  }))
+  return dir
+}
+
+test('loadInterface：linux{} 蛇形键进 decl，display_expand 进 display', () => {
+  const dir = linuxFixture()
+  try {
+    const l = loadInterface(dir)
+    const c = l.controllers[0]
+    assert.equal(c.linux.screencap, 'PipeWire')
+    assert.equal(c.linux.input, 'UInput')
+    assert.equal(c.linux.pipewireSource, 'Gamescope')
+    assert.equal(c.linux.useWin32VkCode, true)
+    assert.deepEqual(c.display.expand, [1920, 1080])
+    assert.equal(c.display.shortSide, 720)
+    assert.ok(!l.problems.length, '合法 linux 控制器不该记 problem：' + JSON.stringify(l.problems))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('planController：linux 声明式→linuxDecl + display 互斥字段齐走', () => {
+  const dir = linuxFixture()
+  try {
+    const l = loadInterface(dir)
+    const p = planController(l, {}, [])
+    assert.equal(p.ok, true, JSON.stringify(p))
+    assert.equal(p.connect.kind, 'linux')
+    assert.equal(p.connect.linuxDecl.screencap, 'PipeWire')
+    assert.equal(p.connect.linuxDecl.input, 'UInput')
+    /* display_* 互斥是 daemon 侧校验；plan 只负责如实带过去 */
+    assert.deepEqual(p.connect.expand, [1920, 1080])
+    assert.equal(p.connect.shortSide, 720)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('planController：linux 无 linux{} 又无 target → TARGET_REQUIRED 而不是猜', () => {
+  const l = mkLoaded({
+    controllers: [{ name: 'L1', type: 'Linux' }],
+  })
+  const p = planController(l, {}, [])
+  assert.equal(p.ok, false)
+  assert.equal(p.code, 'TARGET_REQUIRED')
+  /* 有 linux{} 声明就不要 target 了 */
+  const l2 = mkLoaded({ controllers: [{ name: 'L1', type: 'Linux', linux: { screencap: 'PipeWire' } }] })
+  const p2 = planController(l2, {}, [])
+  assert.equal(p2.ok, true, JSON.stringify(p2))
+  assert.equal(p2.connect.linuxDecl.screencap, 'PipeWire')
+})
+
+test('planController：playcover 全缺省可构造；给了 target 就带', () => {
+  const l = mkLoaded({ controllers: [{ name: 'P1', type: 'PlayCover' }] })
+  const p = planController(l, {}, [])
+  assert.equal(p.ok, true, JSON.stringify(p))
+  assert.equal(p.connect.kind, 'playcover')
+  assert.equal(p.connect.target, undefined, '没给就交给 daemon 缺省')
+  const p2 = planController(l, { manualTarget: '192.168.1.5:1717/com.x.y' }, [])
+  assert.equal(p2.connect.target, '192.168.1.5:1717/com.x.y')
+})
+
+test('planController：macos title_regex → macosTitleRegex；screencap/input 转发', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maafw-if-macos-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'interface.json'), JSON.stringify({
+      interface_version: 2,
+      controller: [{
+        name: 'M1', type: 'MacOS',
+        macos: { title_regex: '^Game$', screencap: 'ScreenCaptureKit', input: 'PostToPid' },
+      }],
+      resource: [{ name: 'R1', path: 'res' }],
+      task: [{ name: 'T1', entry: 'E' }],
+    }))
+    const l = loadInterface(dir)
+    const c = l.controllers[0]
+    assert.equal(c.macos.titleRegex, '^Game$')
+    assert.equal(c.macos.input, 'PostToPid')
+    const p = planController(l, {}, [])
+    assert.equal(p.ok, true, JSON.stringify(p))
+    assert.equal(p.connect.macosTitleRegex, '^Game$')
+    assert.equal(p.connect.input, 'PostToPid')
+    assert.equal(p.connect.screencap, 'ScreenCaptureKit')
+    /* 显式 target 优先于 regex */
+    const p2 = planController(l, { manualTarget: '42' }, [])
+    assert.equal(p2.connect.target, '42')
+    assert.equal(p2.connect.macosTitleRegex, undefined)
+    /* 无 regex 无 target → TARGET_REQUIRED */
+    const l2 = mkLoaded({ controllers: [{ name: 'M2', type: 'MacOS' }] })
+    const p3 = planController(l2, {}, [])
+    assert.equal(p3.ok, false)
+    assert.equal(p3.code, 'TARGET_REQUIRED')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
