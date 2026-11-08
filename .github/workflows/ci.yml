@@ -44,7 +44,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run test:all
       - run: npm run verify
       - run: npm run accept:offline
       # 离线、不需要设备，但会真的起 daemon + 识别子进程（自匹配）：覆盖 client 的 spawn/应答配对

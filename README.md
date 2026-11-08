@@ -227,7 +227,10 @@ scripts/              回归与构建辅助
 ## 回归
 
 ```bash
-npm test           # 纯函数单测：变化检测/L0 淘汰/snap 收紧/SoM 候选/interface 四级 override 链/库配额
+npm test           # unit-* 单测：解析/合成/帧流/L0 淘汰/snap/SoM/interface override 链/库配额（纯 headless）
+npm run test:all   # unit + device + contract 三组全跑（CI 用这个）
+npm run test:device   # device-*：起真 daemon 连真控制器（内部 t.skip 自守卫，环境不符跳过）
+npm run test:contract # contract-*：设计态契约的可执行验收（自带参考实现，落地后改测真身）
 npm run verify     # 装配级回归：全部通过真实子进程断言外部契约
 node scripts/accept-kf-offline.mjs      # 契约验收（离线）：库读侧——同 ID 跨库、manifest 各类坏法、半写
 node scripts/accept-emulator.mjs --target 127.0.0.1:16384   # 契约验收（需模拟器在线）：改分辨率旧帧 ROI、升格路径、磁盘失败注入
@@ -261,7 +264,7 @@ timing 反推（节点时长 + 动作后稳定时间 → delay/timeout 建议，
 **在设计中（未实现）：示范轨迹（demo-trace）**——把一次示范（人做的 / 旧脚本跑的 / 框架跑的）变成
 「操作前帧 + 手势 + 落点帧 + 屏判别式 + 派生识别条件」的有序轨迹，供 agent 翻译成计划与脚本，
 不再靠猜坐标。契约 [`docs/demo-trace-contract-v0.md`](docs/demo-trace-contract-v0.md)（含**反定位**：
-五条同时成立才有意义），离线夹具 [`test/unit-demo-trace.mjs`](test/unit-demo-trace.mjs)。采集三路按
+五条同时成立才有意义），离线夹具 [`test/contract-demo-trace.mjs`](test/contract-demo-trace.mjs)。采集三路按
 **C（框架自报动作：旧脚本迁移 / 回归基线）→ A（自绘点击面，需截图支持后台）→ B（前台限制下的
 外部观测：`adb getevent` 优先，win32 需原生）**推进——前台限制的代价是 UI 从"实时"降级为"事后"。
 
