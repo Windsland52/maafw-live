@@ -390,6 +390,70 @@ function resolveEnum(table, value, fallback, label, warns) {
   return String(fallback)
 }
 
+/**
+ * LinuxController 的 config JSON 组装（maa-support-extension buildControllerRuntime /
+ * MXU build_linux_controller_config 同款规则，纯函数、与宿主平台无关，供单测直测）：
+ *   1) args.target/config 是 JSON 串 → 原样用（字段全集归用户管，逃逸口）；
+ *   2) 否则按 linuxDecl（interface.json linux{}）+ args.linux（用户字段）组 JSON：
+ *      方法名→数值枚举、缺省 Wlr/Wlr、Wlr 必填 wlr_socket_path、pipewire_source:Portal
+ *      明确拒（portal helper 未接）、UInput/Libei 补各自字段、display_no 透传。
+ * 返回 { ok:true, json } 或 { ok:false, error }。
+ */
+function buildLinuxConfig(m, args) {
+  const raw = String(args.config ?? args.target ?? '')
+  if (raw.trim().startsWith('{')) return { ok: true, json: raw.trim() }
+  const decl = (args.linuxDecl && typeof args.linuxDecl === 'object') ? args.linuxDecl : {}
+  const user = (args.linux && typeof args.linux === 'object') ? args.linux : {}
+  /* 双键名：user/linuxDecl 里驼峰与蛇形都认（interface.json 原生是蛇形，daemon 参数是驼峰） */
+  const pickL = (k, k2) => user[k] ?? user[k2] ?? decl[k] ?? decl[k2]
+  const resolveLinuxMethod = (tbl, name) => {
+    if (name === undefined || name === null || name === '') return undefined
+    if (tbl && typeof tbl === 'object' && name in tbl) return Number(tbl[name])
+    const n = Number(name)
+    return Number.isFinite(n) ? n : undefined
+  }
+  const screencapName = pickL('screencap', 'screencap') ?? 'Wlr'
+  const inputName = pickL('input', 'input') ?? 'Wlr'
+  const sc = resolveLinuxMethod(m.LinuxScreencapMethod, screencapName)
+  const im = resolveLinuxMethod(m.LinuxInputMethod, inputName)
+  if (sc === undefined || im === undefined) {
+    return { ok: false, error: 'linux 方法名不合法：screencap=' + screencapName + ' input=' + inputName
+      + '（可选 screencap: Wlr/ExtImage/PipeWire，input: Wlr/UInput/Libei；或直接给 config=<JSON>）' }
+  }
+  const conf = {
+    screencap_method: sc,
+    input_method: im,
+    use_win32_vk_code: !!(user.useWin32VkCode ?? decl.useWin32VkCode ?? decl.use_win32_vk_code),
+  }
+  if (screencapName === 'PipeWire') {
+    const src = pickL('pipewireSource', 'pipewire_source') ?? 'Gamescope'
+    if (src === 'Portal') {
+      return { ok: false, error: 'linux pipewire_source=Portal 暂不支持（portal helper 未接入）——换 Gamescope 或自管 fd' }
+    }
+    conf.pipewire_source = src
+    if (user.pwSocketFd !== undefined) conf.pw_socket_fd = user.pwSocketFd
+    if (user.pwNodeId !== undefined) conf.pw_node_id = user.pwNodeId
+  }
+  if (screencapName === 'Wlr' || inputName === 'Wlr') {
+    const sock = pickL('wlrSocketPath', 'wlr_socket_path')
+    if (!sock) {
+      return { ok: false, error: 'linux 方法含 Wlr：需要 wlr_socket_path（嵌套 compositor 的 socket）——在 linux config JSON 或 interface.json linux{} 里给' }
+    }
+    conf.wlr_socket_path = sock
+  }
+  if (inputName === 'UInput') {
+    if (user.uinputScreenWidth !== undefined) conf.uinput_screen_width = user.uinputScreenWidth
+    if (user.uinputScreenHeight !== undefined) conf.uinput_screen_height = user.uinputScreenHeight
+  }
+  if (inputName === 'Libei') {
+    const eis = pickL('eisSocketPath', 'eis_socket_path')
+    if (eis) conf.eis_socket_path = eis
+  }
+  const dno = pickL('displayNo', 'display_no')
+  if (dno !== undefined) conf.display_no = dno
+  return { ok: true, json: JSON.stringify(conf) }
+}
+
 async function cmdConnect(args) {
   const m = loadMaa()
   if (S.ctrl) { try { S.ctrl.destroy() } catch (e) { /* ignore */ } S.ctrl = null }
@@ -505,70 +569,12 @@ async function cmdConnect(args) {
       session = { kind: 'macos', target: String(pick[0]), name: String(pick[2] ?? ''), method: { screencap: cap, input } }
     }
   } else if (args.kind === 'linux') {
-    /* LinuxController(config JSON)：两条供给路 ——
-       1) args.target/config 直接给 JSON 串（已有行为，字段全集归用户管）；
-       2) 声明式：args.linuxDecl（interface.json 的 linux{}）+ args.linux（用户字段覆盖），
-          按 maa-support-extension buildControllerRuntime / MXU build_linux_controller_config
-          的规则组 JSON：方法名→数值枚举、缺省 Wlr/Wlr、Wlr 必填 wlr_socket_path、
-          PipeWire 带 pipewire_source（'Portal' 明确拒——portal helper 未接）、
-          UInput/Libei 补各自必填字段，再与用户 JSON 浅合并（用户字段优先）。 */
     if (process.platform !== 'linux') {
       return { ok: false, error: '控制器类型 linux 仅支持在 Linux 上使用；当前宿主是 ' + process.platform }
     }
-    const raw = String(args.config ?? args.target ?? '')
-    const decl = (args.linuxDecl && typeof args.linuxDecl === 'object') ? args.linuxDecl : {}
-    const user = (args.linux && typeof args.linux === 'object') ? args.linux : {}
-    const pickL = (k, k2) => user[k] ?? decl[k] ?? decl[k2]
-    const resolveLinuxMethod = (tbl, name) => {
-      if (name === undefined || name === null || name === '') return undefined
-      if (tbl && typeof tbl === 'object' && name in tbl) return Number(tbl[name])
-      const n = Number(name)
-      return Number.isFinite(n) ? n : undefined
-    }
-    const screencapName = pickL('screencap', 'screencap') ?? 'Wlr'
-    const inputName = pickL('input', 'input') ?? 'Wlr'
-    const sc = resolveLinuxMethod(m.LinuxScreencapMethod, screencapName)
-    const im = resolveLinuxMethod(m.LinuxInputMethod, inputName)
-    let cfg = raw.trim()
-    if (!cfg.startsWith('{')) {
-      if (sc === undefined || im === undefined) {
-        return { ok: false, error: 'linux 方法名不合法：screencap=' + screencapName + ' input=' + inputName
-          + '（可选 screencap: Wlr/ExtImage/PipeWire，input: Wlr/UInput/Libei；或直接给 config=<JSON>）' }
-      }
-      const conf = {
-        screencap_method: sc,
-        input_method: im,
-        use_win32_vk_code: !!(user.useWin32VkCode ?? decl.useWin32VkCode ?? decl.use_win32_vk_code),
-      }
-      if (screencapName === 'PipeWire') {
-        const src = pickL('pipewireSource', 'pipewire_source') ?? 'Gamescope'
-        if (src === 'Portal') {
-          return { ok: false, error: 'linux pipewire_source=Portal 暂不支持（portal helper 未接入）——换 Gamescope 或自管 fd' }
-        }
-        conf.pipewire_source = src
-        if (user.pwSocketFd !== undefined) conf.pw_socket_fd = user.pwSocketFd
-        if (user.pwNodeId !== undefined) conf.pw_node_id = user.pwNodeId
-      }
-      if (screencapName === 'Wlr' || inputName === 'Wlr') {
-        const sock = pickL('wlrSocketPath', 'wlr_socket_path')
-        if (!sock) {
-          return { ok: false, error: 'linux 方法含 Wlr：需要 wlr_socket_path（嵌套 compositor 的 socket）——在 linux config JSON 或 interface.json linux{} 里给' }
-        }
-        conf.wlr_socket_path = sock
-      }
-      if (inputName === 'UInput') {
-        if (user.uinputScreenWidth !== undefined) conf.uinput_screen_width = user.uinputScreenWidth
-        if (user.uinputScreenHeight !== undefined) conf.uinput_screen_height = user.uinputScreenHeight
-      }
-      if (inputName === 'Libei') {
-        const eis = pickL('eisSocketPath', 'eis_socket_path')
-        if (eis) conf.eis_socket_path = eis
-      }
-      const dno = pickL('displayNo', 'display_no')
-      if (dno !== undefined) conf.display_no = dno
-      cfg = JSON.stringify(conf)
-    }
-    ctrl = new m.LinuxController(cfg)
+    const cfg = buildLinuxConfig(m, args)
+    if (cfg.ok === false) return { ok: false, error: cfg.error }
+    ctrl = new m.LinuxController(cfg.json)
     session = { kind: 'linux', target: '(config)' }
   } else {
     return { ok: false, error: '未知控制器类型：' + args.kind + '（支持 win32/adb/gamepad/playcover/macos/linux）' }
@@ -3590,5 +3596,5 @@ export const __test = {
   readKfCropSource, buildL2Provenance, pickBalancedCandidates, pickNodeName, readRoi,
   l0EvictToBudget, cmdKfPromote, cmdTplCrop, kfUsageBytes, defaultOutFile, eventFrameAnchor, S,
   pickRecoBox, pickActionBox, anchorFromCacheDedup, checkExpect, blockHash, hashStr,
-  setupAgents,
+  setupAgents, buildLinuxConfig,
 }
