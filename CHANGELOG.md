@@ -7,6 +7,15 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ### 新增
 
+- **`roi-check`：ROI 验真**——用外来模板比对「本位置」与「偏移半周期」两套候选，分不出来时明确报
+  `AMBIGUOUS`（退出 3）。判据是外来目标而不是自匹配；`--pitch` 是案例专用的候选生成器（单一周期、
+  y 不偏移）。
+- **`roi-compare`：候选集合比较**——外来模板在 `--rois`（显式全套）/ `--offsets`（相对 --roi 平移）/
+  `--scan`（发现模式）生成的一批位置假设上排序，报 `bestGap` 与 `withinGap` 并列带；三态结论
+  （唯一最优且过门槛 → 0 / 歧义·未命中·有候选无法评估 → 3 / 参数错 → 2）。
+- **`events`：查帧流事件（stable/change/run）**——每条带画面锚点与 `retained` 状态（`l0` 可
+  `frame get`/`kf promote`，`gone` 已滚出）；`--watch <ms>` 自起帧流现场采集（一次性 CLI 里事件环
+  不跨进程存活，这是拿到事件的可靠方式）。
 - **`reco --node-file` / `--param-file`（`-` = stdin，按 JSONC 读）**：整节点 JSON 以前只能走 argv，
   Windows 上 `bash → cmd.exe`(npm shim) → node 会把 `^` 当转义符吃掉（`expected: "^解锁"` 到进程时
   已变成 `"解锁"`，三种正则给出相同结果，一度被误判成"工具不应用 `expected` 过滤"）。文件通道绕开的
@@ -119,8 +128,9 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   `change` 事件 + 可选 ROI 内逐帧均值差），不另立阈值口径。**超时不是命令失败**：`ok:true` +
   `satisfied:false`（退出 3）——"没等到"是观测结果。动机：没有这个原语时只能 `sleep`，实测硬睡
   39 次共 155 秒，**而且等了也不保证对**（抓到过渡帧并据此误判当前界面）。
-- **`frame diff --a --b --rois`：两帧在若干 ROI 上的差分**——帧流事件只给整帧 bbox，而离散网格
+- **`frame diff --a --b --rois`（REPL 内）：两帧在若干 ROI 上的差分**——帧流事件只给整帧 bbox，而离散网格
   （棋盘 / 背包 / 技能格）要的是"每格变了多少"。回执按 `meanDiff` 降序给 `ranked`。
+  **只在 REPL 支持**：一次性 `maafw-live frame` 只认 `status` / `get`（`diff` 需要帧流缓冲，进程态拿不到）。
 - **`swipe --via "x,y;x,y"` 与裸触点原语 `touch_down`/`touch_move`/`touch_up`**——`via` 走
   `touch_down → 逐点 touch_move → touch_up`，即**一条笔画画出折线**（中途不抬手）。动机：连线 /
   谱曲 / 拖拽排序这类玩法要求"按住 → 经过若干点 → 抬起"，而 `post_swipe` 只有两个端点；绑子里

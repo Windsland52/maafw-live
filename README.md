@@ -54,10 +54,13 @@ npm link            # 之后可直接 maafw-live --help
 | `maafw-live screencap` | 截一帧并落盘（同时进 L0 缓存，有捕获身份可升格） |
 | `maafw-live frame` | 帧流状态与历史帧取用（可带 ROI，按该帧捕获时尺寸换算）；`--src full` 取控制器分辨率原图，降级为小图会明说并判 findings |
 | `maafw-live wait` | 状态谓词：`stable`（画面静下来）/ `change`（画面动了）——取代调用方硬睡时钟；**超时不是失败**，是观测结果（退出 3） |
+| `maafw-live events` | 查帧流事件（stable/change/run），每条带画面锚点与 retained 状态；`--watch <ms>` 自起帧流现场采集 |
 | `maafw-live run` | 运行 pipeline；项目模式合成 pipeline_override 四级链；`--timeout 0` 不自动停；退出码按任务级 `record.ok` |
 | `maafw-live stop` | 停止运行中的任务 |
 | `maafw-live click` / `swipe` / `key` / `keys` / `press` / `dbclick` / `scroll` / `move` / `text` | 输入注入（经 maafw 控制器本体；动作边界帧自动入 L0 锚区） |
 | `maafw-live reco` | 识别单测（子进程隔离）：`--param`/`--param-file`/`--sweep` 阈值扫描，`--node`/`--node-file` 整节点透传（V1/V2），`--node-name` 按资源原名跑（整条资源链含 attach），`--act` 识别拿框 → 真机执行动作半；给 `--image` 即离线评估，不连设备 |
+| `maafw-live roi-check` | ROI 验真：外来模板比对「本位置」与「偏移半周期」候选，分不出来时明确报 AMBIGUOUS（退出 3） |
+| `maafw-live roi-compare` | 候选集合比较：外来模板在 `--rois`/`--offsets`/`--scan` 生成的一批位置假设上排序，报 bestGap 与并列带 |
 | `maafw-live color` | 探色：ROI 实测均值 / HSV / 主色，选色后用 reco ColorMatch 出框 |
 | `maafw-live crop` | 模板裁剪：宽松框或点 → snap 收紧 → 原图裁剪（L0 热缓存 / `--from-kf` 库内留存帧）→ 同帧自匹配逐边精修 + 跨帧验证；产出 L2 派生图与 `<out>.prov.json` 出处 |
 | `maafw-live annotate` | 轻量 SoM：OCR / diff / 连通域 / 边缘密度候选区域 + 编号回画（模型选号 → ctrl 坐标）；`--from-kf` 可在关键帧库留存帧上离线跑 |
