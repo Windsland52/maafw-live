@@ -11,8 +11,11 @@
   "files": [
     "bin",
     "lib",
-    "docs",
-    "skills"
+    "!lib/**/*.map",
+    "skills",
+    "docs/daemon-protocol.md",
+    "docs/keyframe-retention-contract-v0.md",
+    "docs/session-unify-v0.md"
   ],
   "repository": {
     "type": "git",

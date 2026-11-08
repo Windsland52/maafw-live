@@ -33,7 +33,9 @@ jobs:
         # 所以这里把 OS 钉住，镜像升级改成一次显式的、可回滚的改动。
         os:
           - ubuntu-24.04
-          - windows-latest
+          # windows 同样钉版，不用 windows-latest：win32 控制器路径只在这腿上验，
+          # label 轮转静默换环境时"变红说得出是谁变了"的约定要在两侧都成立
+          - windows-2025
         node:
           - 22.13
           - 24

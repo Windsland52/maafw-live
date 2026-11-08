@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -76,11 +76,25 @@ jobs:
           path: ${{ steps.pack.outputs.pack_dir }}/*.tgz
           if-no-files-found: error
 
+  # win32 控制器路径只在 Windows 上验——发布门禁以前只跑 ubuntu，等于"发了个从没在
+  # 主要平台上测过的包"。与 ci.yml 同一钉版（windows-2025），同一 test:all 覆盖面。
+  check-windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13
+          cache: npm
+      - run: npm ci
+      - run: npm run test:all
+
   # 发布到 npm registry：走 trusted publishing（OIDC），全程没有长期凭据。
   publish-npm:
-    needs: check
+    needs: [check, check-windows]
     if: github.repository == 'Windsland52/maafw-live'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -143,9 +157,9 @@ jobs:
   # 且必须写 registry-url + scope，否则 .npmrc 里没有对应 registry 的凭据。
   # GHCR 也不接受 npm 的 provenance 证明，所以不带 --provenance。
   publish-ghcr:
-    needs: check
+    needs: [check, check-windows]
     if: github.repository == 'Windsland52/maafw-live'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -187,8 +201,8 @@ jobs:
 
   release:
     # 只等公共通道（npm）与校验：GHCR 是镜像通道，它失败不该挡住 GitHub Release 的创建
-    needs: [check, publish-npm]
-    runs-on: ubuntu-latest
+    needs: [check, check-windows, publish-npm]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
