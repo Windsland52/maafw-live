@@ -41,6 +41,13 @@ export interface GamepadDecl {
   screencap?: string
 }
 
+/** MacOS 控制器声明（PI schema：`macos.{title_regex,screencap,input}`） */
+export interface MacOSDecl {
+  titleRegex?: string
+  screencap?: string
+  input?: string
+}
+
 export interface InterfaceController {
   name: string
   /** Adb / Win32 / Gamepad / MacOS / PlayCover / Linux */
@@ -48,6 +55,7 @@ export interface InterfaceController {
   display?: DisplayDecl
   win32?: Win32Decl
   gamepad?: GamepadDecl
+  macos?: MacOSDecl
   /** v2.2.0：在 resource.path 之后追加加载的资源目录（相对 interface.json 所在目录） */
   attachResourcePath: string[]
   /** v2.3.0：控制器级配置项名单（override 链第三级） */
@@ -288,12 +296,20 @@ export function loadInterface(dir: string): LoadedInterface {
     }
     const w = obj(c.win32)
     const g = obj(c.gamepad)
+    const mo = obj(c.macos)
     const linuxDecl = obj(c.linux)
     controllers.push({
       name,
       type,
       raw: c,
       display: Object.keys(display).length ? display : undefined,
+      macos: mo
+        ? {
+            titleRegex: str(mo.title_regex),
+            screencap: str(mo.screencap),
+            input: str(mo.input),
+          }
+        : undefined,
       win32: w
         ? {
             classRegex: str(w.class_regex),

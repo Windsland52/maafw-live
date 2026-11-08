@@ -20,6 +20,16 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
   （`frameSeq` 记进节点），画面与上一张已留帧相同（blockHash 去重）就跳过——以前每节点无条件留一帧，
   同屏循环跑会白占锚区与字节。**`baseline`/`space` 落账**：`record.baseline` = 控制器交付帧短边、
   `record.space` = `{w,h}`——trace 契约要求的元信息（跨项目迁移按它拒"坐标不在同一空间"的记录）。
+- **controller 对齐 maafw**（`src/daemon/framed.mjs` + `src/interface/{load,plan}.ts`）：
+  - 修 macOS `input_method`：此前误用 `MacOSScreencapMethod` 表 + `keyboard` 参数，改为
+    `MacOSInputMethod` + `input`（缺省 `GlobalEvent(1)`）；接 `interface.json` 的 `macos.{screencap,input}`。
+  - 修 adb 方法掩码：`caps`/`inputs` 是 `Uint64` 字符串，数组兜底 `[1,2]` 换成
+    `AdbScreencapMethod.Default`/`AdbInputMethod.Default`。
+  - gamepad 可不配图：不给 target 且无可选窗口时 `GamepadController(hwnd:null)` 仅输入（规范允许）；
+    `gamepad_type:"DS4"` 映射 `DualShock4`。
+  - PlayCover `uuid` 语义更正为 Bundle Identifier（如 `com.playgame.app`），提示同步。
+  - interface 解析新增 `macos.{title_regex,screencap,input}`；`title_regex` 交给 daemon 侧
+    `MacOSController.find()` 正则选窗（macos 仍要 `target` 或 `title_regex` 二选一）。
 - **`screencap-probe`：截图能力探测（A 路前提）**——两次 `post_screencap` 间隔比 `blockHash` 与亮度，
   输出 `verdict`：`changing`（像素在变；带 `--occluded` 声明窗口被完全盖住时即"后台可截"）、`static`（静止：
   目标停渲染或恰好没动）、`black`（近全黑：截图方法不兼容，换 `win32.screencap`）、`error`（抛错/空）。

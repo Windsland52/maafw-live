@@ -67,8 +67,8 @@ const KIND_BY_TYPE: Record<string, string> = { Adb: 'adb', Win32: 'win32', Gamep
 
 /** 没有可枚举设备发现的控制器：必须显式给 --target，工具不猜会话形态。 */
 const TARGET_REQUIRED: Record<string, string> = {
-  playcover: 'PlayCover 需要 --target <address>/<uuid>（PlayCover 设置里可见）',
-  macos: 'MacOS 需要 --target <窗口 id 或标题子串>（不指定时 daemon 会用枚举到的第一个窗口，这里不猜）',
+  playcover: 'PlayCover 需要 --target <address>/<BundleId>（缺省地址 localhost:1717；BundleId 如 com.playgame.app）',
+  macos: 'MacOS 需要 --target <窗口 id 或标题子串>，或在 interface.json 的 macos.title_regex 声明匹配规则',
   linux: 'Linux 需要 --target <config JSON>（含 screencap_method / input_method 等必填字段）',
 }
 
@@ -135,9 +135,19 @@ export function planController(
 
   const targetHint = TARGET_REQUIRED[kind]
   if (targetHint) {
-    /* PlayCover / MacOS / Linux 没有可枚举的设备发现（MacOS 窗口能枚举，但 macOS
-       不在本工具的设备扫描通道里）：必须显式给 target，工具不猜会话形态。 */
+    /* PlayCover / Linux 没有可枚举的设备发现，必须显式给 target，工具不猜会话形态。
+       MacOS 窗口能枚举但不在本工具的设备扫描通道里：按 PI 的 macos.title_regex 交给
+       daemon 侧 MacOSController.find() 匹配（不在这条通道枚举），没给 regex 仍要 target。 */
     const t = overrides.manualTarget ?? null
+    if (kind === 'macos') {
+      if (t) connect.target = t
+      else if (c.macos?.titleRegex) connect.macosTitleRegex = c.macos.titleRegex
+      else return fail(c, 'TARGET_REQUIRED', targetHint, [], connect, notes)
+      if (c.macos?.screencap) connect.screencap = c.macos.screencap
+      if (c.macos?.input) connect.input = c.macos.input
+      if (c.macos?.titleRegex && !t) notes.push('窗口：按 title_regex 匹配——' + c.macos.titleRegex)
+      return { ok: true, controllerName: c.name, connect, notes }
+    }
     if (!t) return fail(c, 'TARGET_REQUIRED', targetHint, [], connect, notes)
     connect.target = t
     return { ok: true, controllerName: c.name, connect, notes }

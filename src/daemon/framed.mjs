@@ -414,13 +414,21 @@ async function cmdConnect(args) {
     /* 指定了 address 却不在已发现列表里：明确报错，不静默连到别的设备上 */
     if (!dev) return { ok: false, error: 'adb 地址 ' + addr + ' 不在已发现设备中（共 ' + adbs.length + ' 台）' }
     const [name, adbPath, address, caps, inputs, config] = dev
+    /* caps/inputs 是 find() 给出的方法位掩码（Uint64 字符串），照原样透传——框架会按
+     * 固定优先级在掩码内自选。仅当 find() 没给时才退 Default（全方法减禁用项），
+     * 不许塞数组：ScreencapOrInputMethods 的绑定类型就是字符串。 */
     ctrl = new m.AdbController(adbPath || 'adb', String(address ?? addr),
-      caps && caps.length ? caps : [1, 2], inputs && inputs.length ? inputs : [1, 2], config || '{}')
+      caps || String(m.AdbScreencapMethod?.Default ?? '0'),
+      inputs || String(m.AdbInputMethod?.Default ?? '0'), config || '{}')
     session = { kind: 'adb', target: String(address ?? addr), name: String(name) }
   } else if (args.kind === 'win32' || args.kind === 'gamepad') {
     const wins = await cmdDeviceList('win32')
-    const pick = pickWin32(args.target, wins)
-    if (!pick) {
+    let pick = pickWin32(args.target, wins)
+    /* GamepadController(hwnd|null, gamepad_type, screencap)：规范允许不配图——hwnd=null
+     * 即"仅虚拟手柄输入、不截图"。给了 target 没匹配上仍报错（防静默连错窗口）；
+     * 没给 target 且一个可选窗口都没有时才走 null。 */
+    const gamepadNoWindow = args.kind === 'gamepad' && !pick && !args.target
+    if (!pick && !gamepadNoWindow) {
       return {
         ok: false,
         error: args.target
@@ -437,9 +445,13 @@ async function cmdConnect(args) {
       /* GamepadController 构造器签名（maa-node .d.ts）：(hwnd, gamepad_type, screencap_method)。
          gamepad_type 枚举名→值照 m.GamepadType（Xbox360/DualShock4，缺省 Xbox360）。
          输入走虚拟手柄，需宿主装 ViGEm Bus Driver，否则 connect 会在原生层失败。 */
-      const padType = resolveEnum(m.GamepadType, args.gamepadType, m.GamepadType?.Xbox360 ?? 0, 'gamepadType', warns)
-      ctrl = new m.GamepadController(pick.id, padType, cap)
-      session = { kind: 'gamepad', target: pick.id, name: pick.name || pick.cls, cls: pick.cls, method: { screencap: cap, gamepadType: padType } }
+      const padType = resolveEnum(m.GamepadType,
+        args.gamepadType === 'DS4' ? 'DualShock4' : args.gamepadType,
+        m.GamepadType?.Xbox360 ?? '0', 'gamepadType', warns)
+      ctrl = new m.GamepadController(pick ? pick.id : null, padType, cap)
+      session = { kind: 'gamepad', target: pick ? pick.id : null,
+        name: pick ? (pick.name || pick.cls) : '(无窗口：仅输入)',
+        cls: pick ? pick.cls : null, method: { screencap: cap, gamepadType: padType } }
     } else {
       const mouse = resolveEnum(m.Win32InputMethod, args.mouse, m.Win32InputMethod?.SendMessageWithCursorPos ?? 32, 'mouse', warns)
       const key = resolveEnum(m.Win32InputMethod, args.keyboard, m.Win32InputMethod?.SendMessage ?? 2, 'keyboard', warns)
@@ -453,28 +465,41 @@ async function cmdConnect(args) {
       return { ok: false, error: '控制器类型 ' + args.kind + ' 仅支持在 macOS 上使用；当前宿主是 ' + process.platform }
     }
     if (args.kind === 'playcover') {
-      /* PlayCoverController(address, uuid)：address 是 PlayCover 设备侧服务地址（如 127.0.0.1:port），
-         uuid 是 PlayCover 显示的设备 UUID；两个都必须显式给，猜不了。 */
+      /* PlayCoverController(address, uuid)：address 是设备侧服务地址（PI 缺省 localhost:1717），
+         uuid 是应用的 **Bundle Identifier**（不是设备 UUID——PI 文档 v2.1.0 起明确）。 */
       const parts = String(args.target ?? '').split('/')
       const address = parts[0] || ''
       const uuid = args.uuid ? String(args.uuid) : (parts[1] || '')
       if (!address || !uuid) {
-        return { ok: false, error: 'playcover 需要 target=<address>/<uuid>（PlayCover 设置里可见，两者都必填）' }
+        return { ok: false, error: 'playcover 需要 target=<address>/<BundleId>（缺省地址 localhost:1717，BundleId 如 com.playgame.app）' }
       }
       ctrl = new m.PlayCoverController(address, uuid)
       session = { kind: 'playcover', target: address + '/' + uuid }
     } else {
-      /* MacOSController(window_id, screencap_method, input_method)：窗口用 MacOSController.find() 枚举。 */
+      /* MacOSController(window_id, screencap_method, input_method)：窗口用 MacOSController.find() 枚举。
+         匹配优先级：target（id 或标题子串）> macosTitleRegex（PI title_regex）> 第一个窗口。 */
       const wins = (await m.MacOSController.find()) || []
-      const pick = args.target
-        ? (wins.find((d) => String(d[0]) === String(args.target)) ??
-           wins.find((d) => String(d[2] ?? '').includes(String(args.target))))
-        : (wins[0] ?? null)
-      if (!pick) {
-        return { ok: false, error: args.target ? 'macOS 窗口未找到：' + args.target : '未发现 macOS 窗口' }
+      let pick = null
+      if (args.target) {
+        pick = wins.find((d) => String(d[0]) === String(args.target)) ??
+               wins.find((d) => String(d[2] ?? '').includes(String(args.target)))
+      } else if (args.macosTitleRegex) {
+        let re = null
+        try { re = new RegExp(String(args.macosTitleRegex)) } catch (e) { /* 坏正则按下个分支报错 */ }
+        if (re) pick = wins.find((d) => re.test(String(d[2] ?? '')))
+        else return { ok: false, error: 'macos title_regex 不是合法正则：' + args.macosTitleRegex }
+      } else {
+        pick = wins[0] ?? null
       }
-      const cap = resolveEnum(m.MacOSScreencapMethod, args.screencap, m.MacOSScreencapMethod?.ScreenCaptureKit ?? 2, 'screencap', warns)
-      const input = resolveEnum(m.MacOSScreencapMethod, args.keyboard, m.MacOSScreencapMethod?.ScreenCaptureKit ?? 2, 'keyboard', warns)
+      if (!pick) {
+        return { ok: false, error: args.target ? 'macOS 窗口未找到：' + args.target
+          : args.macosTitleRegex ? 'macOS 窗口按 title_regex 未匹配到：' + args.macosTitleRegex
+          : '未发现 macOS 窗口' }
+      }
+      const cap = resolveEnum(m.MacOSScreencapMethod, args.screencap, m.MacOSScreencapMethod?.ScreenCaptureKit ?? '1', 'screencap', warns)
+      /* input 走 MacOSInputMethod 表（GlobalEvent/PostToPid），缺省 GlobalEvent(1)——
+       * 此前误用了 screencap 表+keyboard 参数，名字解析必错（ScreenCaptureKit 值恰好是 '1' 才没炸）。 */
+      const input = resolveEnum(m.MacOSInputMethod, args.input, m.MacOSInputMethod?.GlobalEvent ?? '1', 'input', warns)
       ctrl = new m.MacOSController(pick.id ?? pick[0], cap, input)
       session = { kind: 'macos', target: String(pick[0]), name: String(pick[2] ?? ''), method: { screencap: cap, input } }
     }
