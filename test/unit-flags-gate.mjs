@@ -1,7 +1,8 @@
 /**
- * 预留旗标闸门：--dry-run / --verbose / 全局 --limit 传了就退 2，
+ * 预留旗标闸门：--dry-run / 全局 --limit 传了就退 2，
  * 信封带 FLAG_NOT_IMPLEMENTED——"接受但不生效"会让 agent 以为在试跑、
- * 其实已经落盘。events 自己声明并消费 limit，是唯一的放行例外。
+ * 其实已经落盘。events 自己声明并消费 limit、describeSession 消费 verbose，
+ * 是唯二放行例外。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,10 +26,10 @@ test('--dry-run 退 2 且信封带 FLAG_NOT_IMPLEMENTED', () => {
     assert.match(env.error.message, /--dry-run/)
 })
 
-test('--verbose 退 2', () => {
+test('--verbose 不再退 2（已接 describeSession note 门控）', () => {
     const r = runCli(['env', '--verbose', '--json'])
-    assert.equal(r.code, 2, r.out)
-    assert.match(r.out, /FLAG_NOT_IMPLEMENTED/)
+    assert.notEqual(r.code, 2, r.out)
+    assert.doesNotMatch(r.out, /FLAG_NOT_IMPLEMENTED/)
 })
 
 test('全局 --limit 退 2（命令没有自己消费时）', () => {

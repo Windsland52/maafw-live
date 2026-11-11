@@ -158,7 +158,12 @@ export function offlineResource(
   return { paths: plan.paths, names: plan.names, selected: plan.selected, controllerName }
 }
 
-/** 连接结果的行渲染（human 输出与 --json 共用一份事实）。 */export function describeSession(s: SessionState): string[] {
+/**
+ * 连接结果的行渲染（human 输出与 --json 共用一份事实）。
+ * `verbose=false` 时压制 `note:` 行（多资源选择、连接来源等建议性说明）——
+ * 一次性命令每条都打同一串 note 是噪音；事实行（已连接/分辨率/资源路径）不受门控。
+ */
+export function describeSession(s: SessionState, verbose = false): string[] {
   const lines: string[] = []
   if (!s.connected) return lines
   const sess = s.session ?? {}
@@ -172,6 +177,6 @@ export function offlineResource(
     lines.push('  控制器：' + s.plan.controllerName + '（来自 interface.json）')
     if (s.plan.resource?.paths.length) lines.push('  资源：' + s.plan.resource.paths.join(' , '))
   }
-  for (const n of s.notes ?? []) lines.push('  note: ' + n)
+  if (verbose) for (const n of s.notes ?? []) lines.push('  note: ' + n)
   return lines
 }

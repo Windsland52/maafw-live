@@ -248,7 +248,7 @@ export const timingCommand: Command = {
         const unsettled = agg.nodeStats.filter((n) => n.nextBeforeStable)
         const last = samples.at(-1)!
         const human = [
-          ...describeSession(s),
+          ...describeSession(s, ctx.flags.verbose),
           'timing 采样 x' + runs + '（' + agg.successful + ' 成功' + (agg.failed ? ' / ' + agg.failed + ' 失败' : '') + '）：',
           ...samples.map((smp) =>
             '  #' + smp.index + ' ' + (smp.ok ? '成功' : '失败（不计入建议）') + '  ' + smp.durationMs + 'ms  ' + smp.nodes.length + ' 节点'),

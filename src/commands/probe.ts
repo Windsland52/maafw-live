@@ -43,7 +43,7 @@ export const screencapProbeCommand: Command = {
         const first = (r.first ?? {}) as { ok?: boolean; w?: number; h?: number; hash?: string; mean?: number; error?: string }
         const second = (r.second ?? {}) as { ok?: boolean; w?: number; h?: number; hash?: string; mean?: number; error?: string }
         const lines = [
-          ...describeSession(s),
+          ...describeSession(s, ctx.flags.verbose),
           '截图能力探测：两次 post_screencap 间隔 ' + String(r.intervalMs) + 'ms'
             + (r.occluded === true ? '（已声明窗口被完全遮挡）' : '（未声明遮挡——判据只在遮挡态成立）'),
         ]

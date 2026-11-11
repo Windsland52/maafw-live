@@ -192,7 +192,7 @@ export const cropCommand: Command = {
           : '  空间核对：未连接设备，未与当前控制器尺寸比对（模板空间 = 源帧捕获时尺寸 ' +
             String(r.ctrlW) + 'x' + String(r.ctrlH) + '）'
         const human = [
-          ...describeSession(s),
+          ...describeSession(s, ctx.flags.verbose),
           ...(offline ? ['离线裁剪：未连接设备（留存帧是本机持久文件，裁剪不需要设备）'] : []),
           '模板 ' + String(r.w) + 'x' + String(r.h) + ' → ' + String(r.path),
           '  ' + srcLine,

@@ -158,7 +158,7 @@ export const connectCommand: Command = {
     try {
       return await withDaemon(ctx, async (client) => {
         const s = await ensureSession(client, o)
-        const lines = describeSession(s)
+        const lines = describeSession(s, ctx.flags.verbose)
         if (s.streamStopped) {
           /* 重建控制器会让旧流失效：如实说，别让调用方以为是设备卡了（曾经是"流静默死掉"） */
           lines.push('', '帧流：已停止（本次连接重建了控制器）；要看帧就 stream start 重开。')
@@ -231,7 +231,7 @@ export const screencapCommand: Command = {
         const r = await act.screencap(client, out)
         return {
           exitCode: r.ok === false ? EXIT.FAIL : EXIT.OK,
-          human: [...describeSession(s), '截图：' + String(r.path ?? out) + (r.bytes ? ' (' + r.bytes + ' bytes)' : '')],
+          human: [...describeSession(s, ctx.flags.verbose), '截图：' + String(r.path ?? out) + (r.bytes ? ' (' + r.bytes + ' bytes)' : '')],
           data: r,
           written: r.path ? [String(r.path)] : [out],
         }
@@ -289,7 +289,7 @@ export const eventsCommand: Command = {
         }
         const r = await act.eventsList(client, { limit, ...(since !== undefined ? { since } : {}) })
         const evs = r.events ?? []
-        const human = [...describeSession(s), '事件 ' + evs.length + ' 条' +
+        const human = [...describeSession(s, ctx.flags.verbose), '事件 ' + evs.length + ' 条' +
           (r.matched !== r.total ? '（匹配 ' + r.matched + ' / 环内共 ' + r.total + '）' : '') +
           (r.truncated ? '，已按 --limit 截取' : '') +
           (watched ? '（本次起流 ' + watched.ms + 'ms' + (watched.fps ? ' @' + watched.fps + 'fps' : '') + ' 现场采集）' : '')]
@@ -334,7 +334,7 @@ export const frameCommand: Command = {
         return await withDaemon(ctx, async (client) => {
           const s = await ensureSession(client, o)
           const st = await act.streamStatus(client)
-          return { exitCode: EXIT.OK, human: [...describeSession(s), '帧流：' + JSON.stringify(st)], data: st }
+          return { exitCode: EXIT.OK, human: [...describeSession(s, ctx.flags.verbose), '帧流：' + JSON.stringify(st)], data: st }
         })
       } catch (e) {
         return daemonFail(e)
@@ -594,7 +594,7 @@ export const runCommand: Command = {
           /* 调用级失败：任务根本没跑起来（未连接 / 资源缺失 / 已有任务在跑）→ FINDINGS */
           return {
             exitCode: EXIT.FINDINGS,
-            human: [...describeSession(s), '调用失败：' + String(r.error ?? 'run 未返回记录')],
+            human: [...describeSession(s, ctx.flags.verbose), '调用失败：' + String(r.error ?? 'run 未返回记录')],
             data: r,
             warnings: [...extraWarns, ...((r.warns as string[] | undefined) ?? [])],
           }
@@ -647,7 +647,7 @@ export const runCommand: Command = {
             : '  agent 连接失败：' + String(rec.agent.error ?? '?'))
         }
         const human = [
-          ...describeSession(s),
+          ...describeSession(s, ctx.flags.verbose),
           '任务 ' + resolvedEntry + '：' + verdict +
             '（status=' + String(rec.status) + '，' + String(rec.durationMs) + 'ms' +
             (budget !== null ? ' / timeout=' + String(budget) + 'ms' : '') + '，帧序 ' +

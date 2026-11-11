@@ -83,10 +83,10 @@ export async function dispatchArgv(argv: string[], env: DispatchEnv): Promise<Di
   const flags = readGlobalFlags(parsed.values, env.cwd)
 
   /* 预留旗标没有消费者：传了就退 2 而不是静默吞掉——"以为在试跑其实已经落盘"
-   * 是 agent 最坏的失败模式。`--limit` 例外：events 自己声明并消费同名列。 */
+   * 是 agent 最坏的失败模式。`--limit`/`--verbose` 例外：events 自己消费同名列；
+   * verbose 已接 describeSession 的 note 行门控。 */
   const unimpl: string[] = []
   if (flags.dryRun) unimpl.push('--dry-run')
-  if (flags.verbose) unimpl.push('--verbose')
   if (parsed.values.limit !== undefined && !(cmd.options && 'limit' in cmd.options)) unimpl.push('--limit')
   if (unimpl.length > 0) {
     return {

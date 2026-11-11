@@ -54,7 +54,7 @@ export const colorCommand: Command = {
         return {
           exitCode: EXIT.OK,
           human: [
-            ...describeSession(s),
+            ...describeSession(s, ctx.flags.verbose),
             '探色 seq=' + String(r.seq) + (roi ? '  roi=' + roi.join(',') : '  （整帧）'),
             '  均值 RGB ' + mean.r + ',' + mean.g + ',' + mean.b + '  灰度 ' + mean.gray +
               '  HSV ' + hsv.h + '°,' + hsv.s + '%,' + hsv.v + '%',

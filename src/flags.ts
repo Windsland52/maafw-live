@@ -7,9 +7,10 @@
  *  - `--no-color`：ANSI 转义会混进 JSON；
  *  - `--json`：稳定信封，供技能与 CI 解析。
  *
- * `--dry-run` / `--verbose` / 全局 `--limit` 没有消费者：`index.ts` 在解析后直接退 2
+ * `--dry-run` / 全局 `--limit` 没有消费者：`index.ts` 在解析后直接退 2
  * （`FLAG_NOT_IMPLEMENTED`）——静默接受比报错更坏（"以为在试跑其实已经落盘"）。
- * 例外：命令自己声明并消费 `limit` 时（`events`）放行。要恢复预留语义再放开。
+ * 例外：命令自己声明并消费 `limit` 时（`events`）放行；`--verbose` 已接
+ * describeSession 的 note 行门控（默认压制，--verbose 打出建议性说明）。
  */
 import type { ParseArgsOptionsConfig } from 'node:util'
 

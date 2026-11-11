@@ -282,7 +282,7 @@ export const recoCommand: Command = {
           return {
             exitCode: EXIT.OK,
             human: [
-              ...describeSession(s),
+              ...describeSession(s, ctx.flags.verbose),
               resourceLine(chain),
               '节点单测（识别→动作，真机执行）：',
               '  识别框 ' + JSON.stringify(reco?.box ?? null),
@@ -325,7 +325,7 @@ export const recoCommand: Command = {
           return {
             exitCode: EXIT.FINDINGS,
             human: [
-              ...describeSession(s), resourceLine(chain),
+              ...describeSession(s, ctx.flags.verbose), resourceLine(chain),
               ...(nodeName !== undefined ? ['  节点来源：--node-name ' + nodeName] : []),
               ...(candidates.length ? ['  资源里最接近的节点名：' + candidates.join(' / ')] : []),
             ],
@@ -369,7 +369,7 @@ export const recoCommand: Command = {
          * 把它们标成"无置信度"正是这条判据要避免的误导。 */
         const scoringType = shownType === 'TemplateMatch'
         const human = [
-          ...describeSession(s),
+          ...describeSession(s, ctx.flags.verbose),
           resourceLine(chain),
           ...(nodeName !== undefined
             ? [

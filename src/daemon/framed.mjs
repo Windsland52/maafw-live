@@ -793,7 +793,29 @@ function pushFrame(dec, png) {
  * 主动抓一张原图并入观测流（seq 前进、进环、进 L0，可作动作/run 边界锚点）。
  * 采集失败如实上报，绝不阻断调用方的动作——动作结果与留存失败分别报告（契约 §9）。
  */
-async function captureNow(source) {
+/**
+ * 动作回执帧落盘：一次性 CLI（daemon 随命令死）也能复核"动作前后画面"——
+ * 帧本身是 L0 原图字节，落 runDir/action-frames/（与关键帧库分开：这不是留存证据本体，
+ * 是回执附件，不占 kf 配额、不进 manifest）。
+ * 同一次 input 的 before/after 用同一对文件名；dir 不存在则跳过（静默降级为无路径回执）。
+ */
+function actionFramesRoot() {
+  return S.runDir ? path.join(S.runDir, 'action-frames') : null
+}
+function persistActionFrame(seq, source) {
+  const root = actionFramesRoot()
+  if (!root) return null
+  const ent = S.l0.roll.find((e) => e.seq === seq)
+  if (!ent || !ent.png) return null
+  try {
+    fs.mkdirSync(root, { recursive: true })
+    const file = path.join(root, source + '-seq' + String(seq).padStart(6, '0') + '.png')
+    fs.writeFileSync(file, ent.png)
+    return file
+  } catch (e) { return null }
+}
+
+async function captureNow(source, persist = false) {
   if (!S.ctrl) return { ok: false, error: '未连接设备' }
   try {
     const j = S.ctrl.post_screencap()
@@ -805,7 +827,14 @@ async function captureNow(source) {
     pushFrame(dec, b)
     const ent = S.l0.roll[S.l0.roll.length - 1]
     l0AnchorAdd({ ...ent, source }, true)
-    return { ok: true, seq: ent.seq, t: ent.t, w: ent.w, h: ent.h }
+    const out = { ok: true, seq: ent.seq, t: ent.t, w: ent.w, h: ent.h }
+    /* 动作帧持久化：一次性 CLI 下 seq 无消费者（daemon 死后 frame_get 不存），
+     * 路径才是回执里能看的东西；常驻会话里多写一份也无害（同字节、幂等文件名）。 */
+    if (persist) {
+      const file = persistActionFrame(ent.seq, source)
+      if (file) out.file = file
+    }
+    return out
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) }
   }
@@ -1775,7 +1804,7 @@ async function cmdInput(args) {
   const k = String(args.kind || 'click')
   const retention = {}
   const done = (job) => ({ ok: true, kind: k, ms: Date.now() - t0, retention })
-  retention.before = await captureNow('action-before')
+  retention.before = await captureNow('action-before', true)
   /* 帧身份守卫：调用方说"我是在看到 seq=N 那帧之后决定要点的"——守卫核对**现在**这帧
    * 是不是同一帧。不是就不发输入（MPE validateClick 的拒点同义：画面已经变了，按旧画面
    * 算的坐标点下去就是误触）。seq 是单调计数器、expectFrame 是像素 hash——前者快（同 seq
@@ -1828,7 +1857,7 @@ async function cmdInput(args) {
       /* 与共享尾同一口径：**先 wait 再抓 after**。抓早了可能截在抬手落地之前，
        * 而手势类动作恰恰要验证"抬手之后画面变成什么样"。 */
       await job.wait()
-      retention.after = await captureNow('action-after')
+      retention.after = await captureNow('action-after', true)
       return { ...done(null), path: pts, viaCount: via.length, stepMs: step }
     }
     job = S.ctrl.post_swipe(Number(args.x1), Number(args.y1), Number(args.x2), Number(args.y2),
@@ -1839,7 +1868,7 @@ async function cmdInput(args) {
     const contact = Number(args.contact ?? 0)
     job = S.ctrl.post_touch_move(contact, Number(args.x), Number(args.y), Number(args.pressure ?? 1))
     await job.wait()
-    retention.after = await captureNow('action-after')
+    retention.after = await captureNow('action-after', true)
     return done(null)
   } else if (k === 'touch_down' || k === 'touch_up') {
     const contact = Number(args.contact ?? 0)
@@ -1847,7 +1876,7 @@ async function cmdInput(args) {
       ? S.ctrl.post_touch_down(contact, Number(args.x), Number(args.y), Number(args.pressure ?? 1))
       : S.ctrl.post_touch_up(contact)
     await job.wait()
-    retention.after = await captureNow('action-after')
+    retention.after = await captureNow('action-after', true)
     return done(null)
   } else if (k === 'key') {
     job = S.ctrl.post_click_key(Number(args.code))
@@ -1860,7 +1889,7 @@ async function cmdInput(args) {
     for (const c of codes) await S.ctrl.post_key_down(c).wait()
     await sleep(hold)
     for (const c of codes.slice().reverse()) await S.ctrl.post_key_up(c).wait()
-    retention.after = await captureNow('action-after')
+    retention.after = await captureNow('action-after', true)
     return done(null)
   } else if (k === 'scroll') {
     /* 滚轮：dx/dy 为格数，建议 120 的倍数（WHEEL_DELTA） */
@@ -1878,7 +1907,7 @@ async function cmdInput(args) {
     return { ok: false, error: 'unknown input kind: ' + k + '（click|dbclick|press|swipe|key|keys|scroll|move|text|app）' }
   }
   await job.wait()
-  retention.after = await captureNow('action-after')
+  retention.after = await captureNow('action-after', true)
   return done(job)
 }
 
@@ -1943,7 +1972,7 @@ async function recoActTest(args, node, dirs) {
   tasker.controller = S.ctrl
   /* 先让 tasker 指向新对象，再销毁上一份（见 adoptRunResource 的调用前提） */
   adoptRunResource(res)
-  const before = await captureNow('action-before')
+  const before = await captureNow('action-before', true)
   if (!before.ok) return { ok: false, error: '识别输入抓帧失败：' + before.error }
   const imgBuf = S.l0.roll[S.l0.roll.length - 1].png
   const image = imgBuf.buffer.slice(imgBuf.byteOffset, imgBuf.byteOffset + imgBuf.byteLength)
@@ -1979,7 +2008,7 @@ async function recoActTest(args, node, dirs) {
   } finally {
     try { res.unregister_custom_action('@reco/act') } catch (e) { /* ignore */ }
   }
-  const after = await captureNow('action-after')
+  const after = await captureNow('action-after', true)
   if (!out) return { ok: false, error: '动作探针未被执行（custom action 回调未触发）' }
   const rec = node && node.recognition
   const shownType = rec && typeof rec === 'object' ? String(rec.type ?? 'DirectHit') : String(rec ?? 'DirectHit')
@@ -3473,6 +3502,18 @@ const handlers = {
       S.runDir = String(a.runDir)
       S.previewPath = path.join(S.runDir, 'preview.png')
       try { fs.mkdirSync(S.runDir, { recursive: true }) } catch (e) { /* ignore */ }
+      /* action-frames 无 kf 配额：一次性 CLI 每条 click 都落 2 张，纯累积会膨胀。
+       * 不动当前运行——只清 >24h 的（上一个会话的残留）。 */
+      try {
+        const root = path.join(S.runDir, 'action-frames')
+        if (fs.existsSync(root)) {
+          const cutoff = Date.now() - 24 * 3600 * 1000
+          for (const f of fs.readdirSync(root)) {
+            const st = fs.statSync(path.join(root, f))
+            if (st.mtimeMs < cutoff) fs.unlinkSync(path.join(root, f))
+          }
+        }
+      } catch (e) { /* ignore */ }
     }
     if (Number(a.kfQuotaBytes) > 0) S.kfQuota = Math.floor(Number(a.kfQuotaBytes))
     return { ok: true, previewPath: S.previewPath, daemonId: S.daemonId, framesDir: kfRoot(), kfQuota: S.kfQuota }

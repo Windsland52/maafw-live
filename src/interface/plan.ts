@@ -322,10 +322,13 @@ export function resolveResourcePaths(
     /* resource[] 是互斥单选：多个条目都适用时没有"都对"的答案，按声明序取第一个就是 Client 语义。
      * 但用户/agent 看不到"其实还有别的可选"——用错资源包（中/英资产、多语言模型）会静默跑错，
      * 所以把这次的选择和备选摆到台面上。 */
+    /* 候选 >5 时折叠全名列表（9 服全摆出来是噪音不是信息；--json 里 names 全量在）。
+     * 互斥单选的选择语义的说明保留——"已选哪份"正是 agent 要的。 */
     if (applicable.length > 1) {
+      const names = applicable.map((r) => r.name)
+      const list = names.length <= 5 ? names.join(' / ') : names.slice(0, 3).join(' / ') + ' …共 ' + names.length + ' 个'
       notes.push(
-        '当前控制器适用 ' + applicable.length + ' 个资源（' + applicable.map((r) => r.name).join(' / ') +
-          '），已选 ' + selected + '——要换用 --resource <名>',
+        '当前控制器适用 ' + applicable.length + ' 个资源（' + list + '），已选 ' + selected + '——要换用 --resource <名>',
       )
     }
   }

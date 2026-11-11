@@ -47,7 +47,12 @@ async function inject(
         }
         return fail(String(r.code ?? 'INPUT_REJECTED'), msg, undefined, EXIT.FINDINGS)
       }
-      return { exitCode: EXIT.OK, human: [...describeSession(s), ...human(r)], data: r }
+      /* 动作回执帧（daemon 已落盘到 runDir/action-frames/）：一次性 CLI 下 seq 没有消费者
+       * （frame_get 不可达），路径才是能复核"动作前后"的东西。 */
+      const ret = (r.retention ?? {}) as Record<string, Record<string, unknown>>
+      const files = [ret.before?.file, ret.after?.file].filter((f): f is string => typeof f === 'string')
+      const evidence = files.length ? ['证据帧：' + files.join(' 、')] : []
+      return { exitCode: EXIT.OK, human: [...describeSession(s, ctx.flags.verbose), ...human(r), ...evidence], data: r }
     })
   } catch (e) {
     /* 帧身份守卫拒发：daemon 回 ok:false 经 client.call 变 Error（只带 error 文本）。
@@ -81,6 +86,13 @@ export const clickCommand: Command = {
     const expectSeq = num(ctx.values, 'expect-seq')
     const expectFrame = typeof ctx.values['expect-frame'] === 'string' && ctx.values['expect-frame']
       ? String(ctx.values['expect-frame']) : undefined
+    /* 帧身份守卫在一次性 CLI 下必然失败：daemon 随命令死，seq 从 1 起——守卫核对的"当前帧"
+     * 只能是这一帧本身。要跨命令的帧身份得用常驻会话（maafw-live repl --session <名>）。 */
+    if ((expectSeq !== undefined || expectFrame !== undefined) && ctx.values.session === undefined) {
+      return fail('EXPECT_FAILED',
+        '帧身份守卫（--expect-seq / --expect-frame）需要常驻会话——一次性命令的 daemon 每条都重启，seq 从 1 起，守卫永远核不到你存的那帧。要跨命令核帧用：maafw-live repl --session <名> --cmd "click x y --expect-seq N"',
+        undefined, EXIT.FINDINGS)
+    }
     return inject(
       ctx,
       o,

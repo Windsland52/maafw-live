@@ -42,7 +42,7 @@ export const calibrateCommand: Command = {
         return {
           exitCode: r.warn ? EXIT.FINDINGS : EXIT.OK,
           human: [
-            ...describeSession(s),
+            ...describeSession(s, ctx.flags.verbose),
             '校准 ' + String(r.frames) + ' 帧（分块亮度差 / 全局位差率的噪声分布）：',
             '  分块差  p50=' + block.p50 + '  p99=' + block.p99 + '  max=' + block.max,
             '  位差率  p50=' + global.p50 + '  p99=' + global.p99 + '  max=' + global.max,

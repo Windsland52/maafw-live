@@ -158,7 +158,7 @@ export const annotateCommand: Command = {
         return {
           exitCode: EXIT.OK,
           human: [
-            ...describeSession(s),
+            ...describeSession(s, ctx.flags.verbose),
             ...(offline ? ['离线候选：未连接设备（库帧是本机持久文件）'] : []),
             'SoM 候选 ' + String(r.count) + ' 个（ocr ' + String(sources?.ocr ?? 0) + ' / diff ' + String(sources?.diff ?? 0) +
               ' / conn ' + String(sources?.conn ?? 0) + ' / edge ' + String(sources?.edge ?? 0) + '）→ ' + String(r.out),
