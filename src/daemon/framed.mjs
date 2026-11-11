@@ -2552,11 +2552,13 @@ function buildL2Provenance(o) {
     level: 'L2',
     derivedFrom,
     transform: { op: 'crop', resize: false, scale: 1, loose: o.loose, crop: o.box, snapped: o.snapped },
-    selfMatch: { score: o.score, positionOk: o.positionOk, box: o.selfMatchBox ?? null, tries: o.tries },
+    /* annotate --emit-crops 裁的是 SoM 候选，不走自匹配验证——selfMatch 如实为 null，
+     * 不伪造"没测过的匹配度"（契约 §5 的变换与来源照样全）。 */
+    selfMatch: o.selfMatch === null ? null : { score: o.score, positionOk: o.positionOk, box: o.selfMatchBox ?? null, tries: o.tries },
     cross: o.cross ?? null,
     output: { w: o.w, h: o.h },
     createdAt: o.createdAt,
-    tool: 'maafw-live crop',
+    tool: o.tool ?? 'maafw-live crop',
   }
 }
 
@@ -3399,6 +3401,34 @@ async function cmdAnnotate(args) {
     drawRect(buf, draw.w, draw.h, [rb[0] + 1, rb[1] + 1, Math.max(2, rb[2] - 2), Math.max(2, rb[3] - 2)], [255, 255, 255])
   }
   fs.writeFileSync(out, pngEncodeRGB(buf, draw.w, draw.h))
+
+  /* --emit-crops <dir>：每个进表候选从 work 图（检测面：L0 全分辨率 or kf 原图 or 降级小图）
+   * 切一张 PNG + 写 .prov.json 出处。box 是 work 坐标系——k 库帧与工作图同空间，x/y 直接裁。
+   * selfMatch 为 null：这是"候选一键出模板"的批量出图，未经自匹配验证；要自匹配（选号）
+   * 走正式 crop。 */
+  const emitted = []
+  const emitDir = typeof args.emitCrops === 'string' && args.emitCrops ? String(args.emitCrops) : null
+  if (emitDir) {
+    try {
+      fs.mkdirSync(emitDir, { recursive: true })
+      cands.forEach((c, i) => {
+        const id = i + 1
+        const b = { x: Math.round(c.box[0]), y: Math.round(c.box[1]), w: Math.round(c.box[2]), h: Math.round(c.box[3]) }
+        const crop = cropRgb(work.rgb, work.w, work.h, b)
+        const f = path.join(emitDir, 'cand-' + String(id).padStart(2, '0') + '.png')
+        fs.writeFileSync(f, pngEncodeRGB(crop.data, crop.w, crop.h))
+        const prov = buildL2Provenance({
+          source, loose: b, box: [b.x, b.y, b.w, b.h], snapped: false, selfMatch: null,
+          cross: null, w: crop.w, h: crop.h, createdAt: new Date().toISOString(),
+          tool: 'maafw-live annotate --emit-crops',
+        })
+        const pf = f + '.prov.json'
+        fs.writeFileSync(pf, JSON.stringify(prov, null, 2) + '\n')
+        emitted.push({ id, path: f, provPath: pf, w: crop.w, h: crop.h, source: c.source })
+      })
+    } catch (e) { /* 逐条写失败不中断 annotate：emit 是可选增值，不是主结果 */ }
+  }
+
   const ctrlW = work.fw > 0 ? work.fw : work.w
   const ctrlH = work.fh > 0 ? work.fh : work.h
   /* 候选框的面积占比（控制器空间，与画面同尺度）：调用方可据此再排一次序——
@@ -3434,6 +3464,7 @@ async function cmdAnnotate(args) {
     ...(args.kfSource ? { sourcesUnavailable: { diff: '库帧路径无会话事件：diff 源不可用（不拿别的区域顶替）' } } : {}),
     candidates: cands.map((c, i) => ({ id: i + 1, source: c.source, box: c.box, ctrl: toCtrl(c.box), ...feat(c), ...(c.extra ?? {}) })),
     ...(cands.length === 0 ? { warn: '无候选：画面可能静止且低对比；换帧或走点选路径' } : {}),
+    ...(emitted.length ? { emitted: { dir: emitDir, count: emitted.length, files: emitted } } : {}),
     ...(pool.length > LIMIT
       ? { warn: '候选被上限截断：本区域池 ' + pool.length + ' 条，进表 ' + cands.length + ' 条。'
           + (roiApplied ? '用更小的 roi 继续收窄' : '给 roi 把搜索面收小（这是正解），或给 somLimit 放开上限') }

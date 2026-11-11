@@ -24,6 +24,7 @@ export const annotateCommand: Command = {
     '       --from-kf 在库里留存帧上离线跑（不需要设备；该路径没有会话事件，diff 源不可用）\n' +
     '       --som-limit n            放开候选上限（缺省 30；网格/表格类界面必给）\n' +
     '       --som-max-area-ratio r   巨框剔除阈值（缺省 0.12，按画面面积比；OCR 框不参与）\n' +
+    '       --emit-crops <dir>       每个进表候选批量出 PNG + .prov.json（出处完整；不跑自匹配，选号验证走正式 crop）\\n' +
     '       回画优先落在 L0 全分辨率原图上；回执带 availability（截断/剔除/分带），别把"30 条"读成"画面就这些"',
   options: {
     ...CONNECT_OPTIONS,
@@ -34,6 +35,7 @@ export const annotateCommand: Command = {
     'frames-dir': { type: 'string' },
     'som-limit': { type: 'string' },
     'som-max-area-ratio': { type: 'string' },
+    'emit-crops': { type: 'string' },
     roi: { type: 'string' },
   },
 
@@ -105,6 +107,7 @@ export const annotateCommand: Command = {
         if (!offline && seq === undefined) {
           await seedObservation(client, 'annotate')
         }
+        const emitCrops = argPath(ctx, typeof ctx.values['emit-crops'] === 'string' ? ctx.values['emit-crops'] : undefined)
         const r = await annotate(client, {
           ...(offline ? { kfSource } : {}),
           ...(!offline && seq !== undefined ? { seq } : {}),
@@ -113,6 +116,7 @@ export const annotateCommand: Command = {
           ...(roi ? { roi } : {}),
           ...(somLimit !== undefined ? { somLimit } : {}),
           ...(ratio !== undefined ? { somMaxAreaRatio: ratio } : {}),
+          ...(emitCrops ? { emitCrops } : {}),
         })
         if (r.ok === false) {
           return fail('ANNOTATE', String(r.error ?? '候选生成失败'),
@@ -171,6 +175,9 @@ export const annotateCommand: Command = {
               + (typeof c.score === 'number' ? ' score=' + c.score : '')
               + (c.text ? '  "' + c.text + '"' : '')),
             ...(r.warn ? ['  警告：' + String(r.warn)] : []),
+            ...((r.emitted as { dir?: string; count?: number; files?: Array<{ id: number; path: string }> } | undefined)?.count
+              ? ['  emit-crops：' + String((r.emitted as { count: number }).count) + ' 条已落到 ' + String((r.emitted as { dir: string }).dir) + '（含 .prov.json；选号验证仍走正式 crop --roi/--from-kf）']
+              : []),
             '选号后：click / reco --node（roi 用 ctrl 坐标）/ crop --roi（可再 crop --from-kf 于同一帧）',
           ],
           data: r,
