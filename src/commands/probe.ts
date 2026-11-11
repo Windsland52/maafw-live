@@ -16,8 +16,8 @@ import { screencapProbe, withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, type SessionOptions } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
-const needSession = (o: SessionOptions) =>
-  o.project || o.kind ? null : fail('NO_SESSION', '用法：maafw-live screencap-probe --project <dir> 或 --kind ...', undefined, EXIT.USAGE)
+const needSession = (o: SessionOptions, ctx?: { client?: unknown }) =>
+  ctx?.client || o.project || o.kind ? null : fail('NO_SESSION', '用法：maafw-live screencap-probe --project <dir> 或 --kind ...', undefined, EXIT.USAGE)
 
 export const screencapProbeCommand: Command = {
   name: 'screencap-probe',
@@ -32,7 +32,7 @@ export const screencapProbeCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const interval = ctx.values.interval !== undefined ? Number(ctx.values.interval) : 3000
     const occluded = ctx.values.occluded === true

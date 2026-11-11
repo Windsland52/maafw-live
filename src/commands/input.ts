@@ -9,7 +9,10 @@ import { input, withDaemon } from '../runtime/actions.js'
 import { describeSession, ensureSession, type SessionOptions } from '../runtime/session.js'
 import { CONNECT_OPTIONS, daemonFail, sessionOptions } from './runtime.js'
 
-function needSession(o: SessionOptions): CommandResult | null {
+function needSession(o: SessionOptions, ctx?: CommandContext): CommandResult | null {
+  /* 会话侧（--session 转发 / REPL）ctx.client 已注入、设备已连，连接参数再强要 argv
+   * 会拒掉 `click x y --session <名>` 这种本来合法的用法。 */
+  if (ctx?.client) return null
   if (!o.project && !o.kind) {
     return fail('BAD_ARGUMENTS', '要设备才能注入输入：给 --project <dir>（推荐）或 --kind win32|adb|gamepad',
       'CLI 不做连接持久化；多步操作用 maafw-live repl 连接一次后连续注入', EXIT.USAGE)
@@ -76,7 +79,7 @@ export const clickCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
     const y = Number(ctx.positionals[1])
@@ -87,8 +90,9 @@ export const clickCommand: Command = {
     const expectFrame = typeof ctx.values['expect-frame'] === 'string' && ctx.values['expect-frame']
       ? String(ctx.values['expect-frame']) : undefined
     /* 帧身份守卫在一次性 CLI 下必然失败：daemon 随命令死，seq 从 1 起——守卫核对的"当前帧"
-     * 只能是这一帧本身。要跨命令的帧身份得用常驻会话（maafw-live repl --session <名>）。 */
-    if ((expectSeq !== undefined || expectFrame !== undefined) && ctx.values.session === undefined) {
+     * 只能是这一帧本身。要跨命令的帧身份得用常驻会话（maafw-live repl --session <名>，
+     * 会话侧注入 ctx.client，与 withDaemon 的新建路径区分开）。 */
+    if ((expectSeq !== undefined || expectFrame !== undefined) && ctx.client === undefined) {
       return fail('EXPECT_FAILED',
         '帧身份守卫（--expect-seq / --expect-frame）需要常驻会话——一次性命令的 daemon 每条都重启，seq 从 1 起，守卫永远核不到你存的那帧。要跨命令核帧用：maafw-live repl --session <名> --cmd "click x y --expect-seq N"',
         undefined, EXIT.FINDINGS)
@@ -118,7 +122,7 @@ export const swipeCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const [x1, y1, x2, y2] = ctx.positionals.slice(0, 4).map((v) => Number(v))
     if (![x1, y1, x2, y2].every((n) => Number.isFinite(n))) {
@@ -158,7 +162,7 @@ export const keyCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const code = Number(ctx.positionals[0])
     if (!Number.isFinite(code)) return fail('BAD_ARGUMENTS', '用法：maafw-live key <code>', undefined, EXIT.USAGE)
@@ -174,7 +178,7 @@ export const keysCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const raw = String(ctx.positionals[0] ?? '')
     const codes = raw.split(/[+,]/).map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -198,7 +202,7 @@ export const pressCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
     const y = Number(ctx.positionals[1])
@@ -222,7 +226,7 @@ export const dbclickCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const x = Number(ctx.positionals[0])
     const y = Number(ctx.positionals[1])
@@ -241,7 +245,7 @@ export const scrollCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const dx = Number(ctx.positionals[0])
     const dy = Number(ctx.positionals[1])
@@ -260,7 +264,7 @@ export const moveCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const dx = Number(ctx.positionals[0])
     const dy = Number(ctx.positionals[1])
@@ -279,7 +283,7 @@ export const textCommand: Command = {
 
   async run(ctx): Promise<CommandResult> {
     const o = sessionOptions(ctx)
-    const miss = needSession(o)
+    const miss = needSession(o, ctx)
     if (miss) return miss
     const text = ctx.positionals.join(' ')
     if (!text) return fail('BAD_ARGUMENTS', '用法：maafw-live text <string>', undefined, EXIT.USAGE)
