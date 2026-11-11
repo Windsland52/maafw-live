@@ -472,7 +472,8 @@ export const runCommand: Command = {
     '       项目模式的 pretask 在连 Controller **之前**执行（非零退出即中止，--no-pretask 跳过）\n' +
     '       --timeout 0 = 不自动停止（停止权交调用方：事件流判断 + maafw-live stop / 客户端 run_stop）；>0 时超时自动 post_stop\n' +
     '       项目模式自动合成 pipeline_override（global→resource→controller→task，preset/default 取值），--override 最后覆盖\n' +
-    '       --watch <日志文件> = 跑的同时实时 tail 该文件（可多次给）——长任务执行中 daemon 帧流被框架占住，这是唯一能看到进展的通道',
+    '       --watch <日志条目> = 跑的同时实时 tail（可多次给）：文件 / glob（"logs/*.txt"）/ 目录（取每 tick 最新一个文件，日更轮转不丢）\n' +
+    '       --watch-include/--watch-exclude <regex> 筛选推送行；--watch-interval <ms> 推送间隔（默认 2000）',
   options: {
     ...CONNECT_OPTIONS,
     entry: { type: 'string' },
@@ -482,9 +483,12 @@ export const runCommand: Command = {
     preset: { type: 'string' },
     /* 按次取值（可多次给）：<键>=<case 名>（select/switch/checkbox）、<键>.<字段>=<值>（input） */
     option: { type: 'string', multiple: true },
-    /* 运行期日志跟随：跑的时候把项目 agent 写的日志实时打出来（可多次给） */
+    /* 运行期日志跟随：跑的时候把项目 agent 写的日志实时打出来（可多次给）。
+     * 条目语义见 watchLogs.entries：文件 / glob / 目录（每 tick 取最新 mtime）。 */
     watch: { type: 'string', multiple: true },
     'watch-interval': { type: 'string' },
+    'watch-include': { type: 'string', multiple: true },
+    'watch-exclude': { type: 'string', multiple: true },
   },
 
   async run(ctx): Promise<CommandResult> {
@@ -562,13 +566,26 @@ export const runCommand: Command = {
         /* 运行期日志跟随：run 会阻塞到任务结束，期间帧流/事件都不可用（框架占住控制器），
          * 唯一还在更新的只有项目 agent 自己写的日志。给了 --watch 就在这里边跑边推。 */
         const watchRaw = ctx.values.watch
-        const watchPaths = (Array.isArray(watchRaw) ? watchRaw : watchRaw === undefined ? [] : [watchRaw])
+        const watchEntries = (Array.isArray(watchRaw) ? watchRaw : watchRaw === undefined ? [] : [watchRaw])
           .filter((x): x is string => typeof x === 'string' && x.length > 0)
           .map((x) => (isAbsolute(x) ? x : resolve(ctx.cwd, x)))
         const watchInterval = Number(ctx.values['watch-interval'] ?? 2000)
-        const watcher = watchPaths.length
+        /* include/exclude 正则：编译失败直接报 BAD_ARGUMENTS，不静默当无过滤跑 */
+        const watchInclude = (Array.isArray(ctx.values['watch-include']) ? ctx.values['watch-include'] : ctx.values['watch-include'] === undefined ? [] : [ctx.values['watch-include']])
+          .filter((x): x is string => typeof x === 'string')
+        const watchExclude = (Array.isArray(ctx.values['watch-exclude']) ? ctx.values['watch-exclude'] : ctx.values['watch-exclude'] === undefined ? [] : [ctx.values['watch-exclude']])
+          .filter((x): x is string => typeof x === 'string')
+        let includeRes: RegExp[] | undefined
+        let excludeRes: RegExp[] | undefined
+        try {
+          includeRes = watchInclude.length ? watchInclude.map((r) => new RegExp(r)) : undefined
+          excludeRes = watchExclude.length ? watchExclude.map((r) => new RegExp(r)) : undefined
+        } catch (e) {
+          return fail('BAD_ARGUMENTS', '--watch-include/--watch-exclude 不是合法正则：' + String((e as Error).message), undefined, EXIT.USAGE)
+        }
+        const watcher = watchEntries.length
           ? watchLogs(
-              { paths: watchPaths, intervalMs: Number.isFinite(watchInterval) ? watchInterval : 2000 },
+              { entries: watchEntries, intervalMs: Number.isFinite(watchInterval) ? watchInterval : 2000, include: includeRes, exclude: excludeRes },
               (lines) => {
                 /* 直写 stdout：--json 模式下也会混进人类可读行，所以下面的信封里另给 watch 统计，
                  * 并在 --json 时把人类行改走 stderr（stdout 只留信封）。 */
@@ -675,7 +692,7 @@ export const runCommand: Command = {
           extraWarns.push('agent 连接失败：' + String(rec.agent.error ?? '?'))
         }
         if (watchStats && watchStats.files.length === 0) {
-          extraWarns.push('--watch 没有命中任何文件（' + watchPaths.join(' , ') + '）：检查路径是否存在、日志是否在跑起来之后才创建')
+          extraWarns.push('--watch 没有命中任何文件（' + watchEntries.join(' , ') + '）：检查路径是否存在、日志是否在跑起来之后才创建')
         }
         if (watchStats) {
           human.push('  运行期日志跟随：' + String(watchStats.pushed) + ' 行（来自 ' +
