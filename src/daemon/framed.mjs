@@ -2701,12 +2701,19 @@ async function cmdTplCrop(args) {
     const r = await spawnRecoChild({
       resourceDir, type: 'TemplateMatch', image: frameFile, templateImage: candFile, cases: [{}],
     }, 60000)
-    if (!r || !r.ok) return { score: -1, posOk: false, at: null }
+    if (!r || !r.ok) {
+      /* 资源链加载不出来（reco 把这条明确报成 `RESOURCE_LOAD`）与"识别跑了但没命中"是两回事：
+       * 前者是资源问题、处置是去修资源，后者才是去换框。别让它落进"低纹理/不独特"。 */
+      if (r && (r.code === 'RESOURCE_LOAD' || /资源链加载失败/.test(String(r.error ?? '')))) {
+        selfMatchDead = selfMatchDead ?? ('资源链加载不出来——' + String(r.error ?? '').trim())
+      }
+      return { score: -1, posOk: false, at: null }
+    }
     /* 子进程回 ok 但**一个 case 结果都没有**：识别压根没跑起来（实测最常见的原因是资源目录里没有可加载的
      * pipeline，reco 会安静地回 `results: []`）。这与"识别跑了但没命中"是两回事——后者仍会有 1 条结果
      * （hit:false）。记下来，别让它被下面的判据翻译成"低纹理/不独特"。 */
     if (!Array.isArray(r.results) || r.results.length === 0) {
-      selfMatchDead = true
+      selfMatchDead = selfMatchDead ?? '识别子进程一个结果都没回'
       return { score: -1, posOk: false, at: null, noResults: true }
     }
     const det = r.results && r.results[0] ? r.results[0].detail : null
@@ -2716,8 +2723,9 @@ async function cmdTplCrop(args) {
     return { score: Number(best.score), posOk: overlapOk(at, [b.x, b.y, b.w, b.h]), at }
   }
   const obj = (s) => (s.posOk ? 1000 : 0) + s.score
-  /** 自匹配有没有跑起来（子进程回空结果 = 没跑起来）。跑到这里说明资源加载不出识别节点。 */
-  let selfMatchDead = false
+  /** 自匹配有没有跑起来：null = 跑起来了；字符串 = 没跑起来的具体原因（子进程回空结果 / 资源链加载不出来）。
+   * 跑到这里还能不跑起来，说明资源那边加载不出识别节点。 */
+  let selfMatchDead = null
   const clampBox = (b) => ({
     x: Math.max(0, b.x), y: Math.max(0, b.y),
     w: Math.min(b.w, dec.w - Math.max(0, b.x)), h: Math.min(b.h, dec.h - Math.max(0, b.y)),
@@ -2849,8 +2857,8 @@ async function cmdTplCrop(args) {
   const out = args.out || defaultOutFile(S.runDir, 'tpl').file
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, pngEncodeRGB(final.data, final.w, final.h))
-  const warn = selfMatchDead
-    ? '自匹配没跑起来：识别子进程一个结果都没回（实测最常见原因是资源目录里没有可加载的 pipeline）。' +
+  const warn = selfMatchDead !== null
+    ? '自匹配没跑起来：' + selfMatchDead + '（实测最常见原因是资源目录里没有可加载的 pipeline）。' +
       '这不是"模板不独特"——先写一个 pipeline 节点，或用 --resource-dir 指向真实资源，再重跑这次的框；' +
       '在此之前它**未经自匹配验证**，不要拿它去写 pipeline'
     : !best.posOk
