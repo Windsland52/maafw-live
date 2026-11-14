@@ -5,6 +5,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
 ### 新增
 
 - **`roi-check`：ROI 验真**——用外来模板比对「本位置」与「偏移半周期」两套候选，分不出来时明确报
@@ -775,7 +777,8 @@ maafw-live 的重要更改记录。格式参考 [Keep a Changelog](https://keepa
 - 本地工作区文档移出 `docs/`（根目录 `roadmap.local.md`，入 `.gitignore`）：`files` 白名单目录
   会压过 ignore 规则，留在 `docs/` 内会进 npm 包
 
-[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Windsland52/maafw-live/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Windsland52/maafw-live/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Windsland52/maafw-live/releases/tag/v0.1.1
