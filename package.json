@@ -77,7 +77,6 @@
     "test:all": "npm run build && node scripts/run-tests.mjs --group all",
     "test:device": "npm run build && node scripts/run-tests.mjs --group device",
     "test:contract": "npm run build && node scripts/run-tests.mjs --group contract",
-    "skill:check": "node scripts/skill-check.mjs",
     "accept:offline": "node scripts/accept-kf-offline.mjs",
     "accept:crop": "node scripts/accept-crop-fromkf.mjs",
     "accept:roi-compare": "node scripts/accept-roi-compare.mjs",

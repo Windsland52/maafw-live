@@ -23,12 +23,11 @@
    npm run accept:offline                  # 关键帧库离线契约验收
    npm run accept:crop                     # 离线库帧裁剪验收（会真的起 daemon + 识别子进程）
    npm run accept:reco-node                # 资源链验收：overlay 覆盖 / attach 段 / --node-name（同样离线起真 daemon）
-   npm run skill:check                     # 已装 skill 副本与包内逐字节一致（改过 skills/** 必跑）
    node scripts/release-notes.mjs <version>  # 验证 CHANGELOG 段可提取（与 CI 同一脚本）
    ```
 
-   改了 `skills/maafw-live/**` 的版本尤其别跳过 `skill:check`：它只报漂移、不自动覆盖，漂了就用
-   `maafw-live skill --install <dir>` 同步，否则下一个 agent 照旧按旧副本干活。
+   改了 `skills/maafw-live/**` 的版本，再对自己机器上的副本跑一次 `maafw-live skill --check <安装根>`
+   —— 它只报漂移（退出 3），要同步用同一命令的 `--install`。装过一次 skill 的机器不会自动跟上新版本。
 
 3. `npm version <version> --no-git-tag-version` 同步 `package.json` 与 `package-lock.json`。
 
